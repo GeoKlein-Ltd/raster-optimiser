@@ -1,0 +1,15 @@
+# never commit rasters
+*.tif
+*.tiff
+*.ovr
+*.aux.xml
+*.msk
+
+# python junk
+__pycache__/
+*.pyc
+.venv/
+
+# os junk
+Thumbs.db
+.DS_Store
