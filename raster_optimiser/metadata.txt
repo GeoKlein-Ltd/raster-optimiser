@@ -1,0 +1,17 @@
+[general]
+name=Raster Optimiser
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+description=Detects slow, unoptimised orthomosaics and elevation rasters and converts them to fast-panning, correctly-compressed GeoTIFFs.
+version=0.1.0
+author=GeoKlein
+email=mail@geoklein.com
+about=Large orthomosaics and elevation rasters from drone photogrammetry or LiDAR are technically correct but practically unusable: no tiling, no pyramids, often no compression, so QGIS or QField crawl trying to pan around them. Raster Optimiser detects what a raster actually is - 8-bit RGB imagery, Float32 elevation data, or something out of scope - and applies the correct tiling, pyramid and compression settings automatically, with no GDAL flags to memorise. It refuses cleanly, with a clear reason, on classified/categorical rasters, multispectral stacks and 16-bit imagery rather than risk silently corrupting them. Already-optimised files are left untouched.
+tracker=
+repository=
+hasProcessingProvider=yes
+tags=raster,orthomosaic,ortho,optimise,optimize,optimiser,optimizer,slow,large,large file,pyramids,overviews,compress,compression,tiling,tiled,geotiff,cog,cloud optimised geotiff,cloud optimized geotiff,jpeg,zstd,performance,speed,drone,photogrammetry,lidar,dsm,dtm,chm,elevation,qfield
+category=Raster
+experimental=True
+deprecated=False
+homepage=

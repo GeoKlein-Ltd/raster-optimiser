@@ -1,3 +1,8 @@
+# never commit test data (2.5GB+ of orthos/DSMs) - belt and suspenders
+# alongside the extension rules below, so any file type landing in here
+# is still caught, not just the ones we happened to think of
+testdata/
+
 # never commit rasters
 *.tif
 *.tiff
@@ -8,6 +13,7 @@
 # python junk
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 
 # os junk
