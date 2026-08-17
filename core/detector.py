@@ -94,7 +94,7 @@ RECOMMENDED_SETTINGS = {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "JPEG", "JPEG_QUALITY": "90", "PHOTOMETRIC": "YCBCR",
-            "BIGTIFF": "YES",
+            "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
         "overview_config": {
             "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "JPEG",
@@ -105,7 +105,7 @@ RECOMMENDED_SETTINGS = {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "2",
-            "BIGTIFF": "YES",
+            "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
         "overview_config": {"RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD"},
     },
@@ -113,7 +113,7 @@ RECOMMENDED_SETTINGS = {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "3",
-            "BIGTIFF": "YES",
+            "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
         "overview_config": {"RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD"},
     },
