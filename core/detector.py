@@ -37,18 +37,53 @@ gdal.UseExceptions()
 
 # Long-side pixel count for the decimated sample used for both the
 # classified-raster unique-value count and the NoData=0 black-pixel count.
-# GDAL serves this from overviews automatically when they exist, so it's
-# cheap regardless of source resolution.
-SAMPLE_TARGET_DIM = 1000
+# When overviews exist GDAL serves this cheaply from them. When they
+# don't (the common case pre-optimisation), GDAL still has to touch
+# nearly every source tile to build a decimated read regardless of the
+# requested output size - confirmed empirically on a 1.74GB, no-overview
+# ortho: 1000px and 4000px targets both cost ~47s. So there's no reason
+# to keep this small; it doesn't buy speed, only precision loss.
+#
+# Known characteristic, not a v1 blocker: on a large source with no
+# overviews, this read alone takes on the order of a minute (measured
+# ~47s on a 1.74GB, 1.5-gigapixel ortho). A future version could check
+# for existing overviews first and adjust strategy; v1 just accepts the
+# wait, since it's a one-off per detection run.
+SAMPLE_TARGET_DIM = 2000
 
 # Single-band integer raster with no colour table: at or under this many
 # unique values in the sample reads as classified/categorical.
 CLASSIFIED_MAX_UNIQUE_VALUES = 100
 
-# Fraction of alpha/mask-valid sample pixels that are pure black, at or
-# above which NoData=0 is judged to be hiding real content rather than
-# just the collar.
-BLACK_PIXEL_RISK_FRACTION = 0.001
+# Spatial bins per axis when checking for localized NoData=0 clusters.
+# Applied to the same decimated sample already read - no extra I/O.
+NODATA_GRID_SIZE = 20
+
+# Outermost ring(s) of grid cells to exclude from the "is this a real
+# interior cluster" decision. A clean survey-boundary collar is EXPECTED
+# to light up edge cells - that's not a problem, it's exactly what NoData
+# is supposed to catch. Only an interior cell lighting up means NoData is
+# eating real content. 1 ring is enough at NODATA_GRID_SIZE=20 (each cell
+# is a ~20th of the image on a side) to separate collar from interior on
+# every real file tested so far.
+NODATA_EDGE_MARGIN_CELLS = 1
+
+# Minimum alpha/mask-valid pixels a grid cell must contain before its
+# fraction is trusted. Without this, a near-empty cell (e.g. a sliver of
+# valid pixels near the alpha edge, or any cell on a small/low-res file)
+# can swing to 50-100% black on one or two stray pixels and false-positive.
+NODATA_MIN_CELL_VALID_PIXELS = 25
+
+# Fraction of valid pixels within a single INTERIOR grid cell that are
+# pure black, at or above which NoData=0 is judged to be hiding real
+# content rather than just the collar. Calibration data point: on
+# Ortho_school_v1_nick.tif, a shadow-hole cluster confined to one
+# structure's footprint diluted to ~0.01% as a whole-image average but
+# hit 0.37% (denser sample: 1.16%) in its worst interior cell - both
+# comfortably above this threshold, which was deliberately kept separate
+# from (and much stricter than) a whole-image average would ever need to
+# be. See docs/plugin_design_notes.md.
+NODATA_INTERIOR_CELL_RISK_FRACTION = 0.001
 
 INTEGER_DTYPES = {
     "Byte", "Int8", "UInt16", "Int16", "UInt32", "Int32", "UInt64", "Int64",
@@ -104,8 +139,13 @@ class NoDataRisk:
     nodata_value: Optional[float] = None
     sample_pixels_checked: int = 0
     black_pixel_count: int = 0
-    black_pixel_fraction: float = 0.0
-    assessment: str = "not_applicable"  # not_applicable | collar_only | meaningful
+    black_pixel_fraction: float = 0.0  # whole-sample average - kept for visibility, not used to decide
+    interior_max_cell_fraction: float = 0.0  # worst INTERIOR grid-cell fraction - this decides the assessment
+    interior_flagged_cells: int = 0
+    interior_cells_checked: int = 0
+    edge_max_cell_fraction: float = 0.0  # diagnostic only, never decides anything
+    grid_cells: int = 0
+    assessment: str = "not_applicable"  # not_applicable | collar_only | meaningful | insufficient_sample
     needs_user_decision: bool = False
     message: Optional[str] = None
 
@@ -173,7 +213,26 @@ def _classified_unique_count(ds: "gdal.Dataset", band: "gdal.Band") -> int:
     return int(np.unique(arr).size)
 
 
-def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index):
+def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
+                         grid_size: int = NODATA_GRID_SIZE,
+                         edge_margin: int = NODATA_EDGE_MARGIN_CELLS,
+                         min_cell_valid: int = NODATA_MIN_CELL_VALID_PIXELS):
+    """Decimated black-pixel-under-NoData check, binned spatially.
+
+    A single whole-image fraction dilutes a cluster confined to one part
+    of a large raster below any sane threshold (a shadow under one
+    structure can be ~100% black within its own footprint but ~0.01% of
+    a multi-gigapixel ortho). Bin the same decimated sample into a grid
+    instead - no extra I/O, since the sample array is already in memory.
+
+    The outermost ring of cells is tracked separately (edge_*) and never
+    drives the decision: a clean survey-boundary collar is SUPPOSED to
+    show up there. Only an INTERIOR cell exceeding threshold means NoData
+    is eating real content, not just the boundary it was meant to mark.
+    Cells with too few valid pixels to trust are skipped entirely rather
+    than allowed to swing the result on one or two stray pixels.
+    See docs/plugin_design_notes.md.
+    """
     import numpy as np
 
     w, h = _sample_dims(ds.RasterXSize, ds.RasterYSize)
@@ -185,14 +244,52 @@ def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index):
     if alpha_index is not None:
         alpha_arr = _read_sample(ds.GetRasterBand(alpha_index), w, h)
         valid_mask = alpha_arr > 0  # mask semantics: any non-zero = valid
-        black_mask = black_mask & valid_mask
-        total_valid = int(valid_mask.sum())
     else:
-        total_valid = int(black_mask.size)
+        valid_mask = np.ones_like(black_mask, dtype=bool)
+    black_mask = black_mask & valid_mask
 
+    total_valid = int(valid_mask.sum())
     black_count = int(black_mask.sum())
-    fraction = (black_count / total_valid) if total_valid else 0.0
-    return black_count, total_valid, fraction
+    global_fraction = (black_count / total_valid) if total_valid else 0.0
+
+    grid = max(1, min(grid_size, w, h))
+    margin = min(edge_margin, (grid - 1) // 2)  # never eat the whole grid on tiny images
+
+    interior_max_fraction = 0.0
+    interior_flagged = 0
+    interior_checked = 0
+    edge_max_fraction = 0.0
+
+    for gy in range(grid):
+        y0, y1 = gy * h // grid, (gy + 1) * h // grid
+        is_edge_row = gy < margin or gy >= grid - margin
+        for gx in range(grid):
+            x0, x1 = gx * w // grid, (gx + 1) * w // grid
+            cell_valid_n = int(valid_mask[y0:y1, x0:x1].sum())
+            if cell_valid_n < min_cell_valid:
+                continue
+            cell_black_n = int(black_mask[y0:y1, x0:x1].sum())
+            cell_fraction = cell_black_n / cell_valid_n
+
+            is_edge = is_edge_row or gx < margin or gx >= grid - margin
+            if is_edge:
+                edge_max_fraction = max(edge_max_fraction, cell_fraction)
+            else:
+                interior_checked += 1
+                interior_max_fraction = max(interior_max_fraction, cell_fraction)
+                if cell_fraction >= NODATA_INTERIOR_CELL_RISK_FRACTION:
+                    interior_flagged += 1
+
+    return {
+        "total_valid": total_valid,
+        "black_count": black_count,
+        "global_fraction": global_fraction,
+        "interior_max_fraction": interior_max_fraction,
+        "interior_flagged": interior_flagged,
+        "interior_checked": interior_checked,
+        "edge_max_fraction": edge_max_fraction,
+        "grid_cells": grid * grid,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -395,27 +492,42 @@ def detect(path: str) -> DetectionResult:
             nodata_risk.assessment = "nodata_only_transparency"
             nodata_risk.message = profile_a_blocked_reason
         else:
-            black_count, total_valid, fraction = _black_pixel_sample(
+            stats = _black_pixel_sample(
                 ds, rgb_indices, alpha_index=result.alpha_band_index
             )
-            nodata_risk.sample_pixels_checked = total_valid
-            nodata_risk.black_pixel_count = black_count
-            nodata_risk.black_pixel_fraction = fraction
-            if fraction >= BLACK_PIXEL_RISK_FRACTION:
+            nodata_risk.sample_pixels_checked = stats["total_valid"]
+            nodata_risk.black_pixel_count = stats["black_count"]
+            nodata_risk.black_pixel_fraction = stats["global_fraction"]
+            nodata_risk.interior_max_cell_fraction = stats["interior_max_fraction"]
+            nodata_risk.interior_flagged_cells = stats["interior_flagged"]
+            nodata_risk.interior_cells_checked = stats["interior_checked"]
+            nodata_risk.edge_max_cell_fraction = stats["edge_max_fraction"]
+            nodata_risk.grid_cells = stats["grid_cells"]
+            if stats["interior_checked"] == 0:
+                nodata_risk.assessment = "insufficient_sample"
+                nodata_risk.needs_user_decision = True
+                nodata_risk.message = (
+                    "Too little interior area was sampled to reliably tell "
+                    "collar from real content on this file - check manually "
+                    "before clearing NoData."
+                )
+            elif stats["interior_max_fraction"] >= NODATA_INTERIOR_CELL_RISK_FRACTION:
                 nodata_risk.assessment = "meaningful"
                 nodata_risk.needs_user_decision = True
-                pct = fraction * 100
+                pct = stats["interior_max_fraction"] * 100
                 nodata_risk.message = (
-                    f"{pct:.2f}% of pixels inside your survey area are pure "
-                    "black and being hidden by NoData=0. These are real "
-                    "(deep shadow, water, dark surfaces). Clear NoData so "
-                    "they show?"
+                    f"Up to {pct:.2f}% of pixels are pure black within a "
+                    "localized interior area (away from the image edge) "
+                    "and being hidden by NoData=0 - this looks like real "
+                    "content (deep shadow, water, dark surfaces), not just "
+                    "the collar. Clear NoData so it shows?"
                 )
             else:
                 nodata_risk.assessment = "collar_only"
                 nodata_risk.message = (
                     "NoData=0 only catches the collar outside the survey "
-                    "area. Safe to clear, no black content pixels detected."
+                    "area. Safe to clear, no localized black content "
+                    "pixels detected away from the edge."
                 )
 
     result.nodata_risk = nodata_risk
@@ -504,7 +616,13 @@ def _print_report(result: DetectionResult) -> None:
         if nr.sample_pixels_checked:
             print(f"  sampled {nr.sample_pixels_checked} valid px, "
                   f"{nr.black_pixel_count} pure black "
-                  f"({nr.black_pixel_fraction * 100:.3f}%)")
+                  f"(whole-image avg {nr.black_pixel_fraction * 100:.4f}%)")
+        if nr.grid_cells:
+            print(f"  worst interior cell: {nr.interior_max_cell_fraction * 100:.3f}% "
+                  f"black ({nr.interior_flagged_cells}/{nr.interior_cells_checked} "
+                  f"interior cells over threshold, {nr.grid_cells} cells total)")
+            print(f"  worst edge cell (diagnostic only, not decisive): "
+                  f"{nr.edge_max_cell_fraction * 100:.3f}% black")
         if nr.needs_user_decision:
             print("  -> needs a decision: [Clear / Keep / not sure]")
 
