@@ -36,30 +36,27 @@ from qgis.PyQt.QtCore import QCoreApplication
 from ..core.converter import convert, output_exists_message
 from ..core.detector import detect, detect_metadata_only
 
-# No "Auto" sentinel: an enum defaulting to a value that guarantees failure
-# for RGB input (the previous PROFILE_AUTO=0 default) is worse than an
-# enum with no default at all. Confirmed empirically (QGIS 4.2 and 3.44
-# LTR, both from local source, not memory) that QgsProcessingParameterEnum
-# has no way to represent a genuine "nothing selected yet" state once a
-# run actually happens: parameterAsEnum() returns 0 identically whether
-# the key is omitted, explicitly None, or the user picked index 0 - there
-# is no distinguishable sentinel to detect "not chosen" from "chose A".
-# What IS real: a mandatory (optional=False), no-default enum makes
-# QGIS's own checkParameterValues refuse automatically - confirmed via
-# direct testing - whenever a caller (Model Designer, qgis_process, the
-# Python API) omits the PROFILE key entirely. That's the only enforcement
-# this shape can offer; the interactive Algorithm Dialog's combo box will
-# always show *some* option pre-highlighted (there's no blank combo state
-# in Qt), so a user who never touches the dropdown submits whatever
-# options[0] is. That's an accepted trade-off for two clean options
-# instead of a three-way sentinel - confirm what the dialog actually shows
-# when you test it; I can't render the interactive widget from here to
-# check what it looks like at first paint.
-PROFILE_A = 0
-PROFILE_B = 1
+# No letters anywhere: "A"/"B" imply an order (A primary, B fallback)
+# that's backwards from how this choice should be reached for, force
+# learning a mapping before the choice means anything, and - the sharper
+# risk - a letter-to-meaning mapping is something a future edit can get
+# backwards without it showing up anywhere except the output. An earlier
+# version of this file kept detector.py/converter.py's profile identity
+# as "A"/"B" and bridged it here with a label dict; that was reverted
+# because the bridge itself was the hazard - once the UI listed lossless
+# first while "A" still meant lossy internally, anyone reading the dict
+# would see letters running opposite to the displayed order and could
+# "fix" it, silently inverting which compression each choice produces.
+# detector.py/converter.py's profile identity strings are "lossy" and
+# "lossless" now too (see their RECOMMENDED_SETTINGS keys and
+# ProfileOption.profile) - self-describing everywhere, so there's no
+# mapping left for anyone to get wrong. PROFILE_LOSSLESS/PROFILE_LOSSY
+# below are only this wrapper's own dropdown-index constants.
+PROFILE_LOSSLESS = 0
+PROFILE_LOSSY = 1
 PROFILE_OPTIONS = [
-    "A - Display (smaller, lossy JPEG)",
-    "B - Analysis (lossless, larger)",
+    "Speed + lossless (pixel values preserved exactly)",
+    "Speed + lossy (visually identical, pixel values changed)",
 ]
 
 # ConversionResult.action values that mean "this run did not succeed" -
@@ -135,38 +132,55 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            "Fixes rasters that pan and zoom sluggishly in QGIS or QField - "
-            "typically large orthomosaics or elevation models exported from "
-            "drone photogrammetry or LiDAR software. The default export from "
-            "that software is technically correct but has no internal "
-            "structure that lets software read part of it without reading "
-            "all of it, which is what makes it slow.\n\n"
+            "Lossless (the default)\n"
+            "Every pixel value survives exactly. Required the moment "
+            "those values will be measured, analysed, or fed into "
+            "another process - not just for elevation. RGB imagery needs "
+            "it too whenever it's the input to something like a "
+            "vegetation index: lossy compression discards the exact "
+            "values those indices are derived from, so a file that's "
+            "perfectly fine as a basemap can be the wrong file for that "
+            "calculation. The choice is about what the file is for, not "
+            "what it contains - the same source imagery can genuinely "
+            "need either option depending on the use. Elevation data "
+            "(DSM/DTM/CHM) always uses this option automatically, "
+            "whatever is selected - a DSM is measurements, not a "
+            "picture, and lossy compression would quietly corrupt the "
+            "values for every use, not just some.\n\n"
+            "Lossy\n"
+            "JPEG compression, typically 70-80% smaller than an "
+            "uncompressed export (measured so far on one file - a range, "
+            "not a guarantee, until more are tested). At quality 90 the "
+            "result is visually indistinguishable from the original - "
+            "what changes is the exact numeric value of each pixel, by "
+            "small amounts. That's irrelevant for a basemap you're "
+            "navigating or digitising over, and it's the right choice "
+            "for anything going onto a tablet in the field. It only "
+            "matters if those values feed a calculation - vegetation "
+            "indices, classification, change detection - which is what "
+            "the lossless option is for. Only offered for RGB imagery, "
+            "and only when it's safe (see Refused, below); never offered "
+            "for elevation.\n\n"
+            "What this algorithm is for: rasters that pan and zoom "
+            "sluggishly in QGIS or QField - typically large orthomosaics "
+            "or elevation models exported from drone photogrammetry or "
+            "LiDAR software. The default export from that software is "
+            "technically correct but has no internal structure that lets "
+            "software read part of it without reading all of it, which "
+            "is what makes it slow.\n\n"
             "What it does: opens the file, works out what it actually is, "
-            "and applies the right tiling, pyramid and compression settings "
-            "automatically - no GDAL creation options to look up or "
-            "remember. A file that's already tiled with pyramids is left "
-            "untouched rather than reprocessed.\n\n"
+            "and applies the right tiling, pyramid and compression "
+            "settings automatically - no GDAL creation options to look "
+            "up or remember. A file that's already tiled with pyramids "
+            "is left untouched rather than reprocessed.\n\n"
             "Supported: 8-bit RGB imagery (3 or 4 band) and single-band "
             "Float32 elevation data (DSM/DTM/CHM).\n\n"
             "Refused, with a clear reason rather than a risky guess: "
             "classified/categorical rasters (e.g. land cover maps), "
-            "multispectral stacks (more than 4 bands), and 16-bit imagery. "
-            "Each of these needs handling this version doesn't have yet, "
-            "and silently reusing the imagery recipe on them would corrupt "
-            "the data rather than just fail to help.\n\n"
-            "Profile is a required choice for RGB imagery, because the "
-            "same file can be genuinely correct either way depending on "
-            "what it's for - that's not something the pixels can answer. "
-            "'A' compresses with lossy JPEG: much smaller, the right "
-            "choice for a basemap or a file going onto a tablet in the "
-            "field. 'B' is lossless: larger, but required the moment "
-            "pixel values will be measured, analysed, or fed into "
-            "another process, since JPEG discards the exact values to "
-            "get its size down.\n\n"
-            "Elevation data skips this choice entirely and is always "
-            "lossless - a DSM or DTM is measurements, not a picture, and "
-            "lossy compression would quietly corrupt the values for "
-            "every use, not just some."
+            "multispectral stacks (more than 4 bands), and 16-bit "
+            "imagery. Each of these needs handling this version doesn't "
+            "have yet, and silently reusing the imagery recipe on them "
+            "would corrupt the data rather than just fail to help."
         )
 
     def checkParameterValues(self, parameters, context):
@@ -177,15 +191,15 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         #
         # Deliberately calls detect_metadata_only(), never detect(): the
         # scope refusals below (unsupported dtype, multispectral,
-        # colour-table classified, 16-bit blocking Profile A, no CRS) are
-        # all resolvable from gdal.Open() + band metadata alone, in
-        # milliseconds even on a multi-gigapixel file. Running the full
-        # detect() here - which pixel-samples for the classified check
-        # and the NoData black-pixel risk - is exactly the bug this fixes:
-        # it cost 181s on a 1.7GB ortho before the user ever saw "Profile
-        # is a required choice". No detection logic is duplicated here;
-        # this reads the same DetectionResult shape detect() produces,
-        # just via detector.py's metadata-only code path.
+        # colour-table classified, 16-bit blocking the lossy option, no
+        # CRS) are all resolvable from gdal.Open() + band metadata alone,
+        # in milliseconds even on a multi-gigapixel file. Running the
+        # full detect() here - which pixel-samples for the classified
+        # check and the NoData black-pixel risk - is exactly the bug
+        # this fixes: it cost 181s on a 1.7GB ortho before the user ever
+        # saw a refusal. No detection logic is duplicated here; this
+        # reads the same DetectionResult shape detect() produces, just
+        # via detector.py's metadata-only code path.
         ok, msg = super().checkParameterValues(parameters, context)
         if not ok:
             return ok, msg
@@ -219,12 +233,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             return False, detection.refusal_reason
 
         if detection.profile_mode == "choice":
+            # PROFILE now has a real default (lossless, index 0 - see
+            # the PROFILE_LOSSLESS comment), so there's no "not set" case
+            # left to detect here: parameterAsEnum() always resolves to
+            # a genuine value, defaulted or chosen. This replaces the
+            # earlier "no default, force a choice" design from an
+            # earlier round - superseded because the asymmetric harm
+            # runs the other way: an untouched dropdown giving a
+            # larger-than-optimal file is visible and recoverable;
+            # silently altering pixel values is not.
             profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
-            requested = "A" if profile_choice == PROFILE_A else "B"
+            requested = "lossless" if profile_choice == PROFILE_LOSSLESS else "lossy"
             opt = next((o for o in detection.profile_options if o.profile == requested), None)
             if opt is not None and not opt.available:
                 return False, opt.reason_blocked or self.tr(
-                    "Profile {} is not available for this file."
+                    "The {} option is not available for this file."
                 ).format(requested)
 
         return True, ""
@@ -235,18 +258,26 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         profile_param = QgsProcessingParameterEnum(
             self.PROFILE,
-            self.tr("Profile (RGB imagery only - ignored for elevation data)"),
+            self.tr("Compression profile - choose based on intended use"),
             options=PROFILE_OPTIONS,
+            defaultValue=PROFILE_LOSSLESS,
         )
-        # No defaultValue passed above: mandatory (optional=False, the
-        # QgsProcessingParameterEnum default) with no default is the
-        # closest this API gets to "the user must choose" - see the
-        # PROFILE_A/PROFILE_B comment above for what that does and
-        # doesn't enforce.
+        # Mandatory with a real default now (lossless, index 0) -
+        # supersedes the earlier "optional, no default, force a
+        # conscious choice" design from a previous round. Reasoning is
+        # asymmetric harm: an untouched dropdown giving a larger-than-
+        # optimal file is visible and recoverable (rerun with lossy);
+        # one that silently alters pixel values is invisible and may
+        # never be found. Elevation still forces lossless outright
+        # regardless of this value - see _resolve_profile - so this
+        # default only ever matters for imagery.
         profile_param.setHelp(self.tr(
-            "A compresses with lossy JPEG - much smaller, correct for "
-            "basemaps and field use. B is lossless - use it if the pixel "
-            "values will be measured or analysed."
+            "Lossless keeps every pixel value exact - the default, and "
+            "required if those values will be measured or analysed. "
+            "Lossy (JPEG) is usually 70-80% smaller and visually "
+            "indistinguishable at quality 90, right for a basemap or "
+            "field use - but it changes the exact pixel values, so skip "
+            "it if you'll compute anything from them."
         ))
         self.addParameter(profile_param)
         self.addParameter(QgsProcessingParameterRasterDestination(
@@ -258,7 +289,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # after OUTPUT so it reads as "...and here's what to do if that
         # path already exists."
         self.addParameter(QgsProcessingParameterBoolean(
-            self.OVERWRITE, self.tr("Overwrite output if it already exists"),
+            self.OVERWRITE, self.tr("Replace existing output file"),
             defaultValue=False,
         ))
 
@@ -268,6 +299,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             raise QgsProcessingException(self.tr("Could not load the input raster."))
         source_path = input_layer.source()
 
+        # PROFILE has a real default now (lossless), so parameterAsEnum()
+        # always resolves to a genuine value - no more need to read the
+        # raw dict to detect "not set" (see the PROFILE_LOSSLESS comment).
         profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
@@ -351,24 +385,35 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         return {self.OUTPUT: result.output_path}
 
     def _resolve_profile(self, detection, profile_choice, feedback):
-        requested = "A" if profile_choice == PROFILE_A else "B"
+        # PROFILE always has a genuine value now (defaulted to lossless
+        # if untouched - see the PROFILE_LOSSLESS comment), so this is an
+        # unconditional mapping onto detector.py's "lossy"/"lossless"
+        # identity, not a None-checked one. That's still correct for the
+        # elevation override warning below: the default (index 0) maps
+        # to "lossless", which is also what elevation always forces, so
+        # an untouched dropdown never triggers it - only an explicit
+        # choice of the lossy option (index 1, which nothing defaults
+        # to) can produce a mismatch worth warning about.
+        requested = "lossy" if profile_choice == PROFILE_LOSSY else "lossless"
 
         if detection.profile_mode == "forced":
             forced = detection.forced_profile
             if requested != forced:
                 feedback.pushWarning(self.tr(
-                    "Profile parameter ignored - this file's content type "
-                    "forces Profile {}; Profile {} isn't applicable."
-                ).format(forced, requested))
+                    "Elevation data detected - using {} compression. Lossy "
+                    "compression alters elevation values, so it is never "
+                    "applied to elevation."
+                ).format(forced))
+            else:
+                feedback.pushInfo(self.tr(
+                    "Elevation data detected - using {} compression."
+                ).format(forced))
             return forced
 
         # profile_mode == "choice": a genuine judgement call, never guessed.
-        # checkParameterValues already validated this before execution
-        # reached here in the standard run flow; re-checked defensively in
-        # case this algorithm is ever invoked in a way that skips it.
         opt = next((o for o in detection.profile_options if o.profile == requested), None)
         if opt is not None and not opt.available:
             raise QgsProcessingException(opt.reason_blocked or self.tr(
-                "Profile {} is not available for this file."
+                "The {} option is not available for this file."
             ).format(requested))
         return requested

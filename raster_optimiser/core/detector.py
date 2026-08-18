@@ -1,8 +1,8 @@
 """Raster Optimiser detection module.
 
 Pure GDAL/Python, no QGIS imports. Classifies a raster against the v1
-content-type scope, resolves the Profile A/B decision, and flags the
-Profile-A NoData risk conditions from
+content-type scope, resolves the lossy/lossless profile decision, and
+flags the lossy-profile NoData risk conditions from
 docs/GeoKlein_raster_optimisation_workflow.md, without writing anything.
 
 Run directly against a file:
@@ -118,7 +118,7 @@ INTEGER_DTYPES = {
 }
 
 RECOMMENDED_SETTINGS = {
-    "A": {
+    "lossy": {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "JPEG", "JPEG_QUALITY": "90", "PHOTOMETRIC": "YCBCR",
@@ -129,7 +129,7 @@ RECOMMENDED_SETTINGS = {
             "PHOTOMETRIC_OVERVIEW": "YCBCR", "INTERLEAVE_OVERVIEW": "PIXEL",
         },
     },
-    "B_integer": {
+    "lossless_integer": {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "2",
@@ -137,7 +137,7 @@ RECOMMENDED_SETTINGS = {
         },
         "overview_config": {"RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD"},
     },
-    "B_float": {
+    "lossless_float": {
         "creation_options": {
             "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "3",
@@ -154,7 +154,7 @@ RECOMMENDED_SETTINGS = {
 
 @dataclass
 class ProfileOption:
-    profile: str  # "A" or "B"
+    profile: str  # "lossy" or "lossless"
     available: bool
     reason_blocked: Optional[str] = None
     recommended_settings: Optional[dict] = None
@@ -203,7 +203,7 @@ class DetectionResult:
     transparency_source: Optional[str] = None  # alpha | mask | nodata_only | none
 
     profile_mode: Optional[str] = None  # "forced" | "choice"
-    forced_profile: Optional[str] = None
+    forced_profile: Optional[str] = None  # "lossy" or "lossless"
     profile_options: list = field(default_factory=list)
 
     nodata_risk: Optional[NoDataRisk] = None
@@ -417,13 +417,13 @@ def detect_metadata_only(path: str) -> DetectionResult:
       unrecognised depends on a unique-value count over a decimated read.
     - RGB with NoData=0 and real (non-nodata-only) transparency: the
       black-pixel cluster risk assessment depends on the same kind of
-      sample. This never blocks Profile A (nodata risk is advisory, see
-      module docstring/docs/plugin_design_notes.md) so it doesn't affect
-      what checkParameterValues can decide - it only means nodata_risk
-      is incomplete on a result returned from here.
+      sample. This never blocks the lossy profile (nodata risk is
+      advisory, see module docstring/docs/plugin_design_notes.md) so it
+      doesn't affect what checkParameterValues can decide - it only
+      means nodata_risk is incomplete on a result returned from here.
 
     Every other refusal (no CRS, unsupported dtype, multispectral,
-    16-bit-blocks-Profile-A, nodata-only-transparency-blocks-Profile-A,
+    16-bit-blocks-lossy, nodata-only-transparency-blocks-lossy,
     colour-table-classified) is fully resolved here.
     """
     result = DetectionResult(path=path)
@@ -543,11 +543,11 @@ def detect_metadata_only(path: str) -> DetectionResult:
 
     if result.content_type == "FLOAT32_CONTINUOUS":
         result.profile_mode = "forced"
-        result.forced_profile = "B"
-        settings = RECOMMENDED_SETTINGS["B_float"]
+        result.forced_profile = "lossless"
+        settings = RECOMMENDED_SETTINGS["lossless_float"]
         result.profile_options = [
             ProfileOption(
-                profile="B",
+                profile="lossless",
                 available=True,
                 recommended_settings=settings,
                 translate_extra_args=[],
@@ -564,21 +564,21 @@ def detect_metadata_only(path: str) -> DetectionResult:
 
     rgb_indices = [1, 2, 3]
     nodata_risk = NoDataRisk()
-    profile_a_blocked_reason = None
+    lossy_blocked_reason = None
 
     if result.content_type == "RGB_16BIT":
-        profile_a_blocked_reason = (
+        lossy_blocked_reason = (
             "JPEG needs 8-bit data. Converting your 16-bit values down "
             "means guessing a scale, which risks wrecking contrast - not "
-            "something this plugin will do silently. Choose Profile B "
-            "(lossless), or convert to 8-bit yourself first if you're sure "
-            "of the intended range."
+            "something this plugin will do silently. Choose the lossless "
+            "option instead, or convert to 8-bit yourself first if you're "
+            "sure of the intended range."
         )
     elif nodata_value == 0:
         nodata_risk.applies = True
         nodata_risk.nodata_value = nodata_value
         if transparency_source == "nodata_only":
-            profile_a_blocked_reason = (
+            lossy_blocked_reason = (
                 "This file uses NoData as its only transparency and has no "
                 "alpha band. Clearing it would leave a black border. "
                 "Building a proper footprint mask isn't in v1 - see "
@@ -586,39 +586,39 @@ def detect_metadata_only(path: str) -> DetectionResult:
                 "for the manual route."
             )
             nodata_risk.assessment = "nodata_only_transparency"
-            nodata_risk.message = profile_a_blocked_reason
+            nodata_risk.message = lossy_blocked_reason
         else:
             # Black-pixel cluster risk needs a pixel read - can't resolve
-            # from metadata alone. Never blocks Profile A either way (see
-            # docs/plugin_design_notes.md - advisory only), so it's safe
-            # to leave incomplete here; detect() finishes it.
+            # from metadata alone. Never blocks the lossy profile either
+            # way (see docs/plugin_design_notes.md - advisory only), so
+            # it's safe to leave incomplete here; detect() finishes it.
             result.needs_pixel_sampling = True
 
     result.nodata_risk = nodata_risk
 
-    settings_key = "B_integer"
-    translate_extra_a = []
+    settings_key = "lossless_integer"
+    translate_extra_lossy = []
     if result.has_alpha:
-        translate_extra_a = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(result.alpha_band_index)]
+        translate_extra_lossy = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(result.alpha_band_index)]
         if nodata_value == 0 and transparency_source != "nodata_only":
-            translate_extra_a += ["-a_nodata", "none"]
+            translate_extra_lossy += ["-a_nodata", "none"]
     elif nodata_value == 0 and transparency_source != "nodata_only":
-        translate_extra_a = ["-a_nodata", "none"]
+        translate_extra_lossy = ["-a_nodata", "none"]
 
-    profile_a = ProfileOption(
-        profile="A",
-        available=profile_a_blocked_reason is None,
-        reason_blocked=profile_a_blocked_reason,
-        recommended_settings=RECOMMENDED_SETTINGS["A"] if profile_a_blocked_reason is None else None,
-        translate_extra_args=translate_extra_a if profile_a_blocked_reason is None else None,
+    lossy_option = ProfileOption(
+        profile="lossy",
+        available=lossy_blocked_reason is None,
+        reason_blocked=lossy_blocked_reason,
+        recommended_settings=RECOMMENDED_SETTINGS["lossy"] if lossy_blocked_reason is None else None,
+        translate_extra_args=translate_extra_lossy if lossy_blocked_reason is None else None,
     )
-    profile_b = ProfileOption(
-        profile="B",
+    lossless_option = ProfileOption(
+        profile="lossless",
         available=True,
         recommended_settings=RECOMMENDED_SETTINGS[settings_key],
         translate_extra_args=[],
     )
-    result.profile_options = [profile_a, profile_b]
+    result.profile_options = [lossy_option, lossless_option]
     result.ok = True
     return result
 
@@ -773,7 +773,7 @@ def _print_report(result: DetectionResult) -> None:
 
     if result.nodata_risk and result.nodata_risk.applies:
         nr = result.nodata_risk
-        print(f"\nNoData risk (Profile A only): {nr.assessment}")
+        print(f"\nNoData risk (lossy option only): {nr.assessment}")
         if nr.message:
             print(f"  {nr.message}")
         if nr.sample_pixels_checked:

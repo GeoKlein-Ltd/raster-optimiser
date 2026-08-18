@@ -19,7 +19,7 @@ See docs/plugin_design_notes.md for the reasoning.
 
 Run directly against a file:
 
-    C:\\OSGeo4W\\bin\\python-qgis.bat core\\converter.py path\\to\\file.tif [--profile A|B]
+    C:\\OSGeo4W\\bin\\python-qgis.bat core\\converter.py path\\to\\file.tif [--profile lossy|lossless]
 
 Needs a GDAL Python environment (see core/detector.py's docstring).
 """
@@ -83,9 +83,9 @@ class ConversionResult:
 
 
 def _settings_key(detection: "DetectionResult", profile: str) -> str:
-    if profile == "A":
-        return "A"
-    return "B_float" if detection.content_type == "FLOAT32_CONTINUOUS" else "B_integer"
+    if profile == "lossy":
+        return "lossy"
+    return "lossless_float" if detection.content_type == "FLOAT32_CONTINUOUS" else "lossless_integer"
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -247,11 +247,11 @@ def convert(
     if detection.profile_mode == "forced":
         profile = detection.forced_profile
     else:
-        if chosen_profile not in ("A", "B"):
+        if chosen_profile not in ("lossy", "lossless"):
             result.action = "error"
             result.message = (
-                "This file needs an explicit profile choice (A or B) - "
-                "detection did not force one."
+                "This file needs an explicit profile choice (lossy or "
+                "lossless) - detection did not force one."
             )
             return result
         profile = chosen_profile
@@ -260,7 +260,7 @@ def convert(
     if profile_opt is None or not profile_opt.available:
         reason = profile_opt.reason_blocked if profile_opt else "not offered for this file"
         result.action = "blocked"
-        result.message = f"Profile {profile} is not available: {reason}"
+        result.message = f"The {profile} profile is not available: {reason}"
         return result
 
     result.profile_used = profile
@@ -468,7 +468,7 @@ def _print_report(result: ConversionResult) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Raster Optimiser conversion")
     parser.add_argument("path", help="Path to a raster file")
-    parser.add_argument("--profile", choices=["A", "B"], default=None,
+    parser.add_argument("--profile", choices=["lossy", "lossless"], default=None,
                          help="Required when detection offers a choice")
     parser.add_argument("--output", default=None, help="Output path (default: <stem>_optimised.tif)")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")

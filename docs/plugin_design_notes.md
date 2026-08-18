@@ -83,7 +83,7 @@ decision must stay a separate step from detection, not baked into it.
 `DetectionResult.nodata_risk` (a `NoDataRisk` dataclass) already holds
 this correctly — it carries the raw sample stats, an `assessment`, and a
 `needs_user_decision` flag as advisory output. It does not by itself
-block or force a profile choice (Profile A's availability is never
+block or force a profile choice (the lossy profile's availability is never
 gated on the sampling assessment, only on `nodata_only_transparency`,
 which is a structural fact, not a sampling judgement call). Keep it this
 way: nothing downstream should assume the sampling assessment is final,

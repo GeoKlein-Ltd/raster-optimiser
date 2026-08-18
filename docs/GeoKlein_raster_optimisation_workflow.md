@@ -131,7 +131,7 @@ Most drone RGB cameras produce 8-bit output. You get 16-bit if the source was ra
 
 **Converting down** means rescaling 16-bit values into the 0 to 255 range. A pixel reading 41,203 out of 65,535 becomes 161 out of 255. Same relative brightness, less precision, half the file.
 
-It matters because **JPEG only works on 8-bit data**. If you want Profile A on a 16-bit file, you must convert down first. If you want Profile B, leave it alone.
+It matters because **JPEG only works on 8-bit data**. If you want the lossy profile on a 16-bit file, you must convert down first. If you want the lossless profile, leave it alone.
 
 You do this in the Translate dialog by setting Output data type to Byte and adding `-scale` to the extra parameters. Bare `-scale` uses the band's own minimum and maximum, which is usually what you want. You can specify explicitly with `-scale 0 65535 0 255`, but only do that if you know the data genuinely spans the full range, otherwise you will flatten the contrast.
 
@@ -196,12 +196,12 @@ Set your ortho as input, run, read the output. Five things to find.
 
 | Find this | Meaning | Action |
 |---|---|---|
-| `ColorInterp=Alpha` on the last band | The file has a transparency band | Note the band number. Profile A needs it converted to a mask |
-| No alpha band | Three bands only | Profile A needs no extra parameters at all |
+| `ColorInterp=Alpha` on the last band | The file has a transparency band | Note the band number. The lossy profile needs it converted to a mask |
+| No alpha band | Three bands only | The lossy profile needs no extra parameters at all |
 | `NoData Value=0` on an 8-bit RGB file | Value-based transparency on data where every value is legitimate. Almost certainly eating real black pixels | Run the toggle test below, then add `-a_nodata none` |
 | `NoData Value=` something else, or on elevation data | May well be correct | Leave it alone |
 | `Type=Byte` | 8-bit, standard | Either profile works |
-| `Type=UInt16` | 16-bit | Profile A needs conversion to Byte first. Profile B does not |
+| `Type=UInt16` | 16-bit | The lossy profile needs conversion to Byte first. The lossless profile does not |
 | `Block=256x256` or `512x512` | Already tiled | Good. Pyramids alone may fix everything |
 | `Block=<something>x1` | Stripped | Must rebuild through Translate. Pyramids alone will not save it |
 | No `Overviews:` line | No pyramids | This is almost certainly your lag |
@@ -241,7 +241,7 @@ Also worth checking: whether a `.aux.xml` file exists next to the raster. If it 
 
 ## Step 2: Pick a profile
 
-| | **A: Looking at it** | **B: Measuring it** |
+| | **Lossy** (visually identical, pixel values changed) | **Lossless** (pixel values preserved exactly) |
 |---|---|---|
 | For | Basemaps, client copies, QField backdrops, site context, presentations | Anything you extract numbers from |
 | Examples | Showing a client their site, background for digitising | Crown segmentation, vegetation indices, classification, change detection |
@@ -252,7 +252,7 @@ Also worth checking: whether a `.aux.xml` file exists next to the raster. If it 
 
 **Speed is identical.** Tiling and pyramids deliver that. The profile choice only affects file size and whether pixel values survive.
 
-### Why forestry work needs Profile B
+### Why forestry work needs the lossless profile
 
 Two things happen under JPEG, and the second is the one people miss.
 
@@ -269,7 +269,7 @@ Two things happen under JPEG, and the second is the one people miss.
 | GLI | Green Leaf Index | Similar behaviour to VARI |
 | VDVI | Visible-band Difference Vegetation Index | Direct NDVI analogue for RGB |
 
-If you do have a multispectral sensor and real NIR, the output is normally a multi-band or multi-file product and JPEG is not an option anyway. Either way: Profile B.
+If you do have a multispectral sensor and real NIR, the output is normally a multi-band or multi-file product and JPEG is not an option anyway. Either way: use the lossless profile.
 
 ---
 
@@ -281,7 +281,7 @@ If you do have a multispectral sensor and real NIR, the output is normally a mul
 
 These control how the output file is physically built. Enter them as name/value rows in the table.
 
-| Option | A | B | Does what |
+| Option | Lossy | Lossless | Does what |
 |---|---|---|---|
 | TILED | YES | YES | Store as squares, not strips |
 | BLOCKXSIZE | 512 | 512 | Tile width |
@@ -302,12 +302,12 @@ This is the one field that needs typing, because these change the data rather th
 
 | Situation | Enter |
 |---|---|
-| Profile A, alpha band present, nodata=0 (the usual case) | `-b 1 -b 2 -b 3 -mask 4 -a_nodata none` |
-| Profile A, alpha band present, no nodata declared | `-b 1 -b 2 -b 3 -mask 4` |
-| Profile A, no alpha band, nodata=0 | `-a_nodata none`, but build an alpha first, see Step 1 |
-| Profile A, three bands, nothing to fix | leave blank |
-| Profile A, 16-bit source | add `-scale` and set Output data type to Byte |
-| Profile B | leave blank, always |
+| Lossy, alpha band present, nodata=0 (the usual case) | `-b 1 -b 2 -b 3 -mask 4 -a_nodata none` |
+| Lossy, alpha band present, no nodata declared | `-b 1 -b 2 -b 3 -mask 4` |
+| Lossy, no alpha band, nodata=0 | `-a_nodata none`, but build an alpha first, see Step 1 |
+| Lossy, three bands, nothing to fix | leave blank |
+| Lossy, 16-bit source | add `-scale` and set Output data type to Byte |
+| Lossless | leave blank, always |
 
 **What `-b 1 -b 2 -b 3` does.** Selects which bands to copy into the output, in order. Band 1, band 2, band 3. Band 4 is not on the list, so it is excluded. This is what gets you down to the three bands YCbCr demands.
 
@@ -319,7 +319,7 @@ Use it on any 8-bit RGB ortho carrying nodata=0, which is most of them. Every va
 
 Do this **before** building pyramids, not after. Average resampling combines each 2x2 block, so four dark pixels reading 1, 0, 1, 0 average to 0, which is the nodata value. That block becomes a hole in the overview even though three of the four source pixels were valid. Repeat down each level and near-black regions erode progressively. Clear the nodata first and the problem never arises.
 
-**Profile B keeps all four bands deliberately.** ZSTD does not care about band count, so there is no reason to convert. A real alpha band is also easier to handle in R and lidR than a GDAL mask, which some readers ignore entirely.
+**The lossless profile keeps all four bands deliberately.** ZSTD does not care about band count, so there is no reason to convert. A real alpha band is also easier to handle in R and lidR than a GDAL mask, which some readers ignore entirely.
 
 ---
 
@@ -341,8 +341,8 @@ Run this on the file you just produced.
 
 | Profile | Enter |
 |---|---|
-| A | `--config COMPRESS_OVERVIEW JPEG --config PHOTOMETRIC_OVERVIEW YCBCR --config INTERLEAVE_OVERVIEW PIXEL` |
-| B | `--config COMPRESS_OVERVIEW ZSTD` |
+| Lossy | `--config COMPRESS_OVERVIEW JPEG --config PHOTOMETRIC_OVERVIEW YCBCR --config INTERLEAVE_OVERVIEW PIXEL` |
+| Lossless | `--config COMPRESS_OVERVIEW ZSTD` |
 
 These tell GDAL to compress the pyramids the same way as the base image. Without them the overviews are written uncompressed, which adds roughly a third of the *uncompressed* file size back on. On a 470 megapixel ortho that is around 600 MB of sidecar for no reason.
 
@@ -366,8 +366,8 @@ Then remove the layer from the project and add it back. Refreshing does not pick
 
 | Data | Compression | Predictor | Notes |
 |---|---|---|---|
-| RGB 8-bit, display | JPEG quality 90 + YCBCR | – | Profile A |
-| RGB 8-bit, analysis | ZSTD level 9 | 2 | Profile B |
+| RGB 8-bit, display | JPEG quality 90 + YCBCR | – | Lossy |
+| RGB 8-bit, analysis | ZSTD level 9 | 2 | Lossless |
 | RGB 16-bit, display | Convert to Byte first, then JPEG | – | `-ot Byte -scale` |
 | RGB 16-bit, analysis | ZSTD level 9 | 2 | Keep 16-bit |
 | DSM, DTM, CHM (Float32) | ZSTD level 9 | **3** | Never JPEG |
@@ -399,7 +399,7 @@ Either way the fix is the same: clear the nodata, then rebuild the pyramids on t
 
 **Cause.** Your alpha band had feathered edges with intermediate transparency values. A mask band only understands valid or invalid, so those partial values had to be forced one way or the other. Any non-zero alpha counts as fully valid, so the feathered fringe came through as opaque. Underneath, those pixels are near-black because there was never real image data there.
 
-This only affects Profile A. Profile B keeps the alpha band intact and never has this problem.
+This only affects the lossy profile. The lossless profile keeps the alpha band intact and never has this problem.
 
 Note that this is a separate mechanism from the shadow holes. If `-a_nodata none` also brought back genuine dark pixels in shadows and water, that is correct behaviour and unrelated to the fringe. A thin edge line you can crop is a better outcome than holes scattered through the scene.
 
@@ -435,6 +435,6 @@ Unticking does not close the dataset. Check for `yourfile.tif.aux.xml` in the fo
 
 ## Two rules
 
-**Keep the original whenever you use Profile A.** You made a lossy copy. Do not delete the source, and do not hand a client a JPEG-compressed file as their only version.
+**Keep the original whenever you use the lossy profile.** You made a lossy copy. Do not delete the source, and do not hand a client a JPEG-compressed file as their only version.
 
 **Batch it.** Right-click any algorithm in the toolbox and choose Execute as Batch Process. Drop in a folder of orthos, apply the same profile to all of them, then run overviews as a second batch. That is a whole flying season's post-processing in two dialogs.
