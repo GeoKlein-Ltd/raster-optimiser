@@ -35,29 +35,57 @@ gdal.UseExceptions()
 # calibrate against real files in testdata/ once some exist.
 # ---------------------------------------------------------------------------
 
-# Long-side pixel count for the decimated sample used for both the
-# classified-raster unique-value count and the NoData=0 black-pixel count.
-# When overviews exist GDAL serves this cheaply from them. When they
-# don't (the common case pre-optimisation), GDAL still has to touch
-# nearly every source tile to build a decimated read regardless of the
-# requested output size - confirmed empirically on a 1.74GB, no-overview
-# ortho: 1000px and 4000px targets both cost ~47s. So there's no reason
-# to keep this small; it doesn't buy speed, only precision loss.
-#
-# Known characteristic, not a v1 blocker: on a large source with no
-# overviews, this read alone takes on the order of a minute (measured
-# ~47s on a 1.74GB, 1.5-gigapixel ortho). A future version could check
-# for existing overviews first and adjust strategy; v1 just accepts the
-# wait, since it's a one-off per detection run.
-SAMPLE_TARGET_DIM = 2000
+# Long-side pixel count for the decimated sample used for the classified-
+# raster unique-value count. "Decimated" here really does mean cheap: a
+# single-band decimated ReadAsArray at this size costs a couple of
+# seconds even on a 1.5-gigapixel source. Deliberately much smaller than
+# the old shared 2000px target - a truly classified raster's handful of
+# category codes will turn up in a far smaller sample (a value spread
+# across a large area survives heavy downsampling), and the failure mode
+# of decimating too hard here is a continuous raster occasionally reading
+# as classified because too few distinct values got sampled, which is
+# self-correcting: 500px still yields hundreds of thousands of sampled
+# pixels, far more than needed to separate "~8 codes" from "thousands of
+# elevation-like values" reliably.
+CLASSIFIED_SAMPLE_TARGET_DIM = 500
 
 # Single-band integer raster with no colour table: at or under this many
 # unique values in the sample reads as classified/categorical.
 CLASSIFIED_MAX_UNIQUE_VALUES = 100
 
 # Spatial bins per axis when checking for localized NoData=0 clusters.
-# Applied to the same decimated sample already read - no extra I/O.
 NODATA_GRID_SIZE = 20
+
+# NoData=0 black-pixel check: per grid cell, read NODATA_SUBGRID x
+# NODATA_SUBGRID small native-resolution windows (no decimation at all)
+# instead of one whole-image decimated pass. This is the fix for
+# detection being slower than the actual conversion (67s measured on a
+# 1.7GB, no-overview ortho, more than Translate+overviews combined):
+# empirically, a whole-image decimated ReadAsArray on a source with no
+# overviews costs ~12s PER BAND regardless of the requested output
+# resolution (confirmed flat from 500px to 4000px) - GDAL has to touch
+# nearly every source tile to build ANY decimated output without
+# overviews to fall back on, so 4 bands (RGB + alpha) cost ~48s no matter
+# how coarse the result is. A small native-resolution window, by
+# contrast, only touches the handful of tiles under it - reading 400
+# grid cells x 9 sub-windows x 96px (3600 small reads) measured 4.0s
+# total on that same file, a 12x speedup, while actually catching MORE
+# of the known real cluster (worst-cell fraction 0.55% vs. 0.27% for the
+# old decimated approach) because it's genuine full-resolution data, not
+# NEAREST-decimated pixels that can skip over a run of black pixels
+# between sample points.
+#
+# One window per cell (rejected as insufficiently robust before settling
+# on this) risks missing a cluster confined to a corner of that cell -
+# a real coverage gap, distinct from (but related to) the sparse-random-
+# window approach an earlier round of this project already measured as
+# WORSE than a decimated pass (it could miss entire cells, not just parts
+# of one). Spreading NODATA_SUBGRID x NODATA_SUBGRID windows across each
+# cell keeps the systematic full-grid coverage that fixed that earlier
+# problem while adding within-cell coverage the single-window version
+# lacked, all still for ~4s total. See docs/plugin_design_notes.md.
+NODATA_SUBGRID = 3
+NODATA_WINDOW_SIZE = 96
 
 # Outermost ring(s) of grid cells to exclude from the "is this a real
 # interior cluster" decision. A clean survey-boundary collar is EXPECTED
@@ -158,6 +186,15 @@ class DetectionResult:
     refusal_code: Optional[str] = None
     refusal_reason: Optional[str] = None
 
+    # True when the metadata-only pass (detect_metadata_only) could not
+    # fully resolve classification and a pixel read is genuinely required -
+    # either a single-band integer raster with no colour table (classified
+    # vs. unrecognised needs a unique-value count) or an RGB file with
+    # NoData=0 whose black-pixel risk hasn't been sampled yet. detect()
+    # always resolves this to False before returning; only a result
+    # returned directly by detect_metadata_only() can still have it True.
+    needs_pixel_sampling: bool = False
+
     content_type: Optional[str] = None  # RGB_8BIT | RGB_16BIT | FLOAT32_CONTINUOUS
     band_count: Optional[int] = None
     dtype: Optional[str] = None
@@ -193,7 +230,7 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
 # Sampling helpers
 # ---------------------------------------------------------------------------
 
-def _sample_dims(xsize: int, ysize: int, target: int = SAMPLE_TARGET_DIM):
+def _sample_dims(xsize: int, ysize: int, target: int = CLASSIFIED_SAMPLE_TARGET_DIM):
     long_side = max(xsize, ysize)
     if long_side <= target:
         return xsize, ysize
@@ -213,17 +250,39 @@ def _classified_unique_count(ds: "gdal.Dataset", band: "gdal.Band") -> int:
     return int(np.unique(arr).size)
 
 
+def _cell_window(c0: int, c1: int, sub_index: int, sub_count: int, win: int, axis_size: int):
+    """Native-resolution window offset for one sub-sample within grid
+    cell [c0, c1), spreading sub_count windows evenly across the cell
+    (not stacked at its centre) so within-cell coverage isn't limited to
+    one small patch. Clamped to the cell first, then to the raster
+    extent, so it degrades gracefully on small images/cells rather than
+    requesting an out-of-bounds read.
+    """
+    pos = c0 + int((sub_index + 0.5) * (c1 - c0) / sub_count) - win // 2
+    pos = max(c0, min(pos, c1 - win))
+    return max(0, min(pos, axis_size - win))
+
+
 def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
                          grid_size: int = NODATA_GRID_SIZE,
                          edge_margin: int = NODATA_EDGE_MARGIN_CELLS,
-                         min_cell_valid: int = NODATA_MIN_CELL_VALID_PIXELS):
-    """Decimated black-pixel-under-NoData check, binned spatially.
+                         min_cell_valid: int = NODATA_MIN_CELL_VALID_PIXELS,
+                         sub_grid: int = NODATA_SUBGRID,
+                         window_size: int = NODATA_WINDOW_SIZE,
+                         progress_cb=None, progress_cb_data=None):
+    """Black-pixel-under-NoData check, sampled via small native-resolution
+    windows spread across a spatial grid, rather than one whole-image
+    decimated read. See the NODATA_SUBGRID/NODATA_WINDOW_SIZE module
+    comment for why: this is a straight speed fix (12x measured), and
+    incidentally a sensitivity improvement too, since real full-resolution
+    pixels can't skip over a run of black pixels the way a NEAREST-
+    decimated sample point can.
 
     A single whole-image fraction dilutes a cluster confined to one part
     of a large raster below any sane threshold (a shadow under one
     structure can be ~100% black within its own footprint but ~0.01% of
-    a multi-gigapixel ortho). Bin the same decimated sample into a grid
-    instead - no extra I/O, since the sample array is already in memory.
+    a multi-gigapixel ortho) - that's still the reason this is binned by
+    grid cell rather than reported as one number.
 
     The outermost ring of cells is tracked separately (edge_*) and never
     drives the decision: a clean survey-boundary collar is SUPPOSED to
@@ -232,58 +291,76 @@ def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
     Cells with too few valid pixels to trust are skipped entirely rather
     than allowed to swing the result on one or two stray pixels.
     See docs/plugin_design_notes.md.
+
+    progress_cb, if given, is called once per completed grid row as
+    progress_cb(fraction_complete, "", progress_cb_data) - GDAL's own
+    callback shape, so a caller already using that convention for
+    Translate/BuildOverviews (see core/converter.py) can reuse it here.
+    Returning a falsy value stops sampling early (the grid rows already
+    read still count).
     """
     import numpy as np
 
-    w, h = _sample_dims(ds.RasterXSize, ds.RasterYSize)
-    stacked = np.stack(
-        [_read_sample(ds.GetRasterBand(i), w, h) for i in rgb_band_indices], axis=0
-    )
-    black_mask = np.all(stacked == 0, axis=0)
-
-    if alpha_index is not None:
-        alpha_arr = _read_sample(ds.GetRasterBand(alpha_index), w, h)
-        valid_mask = alpha_arr > 0  # mask semantics: any non-zero = valid
-    else:
-        valid_mask = np.ones_like(black_mask, dtype=bool)
-    black_mask = black_mask & valid_mask
-
-    total_valid = int(valid_mask.sum())
-    black_count = int(black_mask.sum())
-    global_fraction = (black_count / total_valid) if total_valid else 0.0
-
-    grid = max(1, min(grid_size, w, h))
+    xsize, ysize = ds.RasterXSize, ds.RasterYSize
+    grid = max(1, min(grid_size, xsize, ysize))
     margin = min(edge_margin, (grid - 1) // 2)  # never eat the whole grid on tiny images
+    band_list = list(rgb_band_indices) + ([alpha_index] if alpha_index is not None else [])
+    n_rgb = len(rgb_band_indices)
 
+    total_valid = 0
+    total_black = 0
     interior_max_fraction = 0.0
     interior_flagged = 0
     interior_checked = 0
     edge_max_fraction = 0.0
 
     for gy in range(grid):
-        y0, y1 = gy * h // grid, (gy + 1) * h // grid
+        cy0, cy1 = gy * ysize // grid, (gy + 1) * ysize // grid
         is_edge_row = gy < margin or gy >= grid - margin
+        win_y = max(1, min(window_size, cy1 - cy0, ysize))
         for gx in range(grid):
-            x0, x1 = gx * w // grid, (gx + 1) * w // grid
-            cell_valid_n = int(valid_mask[y0:y1, x0:x1].sum())
-            if cell_valid_n < min_cell_valid:
-                continue
-            cell_black_n = int(black_mask[y0:y1, x0:x1].sum())
-            cell_fraction = cell_black_n / cell_valid_n
+            cx0, cx1 = gx * xsize // grid, (gx + 1) * xsize // grid
+            win_x = max(1, min(window_size, cx1 - cx0, xsize))
 
-            is_edge = is_edge_row or gx < margin or gx >= grid - margin
-            if is_edge:
-                edge_max_fraction = max(edge_max_fraction, cell_fraction)
-            else:
-                interior_checked += 1
-                interior_max_fraction = max(interior_max_fraction, cell_fraction)
-                if cell_fraction >= NODATA_INTERIOR_CELL_RISK_FRACTION:
-                    interior_flagged += 1
+            cell_valid = 0
+            cell_black = 0
+            for sy in range(sub_grid):
+                wy0 = _cell_window(cy0, cy1, sy, sub_grid, win_y, ysize)
+                for sx in range(sub_grid):
+                    wx0 = _cell_window(cx0, cx1, sx, sub_grid, win_x, xsize)
+                    arr = ds.ReadAsArray(
+                        xoff=wx0, yoff=wy0, xsize=win_x, ysize=win_y, band_list=band_list,
+                    )
+                    rgb = arr[:n_rgb]
+                    black = np.all(rgb == 0, axis=0)
+                    if alpha_index is not None:
+                        valid = arr[n_rgb] > 0  # mask semantics: any non-zero = valid
+                    else:
+                        valid = np.ones_like(black, dtype=bool)
+                    black = black & valid
+                    cell_valid += int(valid.sum())
+                    cell_black += int(black.sum())
+
+            total_valid += cell_valid
+            total_black += cell_black
+            if cell_valid >= min_cell_valid:
+                cell_fraction = cell_black / cell_valid
+                is_edge = is_edge_row or gx < margin or gx >= grid - margin
+                if is_edge:
+                    edge_max_fraction = max(edge_max_fraction, cell_fraction)
+                else:
+                    interior_checked += 1
+                    interior_max_fraction = max(interior_max_fraction, cell_fraction)
+                    if cell_fraction >= NODATA_INTERIOR_CELL_RISK_FRACTION:
+                        interior_flagged += 1
+
+        if progress_cb is not None and not progress_cb((gy + 1) / grid, "", progress_cb_data):
+            break
 
     return {
         "total_valid": total_valid,
-        "black_count": black_count,
-        "global_fraction": global_fraction,
+        "black_count": total_black,
+        "global_fraction": (total_black / total_valid) if total_valid else 0.0,
         "interior_max_fraction": interior_max_fraction,
         "interior_flagged": interior_flagged,
         "interior_checked": interior_checked,
@@ -323,7 +400,32 @@ def _has_georeferencing(ds: "gdal.Dataset") -> bool:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def detect(path: str) -> DetectionResult:
+def detect_metadata_only(path: str) -> DetectionResult:
+    """Everything detect() can determine from gdal.Open() + band/dataset
+    metadata alone - no pixel reads, so this runs in milliseconds even on
+    a multi-gigapixel file. Shared by detect() (which finishes the two
+    cases below that genuinely need pixels) and by the QGIS wrapper's
+    checkParameterValues (algorithms/optimise_raster.py), which needs an
+    instant refusal for the scope checks that don't require sampling
+    rather than waiting through a full detect() run before the dialog can
+    tell the user "this won't work".
+
+    Two things are deliberately left unresolved here, flagged via
+    result.needs_pixel_sampling=True:
+
+    - single-band integer data with no colour table: classified vs.
+      unrecognised depends on a unique-value count over a decimated read.
+    - RGB with NoData=0 and real (non-nodata-only) transparency: the
+      black-pixel cluster risk assessment depends on the same kind of
+      sample. This never blocks Profile A (nodata risk is advisory, see
+      module docstring/docs/plugin_design_notes.md) so it doesn't affect
+      what checkParameterValues can decide - it only means nodata_risk
+      is incomplete on a result returned from here.
+
+    Every other refusal (no CRS, unsupported dtype, multispectral,
+    16-bit-blocks-Profile-A, nodata-only-transparency-blocks-Profile-A,
+    colour-table-classified) is fully resolved here.
+    """
     result = DetectionResult(path=path)
 
     try:
@@ -370,29 +472,23 @@ def detect(path: str) -> DetectionResult:
             result.content_type = "FLOAT32_CONTINUOUS"
         elif dtype in INTEGER_DTYPES:
             has_color_table = band1.GetColorTable() is not None
-            unique_count = None if has_color_table else _classified_unique_count(ds, band1)
-            is_classified = has_color_table or (unique_count is not None and unique_count <= CLASSIFIED_MAX_UNIQUE_VALUES)
-            if is_classified:
-                detail = (
-                    "a colour table is present"
-                    if has_color_table
-                    else f"only {unique_count} unique values in a {SAMPLE_TARGET_DIM}px sample"
-                )
+            if has_color_table:
                 return _refuse(
                     result,
                     "CLASSIFIED",
-                    "This looks like a classified/categorical raster "
-                    f"({detail}). Building pyramids with average resampling "
-                    "blends category codes into meaningless fractional "
-                    "values - silent corruption. Nearest-neighbour handling "
-                    "for classified rasters isn't in v1 yet.",
+                    "This looks like a classified/categorical raster (a "
+                    "colour table is present). Building pyramids with "
+                    "average resampling blends category codes into "
+                    "meaningless fractional values - silent corruption. "
+                    "Nearest-neighbour handling for classified rasters "
+                    "isn't in v1 yet.",
                 )
-            return _refuse(
-                result,
-                "SINGLE_BAND_UNRECOGNIZED",
-                f"Single-band {dtype} data that isn't Float32 elevation and "
-                "doesn't look classified isn't a recognised v1 case yet.",
-            )
+            # No colour table: classified vs. unrecognised needs a
+            # unique-value count over pixels - can't resolve from
+            # metadata alone. detect() finishes this.
+            result.needs_pixel_sampling = True
+            result.ok = True
+            return result
         else:
             return _refuse(
                 result,
@@ -492,43 +588,11 @@ def detect(path: str) -> DetectionResult:
             nodata_risk.assessment = "nodata_only_transparency"
             nodata_risk.message = profile_a_blocked_reason
         else:
-            stats = _black_pixel_sample(
-                ds, rgb_indices, alpha_index=result.alpha_band_index
-            )
-            nodata_risk.sample_pixels_checked = stats["total_valid"]
-            nodata_risk.black_pixel_count = stats["black_count"]
-            nodata_risk.black_pixel_fraction = stats["global_fraction"]
-            nodata_risk.interior_max_cell_fraction = stats["interior_max_fraction"]
-            nodata_risk.interior_flagged_cells = stats["interior_flagged"]
-            nodata_risk.interior_cells_checked = stats["interior_checked"]
-            nodata_risk.edge_max_cell_fraction = stats["edge_max_fraction"]
-            nodata_risk.grid_cells = stats["grid_cells"]
-            if stats["interior_checked"] == 0:
-                nodata_risk.assessment = "insufficient_sample"
-                nodata_risk.needs_user_decision = True
-                nodata_risk.message = (
-                    "Too little interior area was sampled to reliably tell "
-                    "collar from real content on this file - check manually "
-                    "before clearing NoData."
-                )
-            elif stats["interior_max_fraction"] >= NODATA_INTERIOR_CELL_RISK_FRACTION:
-                nodata_risk.assessment = "meaningful"
-                nodata_risk.needs_user_decision = True
-                pct = stats["interior_max_fraction"] * 100
-                nodata_risk.message = (
-                    f"Up to {pct:.2f}% of pixels are pure black within a "
-                    "localized interior area (away from the image edge) "
-                    "and being hidden by NoData=0 - this looks like real "
-                    "content (deep shadow, water, dark surfaces), not just "
-                    "the collar. Clear NoData so it shows?"
-                )
-            else:
-                nodata_risk.assessment = "collar_only"
-                nodata_risk.message = (
-                    "NoData=0 only catches the collar outside the survey "
-                    "area. Safe to clear, no localized black content "
-                    "pixels detected away from the edge."
-                )
+            # Black-pixel cluster risk needs a pixel read - can't resolve
+            # from metadata alone. Never blocks Profile A either way (see
+            # docs/plugin_design_notes.md - advisory only), so it's safe
+            # to leave incomplete here; detect() finishes it.
+            result.needs_pixel_sampling = True
 
     result.nodata_risk = nodata_risk
 
@@ -556,6 +620,105 @@ def detect(path: str) -> DetectionResult:
     )
     result.profile_options = [profile_a, profile_b]
     result.ok = True
+    return result
+
+
+def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResult:
+    """Full detection: the metadata-only pass, plus whatever pixel
+    sampling it flagged as still needed (see
+    detect_metadata_only.__doc__). This is the entry point for anything
+    that wants a complete, final answer - the QGIS wrapper's
+    processAlgorithm uses this, not detect_metadata_only, since by the
+    time it runs the fast checkParameterValues refusals have already
+    passed and the actual conversion needs the full picture (including
+    the advisory NoData message).
+
+    progress_cb, if given, is GDAL's own callback(complete, message,
+    cb_data) shape and is only meaningful for the RGB/NoData path (the
+    classified-check path is a single cheap decimated read with nothing
+    worth reporting progress on) - see _black_pixel_sample's docstring.
+    """
+    result = detect_metadata_only(path)
+
+    if result.refused or not result.ok or not result.needs_pixel_sampling:
+        return result
+
+    try:
+        ds = gdal.Open(path, gdal.GA_ReadOnly)
+    except Exception as exc:  # noqa: BLE001
+        return _refuse(result, "UNREADABLE", f"Could not read this file: {exc}")
+    if ds is None:
+        return _refuse(result, "UNREADABLE", "Could not read this file.")
+
+    if result.band_count == 1:
+        # Deferred from detect_metadata_only: integer, no colour table -
+        # classified vs. unrecognised needs a unique-value count.
+        band1 = ds.GetRasterBand(1)
+        unique_count = _classified_unique_count(ds, band1)
+        result.needs_pixel_sampling = False
+        if unique_count <= CLASSIFIED_MAX_UNIQUE_VALUES:
+            return _refuse(
+                result,
+                "CLASSIFIED",
+                "This looks like a classified/categorical raster "
+                f"(only {unique_count} unique values in a "
+                f"{CLASSIFIED_SAMPLE_TARGET_DIM}px sample). Building pyramids with "
+                "average resampling blends category codes into "
+                "meaningless fractional values - silent corruption. "
+                "Nearest-neighbour handling for classified rasters isn't "
+                "in v1 yet.",
+            )
+        return _refuse(
+            result,
+            "SINGLE_BAND_UNRECOGNIZED",
+            f"Single-band {result.dtype} data that isn't Float32 "
+            "elevation and doesn't look classified isn't a recognised "
+            "v1 case yet.",
+        )
+
+    # Deferred from detect_metadata_only: RGB with NoData=0 and real
+    # transparency - black-pixel cluster risk needs the pixel sample.
+    stats = _black_pixel_sample(
+        ds, [1, 2, 3], alpha_index=result.alpha_band_index,
+        progress_cb=progress_cb, progress_cb_data=progress_cb_data,
+    )
+    nodata_risk = result.nodata_risk
+    nodata_risk.sample_pixels_checked = stats["total_valid"]
+    nodata_risk.black_pixel_count = stats["black_count"]
+    nodata_risk.black_pixel_fraction = stats["global_fraction"]
+    nodata_risk.interior_max_cell_fraction = stats["interior_max_fraction"]
+    nodata_risk.interior_flagged_cells = stats["interior_flagged"]
+    nodata_risk.interior_cells_checked = stats["interior_checked"]
+    nodata_risk.edge_max_cell_fraction = stats["edge_max_fraction"]
+    nodata_risk.grid_cells = stats["grid_cells"]
+    result.needs_pixel_sampling = False
+    if stats["interior_checked"] == 0:
+        nodata_risk.assessment = "insufficient_sample"
+        nodata_risk.needs_user_decision = True
+        nodata_risk.message = (
+            "Too little interior area was sampled to reliably tell "
+            "collar from real content on this file - check manually "
+            "before clearing NoData."
+        )
+    elif stats["interior_max_fraction"] >= NODATA_INTERIOR_CELL_RISK_FRACTION:
+        nodata_risk.assessment = "meaningful"
+        nodata_risk.needs_user_decision = True
+        pct = stats["interior_max_fraction"] * 100
+        nodata_risk.message = (
+            f"Up to {pct:.2f}% of pixels are pure black within a "
+            "localized interior area (away from the image edge) and "
+            "being hidden by NoData=0 - this looks like real content "
+            "(deep shadow, water, dark surfaces), not just the collar. "
+            "Clear NoData so it shows?"
+        )
+    else:
+        nodata_risk.assessment = "collar_only"
+        nodata_risk.message = (
+            "NoData=0 only catches the collar outside the survey area. "
+            "Safe to clear, no localized black content pixels detected "
+            "away from the edge."
+        )
+
     return result
 
 

@@ -31,8 +31,9 @@ import dataclasses
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from osgeo import gdal
 
@@ -67,7 +68,7 @@ class ConversionResult:
     source_path: str
     ok: bool = False
     # already_optimised | converted | converted_incomplete | converted_unverified
-    # | blocked | refused_upstream | error
+    # | blocked | refused_upstream | cancelled | error
     action: str = "unknown"
     message: str = ""
     output_path: Optional[str] = None
@@ -75,6 +76,8 @@ class ConversionResult:
     primary_reason: Optional[str] = None  # "tiling" | "overviews" | None
     translate_ok: Optional[bool] = None
     overviews_ok: Optional[bool] = None
+    translate_seconds: Optional[float] = None
+    overview_seconds: Optional[float] = None
     verification: Optional[VerificationResult] = None
     warnings: list = field(default_factory=list)
 
@@ -100,6 +103,58 @@ def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list
         levels.append(factor)
         factor *= 2
     return levels or [2]
+
+
+class _ProgressTracker:
+    """Wraps a caller-supplied GDAL progress callback so a caught
+    exception from Translate/BuildOverviews can be told apart: a
+    deliberate user cancellation (the wrapped callback returned falsy -
+    GDAL's own cancellation convention) versus a genuine GDAL failure.
+    Only the former should delete the partial output; the latter must
+    keep it, per this module's existing honest-failure-reporting
+    behaviour (converted_incomplete keeps a Translate-only file on disk
+    rather than silently discarding it).
+    """
+
+    def __init__(self, user_cb, user_cb_data):
+        self._user_cb = user_cb
+        self._user_cb_data = user_cb_data
+        self.cancelled = False
+
+    def __call__(self, complete, message, _cb_data):
+        ok = True
+        if self._user_cb is not None:
+            ok = self._user_cb(complete, message, self._user_cb_data)
+        if not ok:
+            self.cancelled = True
+        return ok
+
+
+def _safe_remove(path: Optional[str], warnings: list) -> None:
+    if not path or not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except OSError as exc:
+        warnings.append(
+            f"Cancelled, but could not remove the partial output at "
+            f"{path}: {exc}. Delete it manually before re-running - it is "
+            "NOT a valid result."
+        )
+
+
+def output_exists_message(output_path: str) -> str:
+    """Shared wording for the "output already exists, not overwriting"
+    refusal - used both here (convert()'s own guard, the last line of
+    defence) and by the QGIS wrapper's checkParameterValues, which needs
+    the identical message but wants to show it instantly via a plain
+    os.path.exists() check rather than after a full conversion attempt.
+    Kept as one function so the two call sites can't drift apart.
+    """
+    return (
+        f"{output_path} already exists. Not overwriting silently - "
+        "delete it, choose a different output path, or pass force=True."
+    )
 
 
 def _is_tiled(block_size: tuple, raster_size: tuple) -> bool:
@@ -146,17 +201,34 @@ def convert(
     chosen_profile: Optional[str] = None,
     output_path: Optional[str] = None,
     force: bool = False,
-    progress_cb=None,
-    progress_cb_data=None,
+    translate_progress_cb=None,
+    translate_progress_cb_data=None,
+    overview_progress_cb=None,
+    overview_progress_cb_data=None,
+    log_cb: Optional[Callable[[str], None]] = None,
 ) -> ConversionResult:
     """Convert one file per the resolved detection/profile, or report why not.
 
-    progress_cb, if given, is passed straight through to gdal.Translate and
-    BuildOverviews - it's GDAL's own callback(complete, message, cb_data)
-    convention. Returning False from it cancels the running operation, which
-    is GDAL's built-in cancellation mechanism. Nothing here wires it to
-    anything (no QGIS dependency); a caller with a progress dialog plugs in
-    here later without this module changing.
+    translate_progress_cb / overview_progress_cb, if given, are passed
+    through to gdal.Translate and BuildOverviews respectively - GDAL's own
+    callback(complete, message, cb_data) convention, one call per phase so
+    a caller can scale/label each phase independently (e.g. a single
+    combined progress bar: Translate 0-70%, overviews 70-100%). Returning
+    a falsy value from either cancels that GDAL operation - its built-in
+    cancellation mechanism - and this module then deletes whatever partial
+    output exists before returning action="cancelled", so a cancelled run
+    never leaves a file on disk that looks like a finished result. Nothing
+    here imports QGIS; a caller with a progress dialog plugs in here
+    without this module changing.
+
+    log_cb, if given, is called as log_cb(phase, elapsed_seconds) once per
+    completed phase - phase is "translate" or "overviews" (detection is
+    timed by the caller, not here - this module never calls detect()).
+    Kept separate from the GDAL progress callbacks since those fire many
+    times per phase; this fires once, when there's an actual number to
+    report, and structured rather than pre-formatted so a caller can
+    drive its own UI (e.g. QGIS feedback.setProgressText()) off the phase
+    name without parsing a string.
     """
     result = ConversionResult(source_path=path)
 
@@ -226,10 +298,7 @@ def convert(
     if os.path.exists(output_path) and not force:
         result.action = "blocked"
         result.output_path = output_path
-        result.message = (
-            f"{output_path} already exists. Not overwriting silently - "
-            "delete it, choose a different output path, or pass force=True."
-        )
+        result.message = output_exists_message(output_path)
         return result
 
     settings_key = _settings_key(detection, profile)
@@ -243,18 +312,33 @@ def convert(
     full_args = co_args + list(profile_opt.translate_extra_args or [])
 
     # ---- Step 3: Translate ----
+    translate_tracker = _ProgressTracker(translate_progress_cb, translate_progress_cb_data)
+    t0 = time.perf_counter()
     try:
         translate_opts = gdal.TranslateOptions(
-            options=full_args, callback=progress_cb, callback_data=progress_cb_data,
+            options=full_args, callback=translate_tracker, callback_data=None,
         )
         out_ds = gdal.Translate(output_path, path, options=translate_opts)
     except Exception as exc:  # noqa: BLE001 - surface any GDAL failure to the caller
+        if translate_tracker.cancelled:
+            _safe_remove(output_path, result.warnings)
+            result.action = "cancelled"
+            result.translate_ok = False
+            result.message = "Cancelled during Translate - partial output removed."
+            return result
         result.action = "error"
         result.translate_ok = False
         result.message = f"Translate failed: {exc}"
         return result
 
     if out_ds is None:
+        out_ds = None
+        if translate_tracker.cancelled:
+            _safe_remove(output_path, result.warnings)
+            result.action = "cancelled"
+            result.translate_ok = False
+            result.message = "Cancelled during Translate - partial output removed."
+            return result
         result.action = "error"
         result.translate_ok = False
         result.message = "Translate failed (no output produced)."
@@ -263,25 +347,46 @@ def convert(
     out_ds = None  # flush/close before reopening for BuildOverviews
     result.translate_ok = True
     result.output_path = output_path
+    result.translate_seconds = time.perf_counter() - t0
+    if log_cb:
+        log_cb("translate", result.translate_seconds)
 
     # ---- Step 4: Build Overviews ----
+    overview_tracker = _ProgressTracker(overview_progress_cb, overview_progress_cb_data)
     prior_config = {k: gdal.GetConfigOption(k) for k in overview_config if k != "RESAMPLING"}
     for k, v in overview_config.items():
         if k != "RESAMPLING":
             gdal.SetConfigOption(k, v)
+    t1 = time.perf_counter()
     try:
+        out_ds = None
         try:
             out_ds = gdal.Open(output_path, gdal.GA_Update)
             levels = _default_overview_levels(out_ds.RasterXSize, out_ds.RasterYSize)
             out_ds.BuildOverviews(
                 overview_config.get("RESAMPLING", "AVERAGE"),
                 overviewlist=levels,
-                callback=progress_cb, callback_data=progress_cb_data,
+                callback=overview_tracker, callback_data=None,
             )
             out_ds = None
             result.overviews_ok = True
+            result.overview_seconds = time.perf_counter() - t1
+            if log_cb:
+                log_cb("overviews", result.overview_seconds)
         except Exception as exc:  # noqa: BLE001
+            out_ds = None  # release the GA_Update handle before any delete
             result.overviews_ok = False
+            if overview_tracker.cancelled:
+                _safe_remove(output_path, result.warnings)
+                result.action = "cancelled"
+                result.message = (
+                    "Cancelled while building overviews - output removed "
+                    "(the base image was complete but pyramids weren't, "
+                    "and a file with no pyramids is exactly the slow-pan "
+                    "problem this plugin exists to fix, so it isn't left "
+                    "behind looking like a finished result)."
+                )
+                return result
             # Translate already succeeded and the file is on disk. Keep it -
             # re-running Translate on a large file is expensive, and
             # overviews can be retried on this exact output directly. Report
@@ -343,6 +448,10 @@ def _print_report(result: ConversionResult) -> None:
         print(f"  Primary reason for conversion: {result.primary_reason}")
     if result.output_path:
         print(f"  Output: {result.output_path}")
+    if result.translate_seconds is not None:
+        print(f"  Translate time: {result.translate_seconds:.1f}s")
+    if result.overview_seconds is not None:
+        print(f"  Build overviews time: {result.overview_seconds:.1f}s")
     if result.verification and result.verification.ran:
         v = result.verification
         print("\nVerification:")
@@ -369,9 +478,12 @@ def main(argv=None) -> int:
 
     detection = detect(args.path)
     progress_cb = None if args.quiet else gdal.TermProgress_nocb
+    log_cb = None if args.quiet else (lambda phase, secs: print(f"{phase} finished in {secs:.1f}s"))
     result = convert(
         args.path, detection=detection, chosen_profile=args.profile,
-        output_path=args.output, force=args.force, progress_cb=progress_cb,
+        output_path=args.output, force=args.force,
+        translate_progress_cb=progress_cb, overview_progress_cb=progress_cb,
+        log_cb=log_cb,
     )
 
     if args.json:

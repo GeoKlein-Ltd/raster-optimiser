@@ -3,6 +3,10 @@
 # is still caught, not just the ones we happened to think of
 testdata/
 
+# dev-only NTFS junction (see tools/qgis-*-dev.bat) - not a real directory,
+# must never be walked/committed, and isn't portable across machines anyway
+.qgis_dev/
+
 # never commit rasters
 *.tif
 *.tiff
