@@ -4,12 +4,22 @@ Thin wrapper only. All detection and conversion logic lives in core/
 (detector.py, converter.py), which have no QGIS dependency and are
 untouched by this file - it declares Processing parameters, translates
 them into calls into core/, and maps the results back onto QGIS
-feedback/exceptions. See docs/plugin_design_notes.md for why the
-NoData question isn't a parameter here (the sampling is advisory, not
-a gate - core/converter.py already clears NoData whenever it's
-structurally safe to, regardless of the risk assessment) and why an
+feedback/exceptions. See docs/plugin_design_notes.md for why an
 already-optimised file's OUTPUT resolves to the source path rather
 than a copy.
+
+NoData handling (CLEAR_NODATA below) is a real parameter now - it used
+to not be one, because clearing NoData was folded silently into the
+profile choice instead (see core/converter.py's git history / the
+_resolve_nodata_handling docstring). That was never something a user
+chose; it was an accident of which profile happened to attempt it.
+Detection's collar-vs-shadow read stays advisory, never a gate - this
+parameter is what a user acts on it with, not detection itself. It's a
+plain checkbox, not a three-way choice: an earlier version offered
+Keep/Clear/Auto, and Auto was removed - even detect()'s most confident
+read is still a collar-vs-shadow guess the plugin's design says it
+can't reliably make, so it was better not offered at all than offered
+as a third option that implied otherwise.
 
 Cross-version note (QGIS 3.x / PyQt5 vs QGIS 4.x / PyQt6): this file
 deliberately touches no raw Qt widget classes and no QVariant - only
@@ -33,7 +43,7 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QCoreApplication
 
-from ..core.converter import convert, output_exists_message
+from ..core.converter import convert, output_exists_message, output_same_as_source_message, _same_file
 from ..core.detector import detect, detect_metadata_only
 
 # No letters anywhere: "A"/"B" imply an order (A primary, B fallback)
@@ -54,10 +64,32 @@ from ..core.detector import detect, detect_metadata_only
 # below are only this wrapper's own dropdown-index constants.
 PROFILE_LOSSLESS = 0
 PROFILE_LOSSY = 1
+# Benefit first, technical term in brackets - not the other way round.
+# "Lossy" leading reads as a downgrade and makes people hesitate even
+# when it's the right choice for their basemap; but the word can't
+# disappear either, since it's the standard term across QGIS, GDAL and
+# every other raster tool, and someone who only ever learns "smaller
+# file" here won't recognise it elsewhere.
+#
+# No "looks identical"/"visually indistinguishable" on the lossy side -
+# paired with the word "Lossy" it read as a contradiction to anyone who
+# doesn't already know the terms ("lossy" sounds like it should look
+# different). That reassurance now lives in setHelp() and the TL;DR
+# instead, which a hesitant user reaches in one hover or one extra
+# sentence - see this file's design note on layered effort near
+# shortHelpString.
 PROFILE_OPTIONS = [
-    "Speed + lossless (pixel values preserved exactly)",
-    "Speed + lossy (visually identical, pixel values changed)",
+    "Preserve pixel values (Lossless) [default]",
+    "Considerable file size reduction (Lossy)",
 ]
+
+# Not "patches holes in data" or similar - that implies filling in
+# missing data, the opposite of what happens (the pixels were always
+# there; NoData was hiding them). Someone with a genuine coverage gap
+# would tick it, watch the collar turn black, and reasonably conclude
+# the tool is broken. "Show pixels hidden by NoData" states the actual
+# mechanism instead.
+CLEAR_NODATA_LABEL = "Show pixels hidden by NoData"
 
 # ConversionResult.action values that mean "this run did not succeed" -
 # see core/converter.py's ConversionResult docstring for the full set.
@@ -76,6 +108,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
     INPUT = "INPUT"
     PROFILE = "PROFILE"
+    CLEAR_NODATA = "CLEAR_NODATA"
     OVERWRITE = "OVERWRITE"
     OUTPUT = "OUTPUT"
 
@@ -131,56 +164,116 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ]
 
     def shortHelpString(self):
+        # Design is layered by effort, cheapest first: the dropdown
+        # labels alone should be enough for most users to choose
+        # correctly without reading anything here. setHelp() on each
+        # parameter is one hover further. This TL;DR is a sentence more.
+        # The Glossary is for a term the reader doesn't know. Full
+        # explanation is the last resort. If a user has to open this
+        # panel to make a safe choice, the labels already failed - so
+        # each layer should stand on its own, not depend on the reader
+        # having seen the one above it.
         return self.tr(
-            "Lossless (the default)\n"
-            "Every pixel value survives exactly. Required the moment "
-            "those values will be measured, analysed, or fed into "
-            "another process - not just for elevation. RGB imagery needs "
-            "it too whenever it's the input to something like a "
-            "vegetation index: lossy compression discards the exact "
-            "values those indices are derived from, so a file that's "
-            "perfectly fine as a basemap can be the wrong file for that "
-            "calculation. The choice is about what the file is for, not "
-            "what it contains - the same source imagery can genuinely "
-            "need either option depending on the use. Elevation data "
-            "(DSM/DTM/CHM) always uses this option automatically, "
-            "whatever is selected - a DSM is measurements, not a "
-            "picture, and lossy compression would quietly corrupt the "
-            "values for every use, not just some.\n\n"
-            "Lossy\n"
-            "JPEG compression, typically 70-80% smaller than an "
-            "uncompressed export (measured so far on one file - a range, "
-            "not a guarantee, until more are tested). At quality 90 the "
-            "result is visually indistinguishable from the original - "
-            "what changes is the exact numeric value of each pixel, by "
-            "small amounts. That's irrelevant for a basemap you're "
-            "navigating or digitising over, and it's the right choice "
-            "for anything going onto a tablet in the field. It only "
-            "matters if those values feed a calculation - vegetation "
-            "indices, classification, change detection - which is what "
-            "the lossless option is for. Only offered for RGB imagery, "
-            "and only when it's safe (see Refused, below); never offered "
-            "for elevation.\n\n"
-            "What this algorithm is for: rasters that pan and zoom "
-            "sluggishly in QGIS or QField - typically large orthomosaics "
-            "or elevation models exported from drone photogrammetry or "
-            "LiDAR software. The default export from that software is "
-            "technically correct but has no internal structure that lets "
-            "software read part of it without reading all of it, which "
-            "is what makes it slow.\n\n"
-            "What it does: opens the file, works out what it actually is, "
-            "and applies the right tiling, pyramid and compression "
-            "settings automatically - no GDAL creation options to look "
-            "up or remember. A file that's already tiled with pyramids "
-            "is left untouched rather than reprocessed.\n\n"
-            "Supported: 8-bit RGB imagery (3 or 4 band) and single-band "
-            "Float32 elevation data (DSM/DTM/CHM).\n\n"
-            "Refused, with a clear reason rather than a risky guess: "
-            "classified/categorical rasters (e.g. land cover maps), "
-            "multispectral stacks (more than 4 bands), and 16-bit "
-            "imagery. Each of these needs handling this version doesn't "
-            "have yet, and silently reusing the imagery recipe on them "
-            "would corrupt the data rather than just fail to help."
+            "TL;DR:\n"
+            "\n"
+            "The decision:\n"
+            "Both options make this file fast to pan and zoom. The only "
+            "choice is whether pixel values are kept exactly as they "
+            "are, or changed slightly to save space. That only matters "
+            "if the values will be measured or calculated from - not if "
+            "you are just looking at the file.\n"
+            "\n"
+            "Speed:\n"
+            "Comes from tiling and pyramids, built the same way "
+            "whichever option you pick.\n"
+            "\n"
+            "\n"
+            "Glossary:\n"
+            "\n"
+            "Collar:\n"
+            "The transparent area around the edge of the image. Drone "
+            "orthos are irregular shapes stored in rectangular files, so "
+            "the corners are filled with nothing.\n"
+            "\n"
+            "Lossless:\n"
+            "Compression that keeps every pixel value exactly as it "
+            "was. Nothing is discarded.\n"
+            "\n"
+            "Lossy:\n"
+            "Compression that discards fine detail to save space. "
+            "Visually identical, but the exact numbers change.\n"
+            "\n"
+            "NoData:\n"
+            "A pixel value reserved to mean \"nothing here\", normally "
+            "used to make the collar transparent. On 8-bit imagery 0 is "
+            "both a real colour (pure black) and the usual NoData "
+            "value, which is what causes the black gaps that Show "
+            "pixels hidden by NoData fixes.\n"
+            "\n"
+            "Pyramids (overviews):\n"
+            "Pre-built smaller copies of the image, used automatically "
+            "when zoomed out, so the full-resolution data does not have "
+            "to be read and shrunk every time.\n"
+            "\n"
+            "Tiling:\n"
+            "Storing the image as a grid of small squares instead of "
+            "long strips, so software can read just the part it needs "
+            "rather than the whole file.\n"
+            "\n"
+            "\n"
+            "Full explanation:\n"
+            "\n"
+            "Lossless:\n"
+            "The default. Every pixel value survives exactly. Needed "
+            "whenever those values will be measured or analysed - "
+            "including from imagery, such as a vegetation index, not "
+            "just from elevation. Elevation data always uses this "
+            "automatically. Larger than Lossy, and occasionally larger "
+            "than the source file once pyramids are added; the run log "
+            "explains when that happens.\n"
+            "\n"
+            "Lossy:\n"
+            "JPEG compression, usually 70-80% smaller. Visually "
+            "identical to the original, with slight artefacting at hard "
+            "edges such as the collar boundary. The exact pixel values "
+            "change, so avoid it if anything will be calculated from "
+            "them. Never applied to elevation, and blocked where it "
+            "would be unsafe.\n"
+            "\n"
+            "Show pixels hidden by NoData:\n"
+            "Dark content that happens to be pure black can be treated "
+            "as \"nothing here\" and disappear, leaving black gaps in "
+            "the image. Ticking this reveals those pixels; the collar "
+            "then renders as solid black instead of transparent. It "
+            "does not create missing data - it only shows pixels that "
+            "were already there. Detection reports what it found, but "
+            "cannot tell deep shadow from a genuine gap in coverage, so "
+            "the decision is yours.\n"
+            "\n"
+            "What it does:\n"
+            "Fixes rasters that pan and zoom sluggishly in QGIS or "
+            "QField - typically large drone orthos or elevation models "
+            "with no internal structure, so software has to read the "
+            "whole file to draw any part of it. Works out what the file "
+            "actually is and applies the right tiling, pyramid and "
+            "compression settings automatically. A file that is already "
+            "optimised is left untouched.\n"
+            "\n"
+            "Supported and refused:\n"
+            "Supported: 8-bit RGB imagery (3 or 4 band), and "
+            "single-band Float32 elevation (DSM, DTM, CHM). Refused "
+            "with a clear reason rather than a risky guess: classified "
+            "rasters, more than 4 bands, and 16-bit imagery. Each needs "
+            "handling this version does not have yet.\n"
+            "\n"
+            "If you choose wrong:\n"
+            "Your source file is never modified - only a new output is "
+            "written, and any attempt to write over the source is "
+            "refused, even through a renamed or aliased path. Any "
+            "choice here can be redone by running again with different "
+            "settings. The one thing to keep in mind: do not delete the "
+            "original after a lossy conversion, because a lossless "
+            "version can only ever be made from the source."
         )
 
     def checkParameterValues(self, parameters, context):
@@ -204,18 +297,16 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         if not ok:
             return ok, msg
 
-        # Cheapest possible check first, before anything raster-related:
-        # an os.path.exists() call, not even a gdal.Open(). This used to
-        # only surface as a "blocked" failure from convert() - after a
-        # full detection run had already cost over a minute on a large
-        # file. Same message convert() itself would use (see
-        # core/converter.py's output_exists_message docstring for why
-        # it's a shared function, not copied text).
+        # Cheapest possible checks first, before anything raster-related:
+        # os.path.exists()/os.path.samefile(), not even a gdal.Open().
+        # These used to only surface as a "blocked"/"error" failure from
+        # convert() - after a full detection run had already cost over a
+        # minute on a large file. Same messages convert() itself would
+        # use (see core/converter.py's output_exists_message and
+        # output_same_as_source_message docstrings for why they're
+        # shared functions, not copied text).
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
-        if not overwrite:
-            output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
-            if output_path and os.path.exists(output_path):
-                return False, output_exists_message(output_path)
+        output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
         input_layer = self.parameterAsRasterLayer(parameters, self.INPUT, context)
         if input_layer is None:
@@ -223,6 +314,17 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             # processAlgorithm produce that error, don't duplicate it here.
             return True, ""
         source_path = input_layer.source()
+
+        # Unconditional - matches convert()'s own guard, which cannot be
+        # bypassed by Replace existing output file either. Checked before
+        # the exists check below since it's the same "never touch the
+        # source" family of guard and should win regardless of overwrite.
+        if output_path and _same_file(output_path, source_path):
+            return False, output_same_as_source_message(output_path)
+
+        if not overwrite:
+            if output_path and os.path.exists(output_path):
+                return False, output_exists_message(output_path)
 
         try:
             detection = detect_metadata_only(source_path)
@@ -250,6 +352,23 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                     "The {} option is not available for this file."
                 ).format(requested)
 
+        # Hard gate, not just a log note: ticking Clear NoData on a file
+        # with no NoData=0 condition at all is a pure no-op (elevation
+        # always lands here too - detect_metadata_only never creates a
+        # NoDataRisk for it), and nobody should walk away from a run
+        # thinking they've revealed hidden pixels when nothing happened.
+        # This is deliberately NOT the same check as the
+        # nodata_only_transparency structural block (NoData set, but
+        # clearing would reveal a border) - that stays a soft, logged
+        # non-gate, unaffected by this parameter, exactly as before.
+        clear_nodata = self.parameterAsBoolean(parameters, self.CLEAR_NODATA, context)
+        if clear_nodata and (detection.nodata_risk is None or not detection.nodata_risk.applies):
+            return False, self.tr(
+                "{} has no effect on this file - it doesn't have a "
+                "NoData=0 condition for this plugin to clear. Untick it, "
+                "or check Raster Information if you expected one."
+            ).format(CLEAR_NODATA_LABEL)
+
         return True, ""
 
     def initAlgorithm(self, config=None):
@@ -258,7 +377,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         profile_param = QgsProcessingParameterEnum(
             self.PROFILE,
-            self.tr("Compression profile - choose based on intended use"),
+            self.tr(
+                "Compression profile - both options are equally fast; "
+                "this is only about whether pixel values stay exact"
+            ),
             options=PROFILE_OPTIONS,
             defaultValue=PROFILE_LOSSLESS,
         )
@@ -271,15 +393,53 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # never be found. Elevation still forces lossless outright
         # regardless of this value - see _resolve_profile - so this
         # default only ever matters for imagery.
+        # This is now the first place a hesitant user lands, carrying the
+        # reassurance the label deliberately no longer does (see the
+        # PROFILE_OPTIONS comment) - kept to four sentences on purpose,
+        # this is a hover tooltip, not a document.
         profile_param.setHelp(self.tr(
-            "Lossless keeps every pixel value exact - the default, and "
-            "required if those values will be measured or analysed. "
-            "Lossy (JPEG) is usually 70-80% smaller and visually "
-            "indistinguishable at quality 90, right for a basemap or "
-            "field use - but it changes the exact pixel values, so skip "
-            "it if you'll compute anything from them."
+            "Both options produce the same fast-panning file - the "
+            "choice is only about pixel values. Lossy is visually "
+            "indistinguishable from the original; what changes is the "
+            "exact numeric value of each pixel, by small amounts. That's "
+            "irrelevant for a basemap you're navigating or digitising "
+            "over, but it matters if those values feed a calculation - "
+            "vegetation indices, classification, change detection. Lossy "
+            "is typically 70-80% smaller."
         ))
         self.addParameter(profile_param)
+
+        nodata_param = QgsProcessingParameterBoolean(
+            self.CLEAR_NODATA, self.tr(CLEAR_NODATA_LABEL),
+            defaultValue=False,
+        )
+        # Unticked by default - see the CLEAR_NODATA_LABEL comment above
+        # for why. Only ever actionable on RGB imagery that has NoData=0
+        # with a real alpha/mask already providing positional
+        # transparency (detection.nodata_risk.clear_possible) -
+        # meaningless on elevation and on files without that specific
+        # condition, same as PROFILE is meaningless on elevation. Always
+        # visible anyway: Processing parameter widgets are declared in
+        # initAlgorithm() before any input is chosen and can't react to
+        # it - the same constraint already established for PROFILE.
+        # checkParameterValues refuses outright if this is ticked on a
+        # file where it would be a pure no-op (no NoData=0 condition at
+        # all), so nobody thinks they've fixed something they haven't;
+        # the run log always states what happened otherwise, including
+        # "not applicable" as the defensive fallback for callers that
+        # skip checkParameterValues - see
+        # core/converter.py's _resolve_nodata_handling.
+        nodata_param.setHelp(self.tr(
+            "Dark content that happens to be pure black - deep shadow, "
+            "water, wet tarmac - can be treated as \"nothing here\" and "
+            "disappear, leaving black gaps in the image. Tick this to "
+            "make those pixels visible again. The trade is that the "
+            "collar around the edge becomes solid black instead of "
+            "transparent. This does not create missing data - it only "
+            "reveals pixels that were already there."
+        ))
+        self.addParameter(nodata_param)
+
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT, self.tr("Optimised output"),
         ))
@@ -288,10 +448,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # hid it well enough that it went unnoticed in testing. Declared
         # after OUTPUT so it reads as "...and here's what to do if that
         # path already exists."
-        self.addParameter(QgsProcessingParameterBoolean(
+        overwrite_param = QgsProcessingParameterBoolean(
             self.OVERWRITE, self.tr("Replace existing output file"),
             defaultValue=False,
+        )
+        # Label alone doesn't say what happens when left unticked - fixed
+        # via setHelp() rather than lengthening the label itself.
+        overwrite_param.setHelp(self.tr(
+            "Unticked (the default): if a file already exists at the "
+            "output path, the algorithm refuses to run and tells you, "
+            "rather than overwriting it silently. Ticked: the existing "
+            "file is replaced. Either way your source file is never "
+            "touched - writing the output over the input is refused "
+            "outright, even if you point both at the same file."
         ))
+        self.addParameter(overwrite_param)
 
     def processAlgorithm(self, parameters, context, feedback):
         input_layer = self.parameterAsRasterLayer(parameters, self.INPUT, context)
@@ -303,6 +474,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # always resolves to a genuine value - no more need to read the
         # raw dict to detect "not set" (see the PROFILE_LOSSLESS comment).
         profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
+        clear_nodata = self.parameterAsBoolean(parameters, self.CLEAR_NODATA, context)
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
@@ -361,6 +533,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         result = convert(
             source_path, detection=detection, chosen_profile=chosen_profile,
             output_path=output_path, force=overwrite,
+            clear_nodata=clear_nodata,
             translate_progress_cb=make_progress_cb(10, 65),
             overview_progress_cb=make_progress_cb(75, 25),
             log_cb=log_cb,
@@ -382,6 +555,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             raise QgsProcessingException(result.message)
 
         feedback.pushInfo(result.message)
+        if result.size_summary:
+            feedback.pushInfo(result.size_summary)
+        if result.size_note:
+            feedback.pushInfo(result.size_note)
+        if result.nodata_message:
+            feedback.pushInfo(result.nodata_message)
         return {self.OUTPUT: result.output_path}
 
     def _resolve_profile(self, detection, profile_choice, feedback):

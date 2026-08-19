@@ -164,6 +164,15 @@ class ProfileOption:
 @dataclass
 class NoDataRisk:
     applies: bool = False
+    # True only when a real alpha/mask already provides positional
+    # transparency independent of NoData=0 (i.e. applies=True but the
+    # assessment isn't "nodata_only_transparency") - the single source
+    # of truth for whether clearing NoData is even structurally
+    # possible on this file. False whenever applies=False (no NoData=0
+    # condition at all) or the file relies on NoData as its only
+    # transparency (clearing would reveal a border, so it's blocked
+    # outright regardless of what the caller asks for).
+    clear_possible: bool = False
     nodata_value: Optional[float] = None
     sample_pixels_checked: int = 0
     black_pixel_count: int = 0
@@ -436,9 +445,20 @@ def detect_metadata_only(path: str) -> DetectionResult:
     if ds is None:
         return _refuse(result, "UNREADABLE", "Could not read this file.")
 
+    try:
+        return _detect_metadata_only_body(result, ds)
+    finally:
+        # Explicit close rather than relying on scope-exit refcounting -
+        # matches converter.py's discipline of never leaving a dataset
+        # open past the point it's still needed, on every return path
+        # including early refusals inside the body below.
+        ds = None
+
+
+def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> DetectionResult:
     result.raster_size = (ds.RasterXSize, ds.RasterYSize)
     result.has_crs = _has_georeferencing(ds)
-    result.has_aux_xml = os.path.exists(path + ".aux.xml")
+    result.has_aux_xml = os.path.exists(result.path + ".aux.xml")
 
     if not result.has_crs:
         return _refuse(
@@ -592,18 +612,33 @@ def detect_metadata_only(path: str) -> DetectionResult:
             # from metadata alone. Never blocks the lossy profile either
             # way (see docs/plugin_design_notes.md - advisory only), so
             # it's safe to leave incomplete here; detect() finishes it.
+            # clear_possible=True: a real alpha/mask already exists here
+            # (that's what the "else" of nodata_only means), so clearing
+            # NoData can never reintroduce a border - the only remaining
+            # question is whether it reveals real content, which is what
+            # the pixel sample below decides. This is the single source
+            # of truth converter.py uses to decide whether the NoData
+            # handling choice (Keep/Clear/Auto) is even actionable on
+            # this file - see convert()'s "resolve NoData handling" step.
             result.needs_pixel_sampling = True
+            nodata_risk.clear_possible = True
 
     result.nodata_risk = nodata_risk
 
     settings_key = "lossless_integer"
+    # No -a_nodata handling here any more: whether NoData gets cleared is
+    # now driven entirely by the caller's nodata_handling choice in
+    # convert(), independent of which profile is picked - see that
+    # function's "resolve NoData handling" step. This used to be baked
+    # in here (lossy always cleared when structurally safe, lossless
+    # never did, regardless of the detected risk) - an inconsistency
+    # nobody chose and the new parameter replaces outright. The band-
+    # selection/mask args below are still genuinely profile-specific
+    # (only the lossy profile needs to drop the alpha band to unlock
+    # YCbCr) and stay here.
     translate_extra_lossy = []
     if result.has_alpha:
         translate_extra_lossy = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(result.alpha_band_index)]
-        if nodata_value == 0 and transparency_source != "nodata_only":
-            translate_extra_lossy += ["-a_nodata", "none"]
-    elif nodata_value == 0 and transparency_source != "nodata_only":
-        translate_extra_lossy = ["-a_nodata", "none"]
 
     lossy_option = ProfileOption(
         profile="lossy",
@@ -650,6 +685,15 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
     if ds is None:
         return _refuse(result, "UNREADABLE", "Could not read this file.")
 
+    try:
+        return _detect_body(result, ds, progress_cb, progress_cb_data)
+    finally:
+        # Explicit close, matching converter.py's discipline - see
+        # detect_metadata_only's identical finally block.
+        ds = None
+
+
+def _detect_body(result: DetectionResult, ds: "gdal.Dataset", progress_cb, progress_cb_data) -> DetectionResult:
     if result.band_count == 1:
         # Deferred from detect_metadata_only: integer, no colour table -
         # classified vs. unrecognised needs a unique-value count.
@@ -696,27 +740,27 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
         nodata_risk.assessment = "insufficient_sample"
         nodata_risk.needs_user_decision = True
         nodata_risk.message = (
-            "Too little interior area was sampled to reliably tell "
-            "collar from real content on this file - check manually "
-            "before clearing NoData."
+            "Too little interior area was sampled to judge collar vs. "
+            "real content here. Check visually before deciding on Clear "
+            "NoData."
         )
     elif stats["interior_max_fraction"] >= NODATA_INTERIOR_CELL_RISK_FRACTION:
         nodata_risk.assessment = "meaningful"
         nodata_risk.needs_user_decision = True
         pct = stats["interior_max_fraction"] * 100
         nodata_risk.message = (
-            f"Up to {pct:.2f}% of pixels are pure black within a "
-            "localized interior area (away from the image edge) and "
-            "being hidden by NoData=0 - this looks like real content "
-            "(deep shadow, water, dark surfaces), not just the collar. "
-            "Clear NoData so it shows?"
+            f"Up to {pct:.2f}% of pixels in an interior area are pure "
+            "black and hidden by NoData=0 - possibly real content "
+            "(shadow, water), not just the collar. Tick Clear NoData to "
+            "reveal them - the collar will render solid black instead "
+            "of transparent."
         )
     else:
         nodata_risk.assessment = "collar_only"
         nodata_risk.message = (
-            "NoData=0 only catches the collar outside the survey area. "
-            "Safe to clear, no localized black content pixels detected "
-            "away from the edge."
+            "No interior black content detected - NoData=0 appears to "
+            "only be catching the collar. Clearing it is likely "
+            "unnecessary."
         )
 
     return result

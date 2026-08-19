@@ -97,6 +97,8 @@ On top of JPEG itself, this is roughly another 2x saving. It is the single most 
 
 It comes with a hard constraint that shapes everything else: **YCbCr requires exactly three bands, 8-bit, with JPEG compression.** Give it four bands and it refuses to run.
 
+**A known side-effect at the collar boundary.** Where the image meets the transparent collar - a hard, high-contrast edge - JPEG's block artefacts and YCbCr's chroma subsampling combine into a thin dark fringe a pixel or two wide, visible on close inspection. This is expected, not a defect: it is confined to the edge where there is no real data anyway, and not worth changing quality settings to chase.
+
 ### Predictor
 
 A lossless compression helper. It does not compress anything itself, it rearranges the data so the actual compressor does better.
