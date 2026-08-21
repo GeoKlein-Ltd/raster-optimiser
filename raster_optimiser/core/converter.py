@@ -348,6 +348,7 @@ def convert(
     output_path: Optional[str] = None,
     force: bool = False,
     clear_nodata: bool = False,
+    force_reprocess: bool = False,
     translate_progress_cb=None,
     translate_progress_cb_data=None,
     overview_progress_cb=None,
@@ -375,6 +376,14 @@ def convert(
     no automatic mode, because even detect()'s most confident read is
     still a collar-vs-shadow guess this plugin's design says it can't
     reliably make (see docs/plugin_design_notes.md).
+
+    force_reprocess (default False) - bypasses the "already tiled with
+    overviews, do nothing" short-circuit below. Without this, a file
+    that's already optimised is left untouched regardless of force or
+    clear_nodata - that check exists specifically to protect against
+    redoing work that wouldn't make the file any faster, so it needs its
+    own explicit override rather than being folded into force (which is
+    about the destination path, a different concern).
 
     log_cb, if given, is called as log_cb(phase, elapsed_seconds) once per
     completed phase - phase is "translate" or "overviews" (detection is
@@ -423,8 +432,9 @@ def convert(
     # ---- compare current state to target, decide whether to do anything ----
     is_tiled = _is_tiled(detection.block_size, detection.raster_size)
     has_overviews = detection.overview_count > 0
+    already_optimised = is_tiled and has_overviews
 
-    if is_tiled and has_overviews:
+    if already_optimised and not force_reprocess:
         result.ok = True
         result.action = "already_optimised"
         result.message = (
@@ -433,7 +443,18 @@ def convert(
         )
         return result
 
-    result.primary_reason = "tiling" if not is_tiled else "overviews"
+    if already_optimised:
+        # already_optimised and force_reprocess both true: a deliberate
+        # override (e.g. switching profile after the fact), not a normal
+        # tiling/overviews rebuild - primary_reason wouldn't mean anything
+        # here (both are already true), so this is recorded as a warning
+        # instead of a reason.
+        result.warnings.append(
+            "Already tiled with overviews, but reprocessing anyway - "
+            "Force reprocess is ticked."
+        )
+    else:
+        result.primary_reason = "tiling" if not is_tiled else "overviews"
 
     # ---- resolve output path, with hard guards ----
     if output_path is None:
@@ -650,6 +671,8 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     parser.add_argument("--clear-nodata", action="store_true",
                          help="Clear NoData=0 on RGB imagery where safe (default: keep)")
+    parser.add_argument("--force-reprocess", action="store_true",
+                         help="Reprocess even if the source is already tiled with overviews")
     parser.add_argument("--quiet", action="store_true", help="No terminal progress bar")
     parser.add_argument("--json", action="store_true", help="Print raw JSON instead of a human report")
     args = parser.parse_args(argv)
@@ -660,6 +683,7 @@ def main(argv=None) -> int:
     result = convert(
         args.path, detection=detection, chosen_profile=args.profile,
         output_path=args.output, force=args.force, clear_nodata=args.clear_nodata,
+        force_reprocess=args.force_reprocess,
         translate_progress_cb=progress_cb, overview_progress_cb=progress_cb,
         log_cb=log_cb,
     )
