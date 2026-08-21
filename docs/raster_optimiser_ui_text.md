@@ -225,5 +225,5 @@ Reachable for two different reasons, not just a small file: the image's dimensio
 - Technical terms are explained the first time they appear, or defined in the glossary.
 - Every warning states what was found, why it matters, and what to do about it, in that order.
 - Second person throughout. "Your source file is never modified", not "the source file is not modified".
-- No exclamation marks, no "simply", no "just".
+- No exclamation marks. No "just" or "simply" as minimisers ("simply tick the box") - they imply the task is trivial and make people feel stupid when it isn't. "Just" meaning "only" or "merely" ("it would just produce a second large file") is fine and often the clearest word available.
 - British spelling: optimise, colour, behaviour.
