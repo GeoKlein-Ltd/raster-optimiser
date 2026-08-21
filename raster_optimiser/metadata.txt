@@ -7,6 +7,7 @@ version=0.1.0
 author=GeoKlein
 email=mail@geoklein.com
 about=Large orthomosaics and elevation rasters from drone photogrammetry or LiDAR are technically correct but practically unusable: no tiling, no pyramids, often no compression, so QGIS or QField crawl trying to pan around them. Raster Optimiser detects what a raster actually is - 8-bit RGB imagery, Float32 elevation data, or something out of scope - and applies the correct tiling, pyramid and compression settings automatically, with no GDAL flags to memorise. It refuses cleanly, with a clear reason, on classified/categorical rasters, multispectral stacks and 16-bit imagery rather than risk silently corrupting them. Already-optimised files are left untouched.
+icon=icons/icon_64.png
 tracker=
 repository=
 hasProcessingProvider=yes

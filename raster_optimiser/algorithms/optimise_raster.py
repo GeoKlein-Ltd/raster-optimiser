@@ -45,6 +45,7 @@ from qgis.PyQt.QtCore import QCoreApplication
 
 from ..core.converter import convert, output_exists_message, output_same_as_source_message, _same_file
 from ..core.detector import detect, detect_metadata_only
+from ..icon_utils import plugin_icon
 
 # No letters anywhere: "A"/"B" imply an order (A primary, B fallback)
 # that's backwards from how this choice should be reached for, force
@@ -122,6 +123,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
     def createInstance(self):
         return OptimiseRasterAlgorithm()
+
+    def icon(self):
+        return plugin_icon()
 
     def name(self):
         return "optimise_raster"

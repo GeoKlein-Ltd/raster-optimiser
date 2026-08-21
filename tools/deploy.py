@@ -44,14 +44,25 @@ MAX_PAYLOAD_BYTES = 5 * 1024 * 1024  # hard cap - see module docstring
 # Allowlist, not denylist: anything not named here is skipped, full stop.
 # This is what stops testdata/, docs/, or repo-dev files landing in a
 # profile if the package layout ever goes wrong.
-ALLOWLIST_FILES = ["metadata.txt", "__init__.py", "plugin.py", "provider.py", "icon.png", "LICENSE"]
-ALLOWLIST_DIRS = ["core", "algorithms"]
+ALLOWLIST_FILES = ["metadata.txt", "__init__.py", "plugin.py", "provider.py", "icon_utils.py"]
+ALLOWLIST_DIRS = ["core", "algorithms", "icons"]
+
+# LICENSE lives at the repo root (GitHub convention), one level above
+# PACKAGE_ROOT, but the QGIS plugin repository requires a LICENSE file
+# inside the uploaded plugin itself - so it's deployed to the package
+# root alongside metadata.txt even though it isn't sourced from there.
+ROOT_FILES = ["LICENSE"]
 
 PYQT_DIRECT_IMPORT_RE = re.compile(r"^\s*(from|import)\s+PyQt[56]\b", re.MULTILINE)
 
 
 def _iter_source_files():
     """Yield (absolute_src_path, path_relative_to_package_root) for everything the allowlist selects."""
+    for name in ROOT_FILES:
+        src = os.path.join(REPO_ROOT, name)
+        if os.path.isfile(src):
+            yield src, name
+
     for name in ALLOWLIST_FILES:
         src = os.path.join(PACKAGE_ROOT, name)
         if os.path.isfile(src):
