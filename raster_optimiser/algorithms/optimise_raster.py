@@ -8,18 +8,31 @@ feedback/exceptions. See docs/plugin_design_notes.md for why an
 already-optimised file's OUTPUT resolves to the source path rather
 than a copy.
 
-NoData handling (CLEAR_NODATA below) is a real parameter now - it used
-to not be one, because clearing NoData was folded silently into the
-profile choice instead (see core/converter.py's git history / the
-_resolve_nodata_handling docstring). That was never something a user
-chose; it was an accident of which profile happened to attempt it.
-Detection's collar-vs-shadow read stays advisory, never a gate - this
-parameter is what a user acts on it with, not detection itself. It's a
-plain checkbox, not a three-way choice: an earlier version offered
-Keep/Clear/Auto, and Auto was removed - even detect()'s most confident
-read is still a collar-vs-shadow guess the plugin's design says it
-can't reliably make, so it was better not offered at all than offered
-as a third option that implied otherwise.
+NoData handling (NODATA_MODE below) is a three-option dropdown -
+Automatic / Reveal hidden pixels / Keep as-is - not the plain checkbox
+an earlier round of this file settled on. That earlier round explicitly
+rejected an Automatic option: even detect()'s most confident read is
+still a collar-vs-shadow guess, and offering it as a third choice
+implied the plugin could make that judgement reliably, which it can't.
+Automatic is back because the two problems that killed it are solved
+differently now: it's no longer the only path (Reveal/Keep remain full
+manual overrides a user can always pick instead), and the
+Keep-as-is-specific warning this file shows is now genuinely escapable
+by changing the dropdown - unlike a checkbox with no real "I've
+considered this and want to proceed anyway" state, which is what
+produced an unclosable modal loop in GUI testing (see
+checkParameterValues' comment on the NODATA_KEEP block for the fix,
+and why NoData risk is a hard gate again rather than something WARN_ENABLED
+covers).
+
+QGIS renders a checkParameterValues() failure as a modal QMessageBox
+with only an OK button (confirmed via processing/gui/algorithm_widget.py),
+not a dismissible inline banner - framework behaviour, not something
+this file can change. That's the accepted presentation for all three
+hard gates below (lossy-on-elevation, already-optimised, NoData
+hidden-and-kept): each is only ever shown when there's a real way
+through it (a different Profile/Force reprocess/NoData mode choice),
+so a modal is an acceptable, if not ideal, way to deliver it.
 
 Cross-version note (QGIS 3.x / PyQt5 vs QGIS 4.x / PyQt6): this file
 deliberately touches no raw Qt widget classes and no QVariant - only
@@ -44,7 +57,10 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QCoreApplication
 
-from ..core.converter import convert, output_exists_message, output_same_as_source_message, _same_file, _is_tiled
+from ..core.converter import (
+    convert, output_exists_message, output_same_as_source_message,
+    _same_file, _is_tiled, nodata_pct_phrase,
+)
 from ..core.detector import detect, detect_metadata_only
 from ..icon_utils import plugin_icon
 
@@ -63,54 +79,32 @@ from ..icon_utils import plugin_icon
 # "lossless" now too (see their RECOMMENDED_SETTINGS keys and
 # ProfileOption.profile) - self-describing everywhere, so there's no
 # mapping left for anyone to get wrong. PROFILE_LOSSLESS/PROFILE_LOSSY
-# below are only this wrapper's own dropdown-index constants.
+# below are only this wrapper's own dropdown-index constants. Same
+# reasoning applies to NODATA_AUTO/REVEAL/KEEP further down: this file
+# hardcodes the literal "auto"/"reveal"/"keep" strings at the one point
+# they cross into convert(), rather than importing converter.py's
+# NODATA_MODE_* constants under a second, index-shaped name here.
 PROFILE_LOSSLESS = 0
 PROFILE_LOSSY = 1
-# Benefit first, technical term in brackets - not the other way round.
-# "Lossy" leading reads as a downgrade and makes people hesitate even
-# when it's the right choice for their basemap; but the word can't
-# disappear either, since it's the standard term across QGIS, GDAL and
-# every other raster tool, and someone who only ever learns "smaller
-# file" here won't recognise it elsewhere.
-#
-# No "looks identical"/"visually indistinguishable" on the lossy side -
-# paired with the word "Lossy" it read as a contradiction to anyone who
-# doesn't already know the terms ("lossy" sounds like it should look
-# different). That reassurance now lives in setHelp() and the TL;DR
-# instead, which a hesitant user reaches in one hover or one extra
-# sentence - see this file's design note on layered effort near
-# shortHelpString.
-_PROFILE_LOSSLESS_NAME = "Preserve pixel values (Lossless)"
-_PROFILE_LOSSY_NAME = "Considerable file size reduction (Lossy)"
-PROFILE_OPTIONS = [
-    _PROFILE_LOSSLESS_NAME + " [default]",
-    _PROFILE_LOSSY_NAME,
-]
+_PROFILE_LOSSLESS_NAME = "Preserve pixel values (lossless)"
+_PROFILE_LOSSY_NAME = "Smallest file size (lossy)"
+PROFILE_OPTIONS = [_PROFILE_LOSSLESS_NAME, _PROFILE_LOSSY_NAME]
 
-# Not "patches holes in data" or similar - that implies filling in
-# missing data, the opposite of what happens (the pixels were always
-# there; NoData was hiding them). Someone with a genuine coverage gap
-# would tick it, watch the collar turn black, and reasonably conclude
-# the tool is broken. "Show pixels hidden by NoData" states the actual
-# mechanism instead.
-CLEAR_NODATA_LABEL = "Show pixels hidden by NoData"
+# Index order matches NODATA_OPTIONS below exactly - see
+# _NODATA_MODE_STRINGS for the one place this crosses into convert()'s
+# plain "auto"/"reveal"/"keep" strings.
+NODATA_AUTO = 0
+NODATA_REVEAL = 1
+NODATA_KEEP = 2
+_NODATA_AUTO_NAME = "Automatic — decide per file (recommended)"
+_NODATA_REVEAL_NAME = "Reveal hidden pixels"
+_NODATA_KEEP_NAME = "Keep as-is"
+NODATA_OPTIONS = [_NODATA_AUTO_NAME, _NODATA_REVEAL_NAME, _NODATA_KEEP_NAME]
+NODATA_MODE_LABEL = "Hidden pixels (NoData)"
+_NODATA_MODE_STRINGS = ("auto", "reveal", "keep")  # index -> convert()'s nodata_mode
 
-WARN_ENABLED_LABEL = "Warn me before proceeding if something looks wrong"
-FORCE_REPROCESS_LABEL = "Force reprocess"
-
-# Below the threshold detector.py's NoData risk assessment can actually
-# produce (NODATA_INTERIOR_CELL_RISK_FRACTION = 0.001, i.e. 0.1%), so
-# this branch is defensive rather than reachable today - kept anyway so
-# a future change to that threshold can't reintroduce a message reading
-# "Up to 0.00%", which would look broken rather than reassuring.
-_NODATA_PCT_DISPLAY_FLOOR = 0.005
-
-
-def _nodata_extent_phrase(pct: float) -> str:
-    if pct < _NODATA_PCT_DISPLAY_FLOOR:
-        return "A small but detectable amount of an interior area is"
-    return "Up to {:.2f}% of an interior area is".format(pct)
-
+WARN_ENABLED_LABEL = "Warn me before running if something looks wrong"
+FORCE_REPROCESS_LABEL = "Reprocess even if already optimised"
 
 # ConversionResult.action values that mean "this run did not succeed" -
 # see core/converter.py's ConversionResult docstring for the full set.
@@ -129,11 +123,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
     INPUT = "INPUT"
     PROFILE = "PROFILE"
-    CLEAR_NODATA = "CLEAR_NODATA"
+    NODATA_MODE = "NODATA_MODE"
     WARN_ENABLED = "WARN_ENABLED"
     FORCE_REPROCESS = "FORCE_REPROCESS"
     OVERWRITE = "OVERWRITE"
     OUTPUT = "OUTPUT"
+
+    def __init__(self):
+        super().__init__()
+        # Best-effort memoization of detect() by source path - see
+        # _detect_cached()'s docstring for what this does and doesn't
+        # guarantee. Needed again now that checkParameterValues() can
+        # once more trigger the expensive NoData pixel sample (the
+        # NODATA_KEEP hard gate), matching the same duplicate-detection
+        # shape a full detect() in processAlgorithm() already has.
+        self._detection_cache = {}
 
     def tr(self, string):
         # QgsProcessingAlgorithm.tr() is not reliably inherited - confirmed
@@ -162,12 +166,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # One sentence, shown as the toolbox tree's hover tooltip -
         # deliberately not shortHelpString() (the full help panel) or
         # displayName() (just the name). Default implementation falls
-        # back to the first line of shortHelpString() ("TL;DR:"), which
-        # isn't useful as a tooltip on its own - this overrides it.
-        return self.tr(
-            "Detects slow, unoptimised orthomosaics and elevation "
-            "rasters and converts them to fast-panning GeoTIFFs."
-        )
+        # back to the first line of shortHelpString(), which isn't
+        # useful as a tooltip on its own - this overrides it.
+        return self.tr("Makes slow, oversized rasters load and pan quickly in QGIS.")
 
     def group(self):
         # Empty on purpose: with only one algorithm, a same-named group
@@ -202,169 +203,126 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ]
 
     def shortHelpString(self):
-        # Design is layered by effort, cheapest first: the dropdown
-        # labels alone should be enough for most users to choose
-        # correctly without reading anything here. setHelp() on each
-        # parameter is one hover further. This TL;DR is a sentence more.
-        # The Glossary is for a term the reader doesn't know. Full
-        # explanation is the last resort. If a user has to open this
-        # panel to make a safe choice, the labels already failed - so
-        # each layer should stand on its own, not depend on the reader
-        # having seen the one above it.
+        # QGIS renders this as HTML (confirmed: the Processing help
+        # panel is a rich-text view, not a plain-text one), so headings
+        # and lists use real <b>/<ul>/<li> tags rather than the plain
+        # dashes/blank-line convention an earlier round of this file
+        # used before that was confirmed.
         return self.tr(
-            "TL;DR:\n"
-            "\n"
-            "The decision:\n"
-            "Both options make this file fast to pan and zoom. The only "
-            "choice is whether pixel values are kept exactly as they "
-            "are, or changed slightly to save space. That only matters "
-            "if the values will be measured or calculated from - not if "
-            "you are just looking at the file.\n"
-            "\n"
-            "Speed:\n"
-            "Comes from tiling and pyramids, built the same way "
-            "whichever option you pick.\n"
-            "\n"
-            "\n"
-            "Glossary:\n"
-            "\n"
-            "Collar:\n"
-            "The transparent area around the edge of the image. Drone "
-            "orthos are irregular shapes stored in rectangular files, so "
-            "the corners are filled with nothing.\n"
-            "\n"
-            "Lossless:\n"
-            "Compression that keeps every pixel value exactly as it "
-            "was. Nothing is discarded.\n"
-            "\n"
-            "Lossy:\n"
-            "Compression that discards fine detail to save space. "
-            "Visually identical, but the exact numbers change.\n"
-            "\n"
-            "NoData:\n"
-            "A pixel value reserved to mean \"nothing here\", normally "
-            "used to make the collar transparent. On 8-bit imagery 0 is "
-            "both a real colour (pure black) and the usual NoData "
-            "value, which is what causes the black gaps that Show "
-            "pixels hidden by NoData fixes.\n"
-            "\n"
-            "Pyramids (overviews):\n"
-            "Pre-built smaller copies of the image, used automatically "
-            "when zoomed out, so the full-resolution data does not have "
-            "to be read and shrunk every time.\n"
-            "\n"
-            "Tiling:\n"
-            "Storing the image as a grid of small squares instead of "
-            "long strips, so software can read just the part it needs "
-            "rather than the whole file.\n"
-            "\n"
-            "\n"
-            "Full explanation:\n"
-            "\n"
-            "Lossless:\n"
-            "The default. Every pixel value survives exactly. Needed "
-            "whenever those values will be measured or analysed - "
-            "including from imagery, such as a vegetation index, not "
-            "just from elevation. Elevation data always uses this "
-            "automatically. Larger than Lossy, and occasionally larger "
-            "than the source file once pyramids are added; the run log "
-            "explains when that happens.\n"
-            "\n"
-            "Lossy:\n"
-            "JPEG compression, usually 70-80% smaller. Visually "
-            "identical to the original, with slight artefacting at hard "
-            "edges such as the collar boundary. The exact pixel values "
-            "change, so avoid it if anything will be calculated from "
-            "them. Never applied to elevation, and blocked where it "
-            "would be unsafe.\n"
-            "\n"
-            "Show pixels hidden by NoData:\n"
-            "Dark content that happens to be pure black can be treated "
-            "as \"nothing here\" and disappear, leaving black gaps in "
-            "the image. Ticking this reveals those pixels; the collar "
-            "then renders as solid black instead of transparent. It "
-            "does not create missing data - it only shows pixels that "
-            "were already there. Detection reports what it found, but "
-            "cannot tell deep shadow from a genuine gap in coverage, so "
-            "the decision is yours.\n"
-            "\n"
-            "What it does:\n"
-            "Fixes rasters that pan and zoom sluggishly in QGIS or "
-            "QField - typically large drone orthos or elevation models "
-            "with no internal structure, so software has to read the "
-            "whole file to draw any part of it. Works out what the file "
-            "actually is and applies the right tiling, pyramid and "
-            "compression settings automatically. A file that is already "
-            "optimised is left untouched.\n"
-            "\n"
-            "Supported and refused:\n"
-            "Supported: 8-bit RGB imagery (3 or 4 band), and "
-            "single-band Float32 elevation (DSM, DTM, CHM). Refused "
-            "with a clear reason rather than a risky guess: classified "
-            "rasters, more than 4 bands, and 16-bit imagery. Each needs "
-            "handling this version does not have yet.\n"
-            "\n"
-            "If you choose wrong:\n"
-            "Your source file is never modified - only a new output is "
-            "written, and any attempt to write over the source is "
-            "refused, even through a renamed or aliased path. Any "
-            "choice here can be redone by running again with different "
-            "settings. The one thing to keep in mind: do not delete the "
-            "original after a lossy conversion, because a lossless "
-            "version can only ever be made from the source."
+            "<p><b>What this does</b></p>"
+            "<p>Makes large rasters load and pan quickly in QGIS, and "
+            "reduces their file size.</p>"
+
+            "<p><b>Why your file is slow</b></p>"
+            "<p>Most orthomosaics and elevation rasters come out of "
+            "processing software missing two things GDAL needs in order "
+            "to draw them quickly:</p>"
+            "<ul>"
+            "<li><b>Pyramids</b>, also called overviews — pre-built "
+            "smaller copies of the image. Without them, QGIS has to "
+            "read every pixel in the file just to draw a zoomed-out "
+            "view. On a 470-megapixel ortho, that's the entire file, on "
+            "every pan and every zoom.</li>"
+            "<li><b>Tiling</b> — storing pixels as small squares rather "
+            "than full-width rows, so software can read one part of "
+            "the image without touching the rest.</li>"
+            "</ul>"
+            "<p>This tool adds both, and compresses the file sensibly "
+            "on the way through.</p>"
+
+            "<p><b>Choosing a compression profile</b></p>"
+            "<p><i>Preserve pixel values (lossless)</i> — a smaller "
+            "file with every pixel value exactly as it was. Use this "
+            "whenever you'll measure something from the image: "
+            "vegetation indices, classification, crown segmentation, "
+            "change detection. Elevation data always uses this, "
+            "whatever you select.</p>"
+            "<p><i>Smallest file size (lossy)</i> — typically 15 to 30 "
+            "times smaller, but pixel values shift slightly. Invisible "
+            "on screen, measurable in analysis. Use it for basemaps, "
+            "client copies, QField backdrops — anything you look at "
+            "rather than measure.</p>"
+            "<p>Both profiles produce a file that loads at the same "
+            "speed. The choice only affects file size and whether "
+            "pixel values survive unchanged.</p>"
+
+            "<p><b>What it won't process</b></p>"
+            "<p>Some rasters can't be optimised safely with these "
+            "settings, so the tool detects them and stops rather than "
+            "producing something quietly wrong:</p>"
+            "<ul>"
+            "<li><b>Classified rasters</b> — land cover, species class, "
+            "or any map where pixel values are category codes rather "
+            "than measurements. Building pyramids averages neighbouring "
+            "pixels, and averaging two categories produces a third that "
+            "doesn't exist.</li>"
+            "<li><b>Multispectral rasters</b>, or anything with more "
+            "than four bands.</li>"
+            "<li><b>Files with no coordinate reference system.</b></li>"
+            "</ul>"
+
+            "<p><b>Your source file is never modified.</b> The tool "
+            "always writes a new file.</p>"
+
+            "<p><b>Glossary</b></p>"
+            "<ul>"
+            "<li><b>NoData</b> — a pixel value the file declares to "
+            "mean \"nothing here\". Safe on elevation data, where you "
+            "can pick a value no real height could ever be, such as "
+            "-9999. Risky on 8-bit imagery, where every value from 0 to "
+            "255 is a legitimate colour and 0 is simply black.</li>"
+            "<li><b>Alpha band</b> — an extra band recording which "
+            "pixels fall inside the surveyed area. It works by position "
+            "rather than by value, so it never mistakes a black pixel "
+            "for an empty one.</li>"
+            "<li><b>Collar</b> — the transparent border around a survey "
+            "area, where the image doesn't fill the rectangular "
+            "file.</li>"
+            "<li><b>Pyramids / overviews</b> — pre-built smaller copies "
+            "of the image at successive zoom levels.</li>"
+            "<li><b>Tiling</b> — storing the image as small squares "
+            "instead of full-width rows.</li>"
+            "</ul>"
         )
 
     def _lossy_on_elevation_message(self):
         return self.tr(
-            "This is elevation data (a DSM, DTM or CHM). Lossy "
-            "compression works by discarding detail your eye won't "
-            "notice - fine for photographs, but on elevation it changes "
-            "the actual height values, not just how the file looks. "
+            "This is elevation data — a DSM, DTM or CHM.\n"
+            "\n"
+            "Lossy compression works by discarding detail the eye "
+            "won't notice. That's fine for photographs, but elevation "
+            "pixels are height measurements, not colours, so discarding "
+            "detail changes the actual heights.\n"
+            "\n"
             "Choose '{}' instead."
         ).format(_PROFILE_LOSSLESS_NAME)
 
     def _already_optimised_message(self):
         return self.tr(
             "This file is already tiled and has pyramids built, so it "
-            "should already load quickly in QGIS. Converting it again "
-            "won't make it faster - it would just produce a second "
-            "large file. If you're deliberately reconverting anyway - "
-            "for example switching from Lossless to Lossy to save disk "
-            "space - tick '{}' and run again."
+            "should already load and pan quickly in QGIS.\n"
+            "\n"
+            "Converting it again won't make it any faster — it would "
+            "just produce a second large file.\n"
+            "\n"
+            "If you're reconverting deliberately, for example to switch "
+            "from lossless to lossy compression, tick '{}' under "
+            "Advanced parameters."
         ).format(FORCE_REPROCESS_LABEL)
 
-    def _nodata_meaningful_message(self, nodata_risk):
+    def _nodata_keep_blocked_message(self, nodata_risk):
         pct = nodata_risk.interior_max_cell_fraction * 100
         return self.tr(
-            "This file has NoData=0 pixels with real content behind "
-            "them, not just the transparent collar around the edge (the "
-            "see-through border where the image doesn't cover a "
-            "rectangular file). {extent} pure black and currently "
-            "hidden - usually shadow or water sitting on the same value "
-            "QGIS uses to mean \"nothing here\". Tick '{label}' to "
-            "reveal it, or proceed if you've already checked and it "
-            "really is just the collar."
-        ).format(extent=_nodata_extent_phrase(pct), label=CLEAR_NODATA_LABEL)
-
-    def _nodata_meaningful_formatted(self, nodata_risk):
-        """(html, text) pair for feedback.pushFormattedMessage() - the
-        strongest available emphasis in the Processing log, reserved for
-        this one message. It's the plugin's single most consequential,
-        most educational finding (real content silently hidden by
-        NoData=0), easy to lose among routine progress lines if it reads
-        like just another orange pushWarning() line - which is exactly
-        what it was before, and was reported as too easy to miss.
-        pushFormattedMessage(html, text) writes html to htmlLog() (what
-        the GUI log panel renders) and text to textLog() (console/
-        qgis_process's plain-text fallback) - confirmed identical on both
-        QGIS 4.2 and 3.44 LTR.
-        """
-        body = self._nodata_meaningful_message(nodata_risk)
-        html = (
-            '<p style="color:#a83232; font-weight:bold; margin:4px 0;">{}</p>'
-        ).format(body)
-        text = "*** {} ***".format(body)
-        return html, text
+            "Around {pct} of the interior of this image is pure black "
+            "and currently hidden by a NoData value of 0 — usually "
+            "shadow or water that happens to sit on the same value the "
+            "file uses to mean \"nothing here\".\n"
+            "\n"
+            "You've chosen to keep NoData as it is, so those pixels "
+            "will stay hidden in the output.\n"
+            "\n"
+            "Choose 'Automatic' or '{reveal}' to bring them back."
+        ).format(pct=nodata_pct_phrase(pct), reveal=_NODATA_REVEAL_NAME)
 
     def checkParameterValues(self, parameters, context):
         # Runs before execution and can refuse instantly, with nothing run
@@ -425,12 +383,13 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             return False, detection.refusal_reason
 
         # Fetched unconditionally now (used to only be read inside the
-        # "choice" branch below) - the new lossy-on-elevation warning
-        # further down needs it for the "forced" profile_mode case too.
-        # PROFILE always has a genuine value (defaulted to lossless if
-        # untouched - see the PROFILE_LOSSLESS comment), so this is safe
-        # to read regardless of profile_mode.
+        # "choice" branch below) - the lossy-on-elevation warning further
+        # down needs it for the "forced" profile_mode case too. PROFILE
+        # always has a genuine value (defaulted to lossless if untouched
+        # - see the PROFILE_LOSSLESS comment), so this is safe to read
+        # regardless of profile_mode.
         profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
+        nodata_choice = self.parameterAsEnum(parameters, self.NODATA_MODE, context)
 
         if detection.profile_mode == "choice":
             # This replaces the earlier "no default, force a choice"
@@ -445,50 +404,60 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                     "The {} option is not available for this file."
                 ).format(requested)
 
-        # Hard gate, not just a log note: ticking Clear NoData on a file
-        # with no NoData=0 condition at all is a pure no-op (elevation
-        # always lands here too - detect_metadata_only never creates a
-        # NoDataRisk for it), and nobody should walk away from a run
-        # thinking they've revealed hidden pixels when nothing happened.
-        # This is deliberately NOT the same check as the
-        # nodata_only_transparency structural block (NoData set, but
+        # Hard gate, not just a log note: choosing "Reveal hidden
+        # pixels" on a file with no NoData=0 condition at all is a pure
+        # no-op (elevation always lands here too - detect_metadata_only
+        # never creates a NoDataRisk for it), and nobody should walk
+        # away from a run thinking they've revealed hidden pixels when
+        # nothing happened. This is deliberately NOT the same check as
+        # the nodata_only_transparency structural block (NoData set, but
         # clearing would reveal a border) - that stays a soft, logged
         # non-gate, unaffected by this parameter, exactly as before.
-        clear_nodata = self.parameterAsBoolean(parameters, self.CLEAR_NODATA, context)
-        if clear_nodata and (detection.nodata_risk is None or not detection.nodata_risk.applies):
+        if nodata_choice == NODATA_REVEAL and (detection.nodata_risk is None or not detection.nodata_risk.applies):
             return False, self.tr(
-                "{} has no effect on this file - it doesn't have a "
-                "NoData=0 condition for this plugin to clear. Untick it, "
-                "or check Raster Information if you expected one."
-            ).format(CLEAR_NODATA_LABEL)
+                "'{}' has no effect on this file - it doesn't have a "
+                "NoData=0 condition to reveal. Choose a different "
+                "option, or check Raster Information if you expected one."
+            ).format(_NODATA_REVEAL_NAME)
+
+        # Unconditional (independent of WARN_ENABLED, unlike the two
+        # checks below): this is the one hard gate that genuinely IS
+        # escapable without any other setting - pick a different Hidden
+        # pixels (NoData) option and it's gone. An earlier version of
+        # this parameter (a Clear NoData checkbox) gated the same
+        # underlying finding here too, but with no real "I've considered
+        # this and want to proceed anyway" state to escape into - just
+        # a modal QMessageBox with an OK button that reappeared
+        # identically on every retry. This gate only ever fires for
+        # NODATA_KEEP: Automatic already acts on the same finding
+        # instead of asking, and Reveal already reveals regardless of
+        # what detection found.
+        if nodata_choice == NODATA_KEEP:
+            nodata_risk = detection.nodata_risk
+            if nodata_risk is not None and nodata_risk.applies and nodata_risk.clear_possible:
+                # The one expensive check here, tightly gated: only
+                # reached when the cheap metadata pass already shows
+                # revealing is even structurally possible. _detect_cached
+                # means processAlgorithm() reuses this exact result
+                # rather than re-sampling, on any execution path where
+                # the two run on the same algorithm instance (see that
+                # method's docstring for which paths that is).
+                full_detection = self._detect_cached(source_path)
+                full_risk = full_detection.nodata_risk
+                if full_risk is not None and full_risk.assessment == "meaningful":
+                    return False, self._nodata_keep_blocked_message(full_risk)
 
         # Pre-flight risk warnings - a different class of check from
         # everything above. Those are all hard refusals: the run
-        # genuinely cannot proceed as configured. These two are
-        # judgement calls a user might deliberately want to override -
-        # see WARN_ENABLED's setHelp() - so unlike the refusals above,
-        # they're entirely skipped, not just downgraded, when WARN_ENABLED
-        # is unticked. In that case the same conditions are still
-        # evaluated and logged, just in processAlgorithm() instead of
-        # blocking here (checkParameterValues has no feedback/log object
-        # to write to - only block-or-allow).
-        #
-        # NoData risk (a possible third check here) is deliberately NOT
-        # included: an earlier version blocked on it too, but
-        # checkParameterValues() has no "acknowledge and proceed" concept
-        # in QGIS's own UI - a failure renders as a modal QMessageBox with
-        # only an OK button (confirmed via processing/gui/algorithm_widget.py),
-        # not a dismissible banner. Since keeping NoData (clear_nodata=False)
-        # is a fully legitimate, already-supported choice - not a mistake
-        # like lossy-on-elevation or wasted work like reprocessing an
-        # already-optimised file - gating it here left no way to proceed
-        # without changing CLEAR_NODATA, which is exactly the "warning I
-        # can't dismiss is a refusal" problem. It stays exactly where it
-        # already lived before WARN_ENABLED existed: an unconditional
-        # pushWarning in processAlgorithm(), see the nodata_risk block
-        # below - matching this file's own design principle that
-        # detection's collar-vs-shadow read "stays advisory, never a
-        # gate" (see this module's docstring).
+        # genuinely cannot proceed as configured (or, for NODATA_KEEP
+        # above, an outcome the user would very likely not want and can
+        # trivially avoid). These two are judgement calls a user might
+        # deliberately want to override - see WARN_ENABLED's setHelp() -
+        # so unlike the refusals above, they're entirely skipped, not
+        # just downgraded, when WARN_ENABLED is unticked. In that case
+        # the same conditions are still evaluated and logged, just in
+        # processAlgorithm() instead of blocking here (checkParameterValues
+        # has no feedback/log object to write to - only block-or-allow).
         warn_enabled = self.parameterAsBoolean(parameters, self.WARN_ENABLED, context)
         if warn_enabled:
             force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
@@ -518,15 +487,17 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         return True, ""
 
     def initAlgorithm(self, config=None):
-        self.addParameter(QgsProcessingParameterRasterLayer(
-            self.INPUT, self.tr("Input raster"),
+        input_param = QgsProcessingParameterRasterLayer(
+            self.INPUT, self.tr("Input layer"),
+        )
+        input_param.setHelp(self.tr(
+            "The raster to optimise. Any format GDAL can read. The "
+            "output is always a GeoTIFF."
         ))
+        self.addParameter(input_param)
+
         profile_param = QgsProcessingParameterEnum(
-            self.PROFILE,
-            self.tr(
-                "Compression profile - both options are equally fast; "
-                "this is only about whether pixel values stay exact"
-            ),
+            self.PROFILE, self.tr("Compression profile"),
             options=PROFILE_OPTIONS,
             defaultValue=PROFILE_LOSSLESS,
         )
@@ -539,64 +510,74 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # never be found. Elevation still forces lossless outright
         # regardless of this value - see _resolve_profile - so this
         # default only ever matters for imagery.
-        # This is now the first place a hesitant user lands, carrying the
-        # reassurance the label deliberately no longer does (see the
-        # PROFILE_OPTIONS comment) - kept to four sentences on purpose,
-        # this is a hover tooltip, not a document.
         profile_param.setHelp(self.tr(
-            "Both options produce the same fast-panning file - the "
-            "choice is only about pixel values. Lossy is visually "
-            "indistinguishable from the original; what changes is the "
-            "exact numeric value of each pixel, by small amounts. That's "
-            "irrelevant for a basemap you're navigating or digitising "
-            "over, but it matters if those values feed a calculation - "
-            "vegetation indices, classification, change detection. Lossy "
-            "is typically 70-80% smaller."
+            "Lossless keeps every pixel value exactly as it is — use "
+            "it for anything you'll measure or analyse. Lossy produces "
+            "a much smaller file by discarding detail the eye won't "
+            "notice — use it for basemaps and anything you only look "
+            "at.\n"
+            "\n"
+            "Both load at the same speed. Elevation data is always "
+            "processed losslessly, whatever you choose here."
         ))
         self.addParameter(profile_param)
 
-        nodata_param = QgsProcessingParameterBoolean(
-            self.CLEAR_NODATA, self.tr(CLEAR_NODATA_LABEL),
-            defaultValue=False,
+        nodata_param = QgsProcessingParameterEnum(
+            self.NODATA_MODE, self.tr(NODATA_MODE_LABEL),
+            options=NODATA_OPTIONS,
+            defaultValue=NODATA_AUTO,
         )
-        # Unticked by default - see the CLEAR_NODATA_LABEL comment above
-        # for why. Only ever actionable on RGB imagery that has NoData=0
-        # with a real alpha/mask already providing positional
-        # transparency (detection.nodata_risk.clear_possible) -
-        # meaningless on elevation and on files without that specific
-        # condition, same as PROFILE is meaningless on elevation. Always
-        # visible anyway: Processing parameter widgets are declared in
+        # Automatic by default - see this module's docstring for why
+        # that's no longer the rejected design it once was. Meaningless
+        # on elevation and on RGB files without a NoData=0 condition,
+        # same as PROFILE is meaningless on elevation - always visible
+        # anyway, since Processing parameter widgets are declared in
         # initAlgorithm() before any input is chosen and can't react to
-        # it - the same constraint already established for PROFILE.
-        # checkParameterValues refuses outright if this is ticked on a
-        # file where it would be a pure no-op (no NoData=0 condition at
-        # all), so nobody thinks they've fixed something they haven't;
-        # the run log always states what happened otherwise, including
-        # "not applicable" as the defensive fallback for callers that
-        # skip checkParameterValues - see
+        # it. checkParameterValues() refuses 'Reveal hidden pixels'
+        # outright when it would be a pure no-op, and hard-gates
+        # 'Keep as-is' when detection finds real content behind NoData
+        # (escapable by picking a different option here) - see that
+        # method for both. The run log always states what happened,
+        # including "not applicable" as the defensive fallback for
+        # callers that skip checkParameterValues - see
         # core/converter.py's _resolve_nodata_handling.
         nodata_param.setHelp(self.tr(
-            "Dark content that happens to be pure black - deep shadow, "
-            "water, wet tarmac - can be treated as \"nothing here\" and "
-            "disappear, leaving black gaps in the image. Tick this to "
-            "make those pixels visible again. The trade is that the "
-            "collar around the edge becomes solid black instead of "
-            "transparent. This does not create missing data - it only "
-            "reveals pixels that were already there."
-        ))
+            "Many orthomosaics mark transparency using a NoData value "
+            "of 0. On 8-bit imagery that's unsafe, because 0 is also "
+            "the value of a genuinely black pixel — so deep shadow, "
+            "dark water and wet tarmac get treated as empty and "
+            "punched out as holes.\n"
+            "\n"
+            "'{auto}' checks each file and only clears NoData when "
+            "real content is hidden behind it. Files where NoData "
+            "marks nothing but the transparent collar are left "
+            "alone.\n"
+            "\n"
+            "'{reveal}' always clears NoData. Hidden content comes "
+            "back, but the collar may render as a solid black border "
+            "rather than transparent.\n"
+            "\n"
+            "'{keep}' leaves the file's NoData setting untouched."
+        ).format(auto="Automatic", reveal=_NODATA_REVEAL_NAME, keep=_NODATA_KEEP_NAME))
         self.addParameter(nodata_param)
 
-        self.addParameter(QgsProcessingParameterRasterDestination(
-            self.OUTPUT, self.tr("Optimised output"),
+        output_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT, self.tr("Optimised raster"),
+        )
+        output_param.setHelp(self.tr(
+            "Where to save the result. Always written as a GeoTIFF, "
+            "tiled with pyramids built in."
         ))
+        self.addParameter(output_param)
 
-        # Everything below is Advanced: Input/Profile/Clear NoData/Output
-        # is the whole decision most runs need, and all three of these
-        # are either a rare override (Force reprocess), routine but
-        # secondary (Replace existing output file - see its own comment
-        # below for why it isn't hidden further), or a safety net most
-        # people should just leave on (Warn me) - none of them belong in
-        # the same visual weight as the actual content decision above.
+        # Everything below is Advanced: Input/Profile/Hidden pixels
+        # (NoData)/Output is the whole decision most runs need, and all
+        # three of these are either a rare override (Reprocess even if
+        # already optimised), routine but secondary (Replace existing
+        # output file - see its own comment below for why it isn't
+        # hidden further), or a safety net most people should just
+        # leave on (Warn me) - none of them belong in the same visual
+        # weight as the actual content decision above.
 
         warn_param = QgsProcessingParameterBoolean(
             self.WARN_ENABLED, self.tr(WARN_ENABLED_LABEL),
@@ -610,21 +591,19 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # for why unticking skips the block entirely rather than just
         # softening it. checkParameterValues() has no feedback/log
         # object, so "log only" is implemented in processAlgorithm().
-        # NoData risk is NOT one of the two: it's a legitimate choice
-        # either way (see checkParameterValues' comment on why it was
-        # removed from here), not something this checkbox gates - it
-        # always logs, regardless of this setting. Both checks here are
+        # NoData risk is NOT one of the two: it's a separate, always-on
+        # hard gate now (see checkParameterValues' NODATA_KEEP comment),
+        # unaffected by this setting either way. Both checks here are
         # metadata-only (no pixel sampling), so ticking this costs
-        # nothing extra either - unlike an earlier version of this
-        # parameter, it was never worth warning that it slows anything
-        # down.
+        # nothing extra.
         warn_param.setHelp(self.tr(
-            "Ticked (the default): if something looks off before "
-            "running - Lossy chosen on elevation, or the file already "
-            "being optimised - a message explains why and blocks Run "
-            "until you address it or untick this. Unticked: the same "
-            "checks still happen, but only write their findings to the "
-            "log; the run proceeds regardless."
+            "Inspects the file before converting and stops with an "
+            "explanation if you've chosen lossy compression for "
+            "elevation data, or if the file is already optimised.\n"
+            "\n"
+            "These are quick checks that read the file's structure "
+            "rather than its contents, so leaving this on costs "
+            "nothing."
         ))
         self.addParameter(warn_param)
 
@@ -642,11 +621,13 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # itself (not just gated in the UI layer), so it works
         # identically via the CLI (--force-reprocess) and direct API use.
         force_reprocess_param.setHelp(self.tr(
-            "Only relevant when the file is already tiled with "
-            "overviews - normally left untouched, since redoing an "
-            "already-fast file wastes time and disk space for no "
-            "benefit. Tick this to reprocess it anyway, for example to "
-            "switch from Lossless to Lossy after the fact."
+            "By default, a file that's already tiled with pyramids is "
+            "left alone, since converting it again wouldn't make it "
+            "any faster.\n"
+            "\n"
+            "Tick this to convert it anyway — for example to switch an "
+            "existing file from lossless to lossy compression to save "
+            "disk space."
         ))
         self.addParameter(force_reprocess_param)
 
@@ -654,9 +635,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # argued overwriting an output while iterating is routine enough
         # that the Advanced section had hidden it well enough to go
         # unnoticed in testing. It's grouped with the other overrides now
-        # because leaving Input/Profile/Clear NoData/Output as the entire
-        # main panel matters more, and both this and Force reprocess are
-        # already right there when a rerun onto the same path needs them.
+        # because leaving Input/Profile/Hidden pixels (NoData)/Output as
+        # the entire main panel matters more, and both this and Reprocess
+        # even if already optimised are already right there when a rerun
+        # onto the same path needs them.
         overwrite_param = QgsProcessingParameterBoolean(
             self.OVERWRITE, self.tr("Replace existing output file"),
             defaultValue=False,
@@ -665,12 +647,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # Label alone doesn't say what happens when left unticked - fixed
         # via setHelp() rather than lengthening the label itself.
         overwrite_param.setHelp(self.tr(
-            "Unticked (the default): if a file already exists at the "
-            "output path, the algorithm refuses to run and tells you, "
-            "rather than overwriting it silently. Ticked: the existing "
-            "file is replaced. Either way your source file is never "
-            "touched - writing the output over the input is refused "
-            "outright, even if you point both at the same file."
+            "Unticked, the tool stops rather than overwriting a file "
+            "that already exists at the output path, and tells you "
+            "what it found.\n"
+            "\n"
+            "Ticked, the existing file is replaced. Your source file "
+            "is never modified either way."
         ))
         self.addParameter(overwrite_param)
 
@@ -684,7 +666,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # always resolves to a genuine value - no more need to read the
         # raw dict to detect "not set" (see the PROFILE_LOSSLESS comment).
         profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
-        clear_nodata = self.parameterAsBoolean(parameters, self.CLEAR_NODATA, context)
+        nodata_choice = self.parameterAsEnum(parameters, self.NODATA_MODE, context)
+        nodata_mode = _NODATA_MODE_STRINGS[nodata_choice]
         warn_enabled = self.parameterAsBoolean(parameters, self.WARN_ENABLED, context)
         force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
@@ -718,10 +701,20 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # ortho, more than Translate+overviews combined) - fixed in
         # core/detector.py's sampling strategy, not here.
         feedback.setProgressText(self.tr("Detecting raster type..."))
+        # _detect_cached(), not detect() directly: reuses the result from
+        # checkParameterValues' NODATA_KEEP pre-flight check when this
+        # happens to be the same algorithm instance (see that method's
+        # docstring for exactly when that is/isn't the case) - a free
+        # speedup where it applies, a no-op fresh detect() where it
+        # doesn't.
+        was_cached = os.path.normcase(os.path.abspath(source_path)) in self._detection_cache
         t_detect = time.perf_counter()
-        detection = detect(source_path, progress_cb=make_progress_cb(0, 10))
+        detection = self._detect_cached(source_path, progress_cb=make_progress_cb(0, 10))
         detect_seconds = time.perf_counter() - t_detect
-        feedback.pushInfo(self.tr("Detection finished in {:.1f}s").format(detect_seconds))
+        if was_cached:
+            feedback.pushInfo(self.tr("Detection already ran during pre-flight checks - reusing that result."))
+        else:
+            feedback.pushInfo(self.tr("Detection finished in {:.1f}s").format(detect_seconds))
 
         if detection.refused:
             raise QgsProcessingException(detection.refusal_reason)
@@ -741,22 +734,6 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
         chosen_profile = self._resolve_profile(detection, profile_choice, feedback)
 
-        if detection.nodata_risk and detection.nodata_risk.applies and detection.nodata_risk.message:
-            if detection.nodata_risk.assessment == "meaningful" and not clear_nodata:
-                # The actionable, teach-a-novice version, given the
-                # strongest available log emphasis - see
-                # _nodata_meaningful_formatted()'s docstring for why a
-                # plain pushWarning() line isn't enough here.
-                html, text = self._nodata_meaningful_formatted(detection.nodata_risk)
-                feedback.pushFormattedMessage(html, text)
-            elif detection.nodata_risk.assessment == "meaningful":
-                # Clear NoData is already ticked: informational
-                # confirmation of what got revealed, not a decision to
-                # make - detector.py's own terser message is enough here.
-                feedback.pushWarning(detection.nodata_risk.message)
-            else:
-                feedback.pushInfo(detection.nodata_risk.message)
-
         def log_cb(phase, elapsed_seconds):
             if phase == "translate":
                 feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
@@ -768,7 +745,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         result = convert(
             source_path, detection=detection, chosen_profile=chosen_profile,
             output_path=output_path, force=overwrite,
-            clear_nodata=clear_nodata,
+            nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
             translate_progress_cb=make_progress_cb(10, 65),
             overview_progress_cb=make_progress_cb(75, 25),
@@ -803,8 +780,55 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         if result.size_note:
             feedback.pushInfo(result.size_note)
         if result.nodata_message:
-            feedback.pushInfo(result.nodata_message)
+            if result.nodata_message_emphasis:
+                # Automatic just revealed real content behind NoData -
+                # the plugin's most educational finding, per instruction,
+                # so it gets the strongest available log emphasis rather
+                # than blending into routine pushInfo lines. Blue, not
+                # the red used for an actual problem: nothing is wrong
+                # here, Automatic already handled it correctly.
+                # pushFormattedMessage(html, text) writes html to
+                # htmlLog() (the GUI log panel) and text to textLog()
+                # (console/qgis_process's plain-text fallback) -
+                # confirmed identical on QGIS 4.2 and 3.44 LTR.
+                html = (
+                    '<p style="color:#1c5f8c; font-weight:bold; margin:4px 0;">{}</p>'
+                ).format(result.nodata_message)
+                text = "*** {} ***".format(result.nodata_message)
+                feedback.pushFormattedMessage(html, text)
+            else:
+                feedback.pushInfo(result.nodata_message)
         return {self.OUTPUT: result.output_path}
+
+    def _detect_cached(self, source_path, progress_cb=None):
+        """detect(), memoized on this instance by source path.
+
+        Best-effort only, not relied on for correctness or performance:
+        checked directly against QGIS's own Processing source
+        (processing/gui/algorithm_widget.py, processing/core/Processing.py)
+        that the single-run dialog and console/qgis_process both call
+        checkParameterValues() and processAlgorithm() on the SAME
+        algorithm instance, so this genuinely avoids paying the NoData
+        pixel-sample cost twice there. Batch processing's own dialog
+        clones a fresh instance per run via algorithm().create() (see
+        BatchAlgorithmDialog.py's runAsSingle()), which strongly suggests
+        each batch row gets a fresh instance too - the cache would just
+        be empty there, and detect() runs again. That's fine: the
+        pixel-sample step this is mainly protecting (the NoData
+        black-pixel check) is a fixed-size grid sample now, not a
+        whole-image read (~4-6s measured on a 1.7GB file, not scaling
+        with source size - see core/detector.py's NODATA_SUBGRID
+        comment), so paying it twice is an acceptable, deliberate trade
+        rather than something worth relying on instance-identity
+        behaviour for, which could silently change between QGIS versions.
+        """
+        key = os.path.normcase(os.path.abspath(source_path))
+        cached = self._detection_cache.get(key)
+        if cached is not None:
+            return cached
+        result = detect(source_path, progress_cb=progress_cb)
+        self._detection_cache[key] = result
+        return result
 
     def _resolve_profile(self, detection, profile_choice, feedback):
         # PROFILE always has a genuine value now (defaulted to lossless

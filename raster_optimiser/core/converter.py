@@ -83,9 +83,10 @@ class ConversionResult:
     output_bytes: Optional[int] = None
     size_summary: Optional[str] = None
     size_note: Optional[str] = None  # set only when output_bytes > source_bytes
-    clear_nodata_requested: bool = False  # echoes the request
+    nodata_mode_requested: str = "keep"  # echoes the request: "auto" | "reveal" | "keep"
     nodata_cleared: bool = False  # what actually happened
     nodata_message: Optional[str] = None  # human explanation of what happened and why
+    nodata_message_emphasis: bool = False  # True only for Automatic's meaningful-content finding
     warnings: list = field(default_factory=list)
 
 
@@ -95,27 +96,63 @@ def _settings_key(detection: "DetectionResult", profile: str) -> str:
     return "lossless_float" if detection.content_type == "FLOAT32_CONTINUOUS" else "lossless_integer"
 
 
-# clear_requested=False (unticked) is the default - asymmetric harm runs
-# the same direction as the profile default: kept-when-it-should-have-
-# cleared is visible speckle a user can see and rerun to fix; cleared-
-# when-it-shouldn't-have-been puts a black collar back on a file that
-# may already have shipped. There is deliberately no automatic mode:
-# an earlier version of this had a third "auto" option that cleared
-# whenever detect() reported it was confident (assessment ==
-# "collar_only") - reverted, because even that confident case is still
-# detect() making a collar-vs-shadow judgement call, which is exactly
-# what the advisory design (see docs/plugin_design_notes.md) says this
-# plugin can't reliably make. Detection can tell the user the choice is
-# worth considering; it can't make the choice.
-def _resolve_nodata_handling(detection: "DetectionResult", clear_requested: bool):
+# NoData mode identity strings - self-describing everywhere, same reason
+# the lossy/lossless profile identity is a string rather than a bridged
+# index (see algorithms/optimise_raster.py's PROFILE_LOSSLESS comment):
+# a QGIS dropdown index meaning something different from a same-numbered
+# constant in this file is exactly the kind of mapping a future edit can
+# get backwards without it showing up anywhere except the output.
+NODATA_MODE_AUTO = "auto"
+NODATA_MODE_REVEAL = "reveal"
+NODATA_MODE_KEEP = "keep"
+
+# Below the threshold detector.py's NoData risk assessment can actually
+# produce (NODATA_INTERIOR_CELL_RISK_FRACTION = 0.001, i.e. 0.1%), so
+# this branch is defensive rather than reachable today - kept anyway so
+# a future change to that threshold can't reintroduce a message reading
+# "around 0.00%", which would look broken rather than reassuring.
+_NODATA_PCT_DISPLAY_FLOOR = 0.005
+
+
+def nodata_pct_phrase(pct: float) -> str:
+    if pct < _NODATA_PCT_DISPLAY_FLOOR:
+        return "a small but detectable amount"
+    return "{:.2f}%".format(pct)
+
+
+def _auto_cleared_message(nodata_risk: "NoDataRisk") -> str:
+    pct = nodata_risk.interior_max_cell_fraction * 100
+    return (
+        "Cleared NoData: around {} of this image's interior was pure "
+        "black and hidden behind a NoData value of 0 — real content, "
+        "usually shadow or water, not just the transparent collar. "
+        "Those pixels are now visible in the output."
+    ).format(nodata_pct_phrase(pct))
+
+
+_AUTO_KEPT_MESSAGE = (
+    "Kept NoData: this file's NoData value only marks the transparent "
+    "collar, so nothing real was hidden. Left unchanged."
+)
+
+
+def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     """Decide whether to append -a_nodata none, and what to tell the
-    caller about it. Returns (should_clear: bool, message: Optional[str]).
+    caller about it. Returns (should_clear: bool, message: Optional[str],
+    emphasis: bool).
 
     Profile-independent by design - this used to be baked separately
     into each ProfileOption's translate_extra_args in detector.py (lossy
     cleared when structurally safe, lossless never did, regardless of
     the detected risk); that inconsistency is gone, replaced by this one
     decision point every profile goes through identically.
+
+    mode == NODATA_MODE_AUTO uses detection.nodata_risk.assessment
+    ("meaningful" clears, everything else keeps) - the QGIS wrapper's
+    checkParameterValues() only ever blocks execution for
+    NODATA_MODE_KEEP on a "meaningful" file (escapable by picking a
+    different mode), never for Automatic, since Automatic already acted
+    on the same finding instead of asking the user to.
     """
     nodata_risk = detection.nodata_risk
 
@@ -124,17 +161,18 @@ def _resolve_nodata_handling(detection: "DetectionResult", clear_requested: bool
         # lands here, since detect_metadata_only never even creates a
         # NoDataRisk for FLOAT32_CONTINUOUS - and plenty of RGB files
         # have no NoData=0 either). The QGIS wrapper's checkParameterValues
-        # refuses this combination outright before execution starts (so
-        # nobody thinks they've cleared something they haven't) - this is
-        # the defensive fallback for any caller that skips that check
-        # (direct API use, the CLI). Only worth a log line if the caller
-        # actually asked for clearing; the no-op default stays quiet.
-        if clear_requested:
+        # refuses NODATA_MODE_REVEAL on such a file outright before
+        # execution starts (so nobody thinks they've revealed something
+        # they haven't) - this is the defensive fallback for any caller
+        # that skips that check (direct API use, the CLI). Only worth a
+        # log line if the caller actually asked to reveal; Automatic and
+        # Keep both stay quiet, since there's nothing to report either way.
+        if mode == NODATA_MODE_REVEAL:
             return False, (
-                "NoData handling: clearing has no effect on this file - "
-                "no NoData=0 condition was detected."
-            )
-        return False, None
+                "NoData handling: revealing hidden pixels has no effect "
+                "on this file - no NoData=0 condition was detected."
+            ), False
+        return False, None, False
 
     if not nodata_risk.clear_possible:
         # nodata_only_transparency: clearing would reveal a border - this
@@ -142,20 +180,26 @@ def _resolve_nodata_handling(detection: "DetectionResult", clear_requested: bool
         # overridden by the caller. This case is also already reflected
         # in whichever profile options are blocked for the same reason
         # where relevant.
-        if clear_requested:
+        if mode == NODATA_MODE_REVEAL:
             return False, (
-                "NoData handling: clearing requested but not possible on "
-                "this file - " + (nodata_risk.message or (
+                "NoData handling: revealing hidden pixels was requested "
+                "but not possible on this file - " + (nodata_risk.message or (
                     "NoData is the only transparency here; clearing it "
                     "would reveal a border."
                 ))
-            )
-        return False, None
+            ), False
+        return False, None, False
 
-    if clear_requested:
-        return True, "NoData handling: cleared, as requested."
+    if mode == NODATA_MODE_REVEAL:
+        return True, "NoData handling: cleared, as requested.", False
 
-    return False, "NoData handling: kept, as requested."
+    if mode == NODATA_MODE_KEEP:
+        return False, "NoData handling: kept, as requested.", False
+
+    # mode == NODATA_MODE_AUTO
+    if nodata_risk.assessment == "meaningful":
+        return True, _auto_cleared_message(nodata_risk), True
+    return False, _AUTO_KEPT_MESSAGE, False
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -347,7 +391,7 @@ def convert(
     chosen_profile: Optional[str] = None,
     output_path: Optional[str] = None,
     force: bool = False,
-    clear_nodata: bool = False,
+    nodata_mode: str = NODATA_MODE_AUTO,
     force_reprocess: bool = False,
     translate_progress_cb=None,
     translate_progress_cb_data=None,
@@ -369,13 +413,11 @@ def convert(
     here imports QGIS; a caller with a progress dialog plugs in here
     without this module changing.
 
-    clear_nodata (default False - keep) - see _resolve_nodata_handling
-    for exactly what this does and doesn't do. Profile-independent:
-    whether NoData=0 gets cleared no longer depends on which profile is
-    picked, only on this. Never clears without being asked to - there is
-    no automatic mode, because even detect()'s most confident read is
-    still a collar-vs-shadow guess this plugin's design says it can't
-    reliably make (see docs/plugin_design_notes.md).
+    nodata_mode (default NODATA_MODE_AUTO) - one of NODATA_MODE_AUTO /
+    NODATA_MODE_REVEAL / NODATA_MODE_KEEP; see _resolve_nodata_handling
+    for exactly what each does. Profile-independent: whether NoData=0
+    gets cleared no longer depends on which profile is picked, only on
+    this.
 
     force_reprocess (default False) - bypasses the "already tiled with
     overviews, do nothing" short-circuit below. Without this, a file
@@ -489,10 +531,11 @@ def convert(
 
     # ---- resolve NoData handling (profile-independent - see
     # _resolve_nodata_handling and convert()'s own docstring) ----
-    should_clear_nodata, nodata_message = _resolve_nodata_handling(detection, clear_nodata)
-    result.clear_nodata_requested = clear_nodata
+    should_clear_nodata, nodata_message, nodata_emphasis = _resolve_nodata_handling(detection, nodata_mode)
+    result.nodata_mode_requested = nodata_mode
     result.nodata_cleared = should_clear_nodata
     result.nodata_message = nodata_message
+    result.nodata_message_emphasis = nodata_emphasis
     if should_clear_nodata:
         full_args += ["-a_nodata", "none"]
 
@@ -669,8 +712,8 @@ def main(argv=None) -> int:
                          help="Required when detection offers a choice")
     parser.add_argument("--output", default=None, help="Output path (default: <stem>_optimised.tif)")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")
-    parser.add_argument("--clear-nodata", action="store_true",
-                         help="Clear NoData=0 on RGB imagery where safe (default: keep)")
+    parser.add_argument("--nodata-mode", choices=["auto", "reveal", "keep"], default="auto",
+                         help="How to handle NoData=0 on RGB imagery (default: auto)")
     parser.add_argument("--force-reprocess", action="store_true",
                          help="Reprocess even if the source is already tiled with overviews")
     parser.add_argument("--quiet", action="store_true", help="No terminal progress bar")
@@ -682,7 +725,7 @@ def main(argv=None) -> int:
     log_cb = None if args.quiet else (lambda phase, secs: print(f"{phase} finished in {secs:.1f}s"))
     result = convert(
         args.path, detection=detection, chosen_profile=args.profile,
-        output_path=args.output, force=args.force, clear_nodata=args.clear_nodata,
+        output_path=args.output, force=args.force, nodata_mode=args.nodata_mode,
         force_reprocess=args.force_reprocess,
         translate_progress_cb=progress_cb, overview_progress_cb=progress_cb,
         log_cb=log_cb,
