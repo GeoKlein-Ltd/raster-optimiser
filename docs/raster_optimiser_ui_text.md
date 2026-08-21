@@ -1,8 +1,8 @@
 # Raster Optimiser — UI text
 
-Polished replacements for all user-facing strings. Reconcile parameter names against the actual code; the wording is what matters.
+The user-facing strings as shipped in the code - this doc is kept in sync with `algorithms/optimise_raster.py` and `core/converter.py`, not the other way round. If you're changing wording, change the code first and update this file to match, not the reverse.
 
-**Note:** this assumes the NoData checkbox becomes a three-option dropdown (Automatic / Reveal / Keep as-is). If it stays a checkbox, adjust the NoData entries accordingly.
+The NoData parameter is the three-option dropdown described below (Automatic / Reveal hidden pixels / Keep as-is), not a checkbox.
 
 ---
 
@@ -201,11 +201,21 @@ Not a warning — informational, but should stand out. This is the most educatio
 
 ---
 
-### Log message when Automatic leaves NoData alone
+### Log message when Automatic confirms nothing was hidden
 
-Routine. No emphasis needed.
+Routine. No emphasis needed. Fires when detection sampled the file and found NoData marks only the collar.
 
 > Kept NoData: this file's NoData value only marks the transparent collar, so nothing real was hidden. Left unchanged.
+
+---
+
+### Log message when Automatic couldn't tell
+
+Routine. No emphasis needed, but must not be conflated with the message above — this fires when detection *couldn't determine* whether real content was hidden, not when it confirmed there wasn't any. Saying "nothing real was hidden" here would be a false reassurance the file never earned.
+
+Reachable for two different reasons, not just a small file: the image's dimensions can be too small for the sampling grid to have any interior cells at all, or a large file can still have sparse, thin coverage (an oddly-shaped survey area) where every interior cell individually falls under the minimum valid-pixel threshold. The wording below is deliberately neutral about which.
+
+> Kept NoData: this file didn't have enough interior area to sample reliably, so it wasn't possible to tell whether real content is hidden behind NoData=0. Left unchanged. If dark areas look like they have holes in them, run again with **Reveal hidden pixels**.
 
 ---
 

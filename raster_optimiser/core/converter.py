@@ -130,9 +130,29 @@ def _auto_cleared_message(nodata_risk: "NoDataRisk") -> str:
     ).format(nodata_pct_phrase(pct))
 
 
-_AUTO_KEPT_MESSAGE = (
+_AUTO_KEPT_COLLAR_ONLY_MESSAGE = (
     "Kept NoData: this file's NoData value only marks the transparent "
     "collar, so nothing real was hidden. Left unchanged."
+)
+
+# Distinct from the collar-only message above: "collar_only" means
+# detection looked and confirmed nothing real was hidden.
+# "insufficient_sample" means detection couldn't tell either way -
+# interior_checked came back 0 in _black_pixel_sample(), which happens
+# for two different reasons, not just a small file: the image's
+# dimensions can be too small for the sampling grid to have any
+# interior cells at all, OR a large file can still have sparse, thin
+# coverage (an oddly-shaped survey area) where every interior cell
+# individually falls under NODATA_MIN_CELL_VALID_PIXELS valid pixels.
+# Reporting this as "confirmed collar-only" would be a false
+# reassurance neither cause earns - "didn't have enough interior area
+# to sample reliably" is true of both without claiming to know which.
+_AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE = (
+    "Kept NoData: this file didn't have enough interior area to "
+    "sample reliably, so it wasn't possible to tell whether real "
+    "content is hidden behind NoData=0. Left unchanged. If dark areas "
+    "look like they have holes in them, run again with 'Reveal hidden "
+    "pixels'."
 )
 
 
@@ -147,11 +167,15 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     the detected risk); that inconsistency is gone, replaced by this one
     decision point every profile goes through identically.
 
-    mode == NODATA_MODE_AUTO uses detection.nodata_risk.assessment
-    ("meaningful" clears, everything else keeps) - the QGIS wrapper's
-    checkParameterValues() only ever blocks execution for
-    NODATA_MODE_KEEP on a "meaningful" file (escapable by picking a
-    different mode), never for Automatic, since Automatic already acted
+    mode == NODATA_MODE_AUTO uses detection.nodata_risk.assessment:
+    "meaningful" clears; "collar_only" and "insufficient_sample" both
+    keep, but with different messages - conflating them would report
+    "confirmed nothing was hidden" for a file detection actually
+    couldn't read at all, which is a false reassurance neither the file
+    nor the user earned. The QGIS wrapper's checkParameterValues() only
+    ever blocks execution for NODATA_MODE_KEEP on a "meaningful" file
+    (escapable by picking a different mode), never for Automatic, since
+    Automatic already acted
     on the same finding instead of asking the user to.
     """
     nodata_risk = detection.nodata_risk
@@ -199,7 +223,9 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     # mode == NODATA_MODE_AUTO
     if nodata_risk.assessment == "meaningful":
         return True, _auto_cleared_message(nodata_risk), True
-    return False, _AUTO_KEPT_MESSAGE, False
+    if nodata_risk.assessment == "insufficient_sample":
+        return False, _AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE, False
+    return False, _AUTO_KEPT_COLLAR_ONLY_MESSAGE, False
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
