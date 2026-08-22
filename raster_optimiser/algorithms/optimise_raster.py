@@ -214,12 +214,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "processing software missing two things GDAL needs in order "
             "to draw them quickly:</p>"
             "<ul>"
-            "<li><b>Pyramids</b>, also called overviews: pre-built "
+            "<li>Pyramids, also called overviews: pre-built "
             "smaller copies of the image. Without them, QGIS has to "
             "read every pixel in the file just to draw a zoomed-out "
             "view. On a 470-megapixel ortho, that's the entire file, on "
             "every pan and every zoom.</li>"
-            "<li><b>Tiling</b>: storing pixels as small squares rather "
+            "<li>Tiling: storing pixels as small squares rather "
             "than full-width rows, so software can read one part of "
             "the image without touching the rest.</li>"
             "</ul>"
@@ -247,14 +247,14 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "settings, so the tool detects them and stops rather than "
             "producing something quietly wrong:</p>"
             "<ul>"
-            "<li><b>Classified rasters</b>: land cover, species class, "
+            "<li>Classified rasters: land cover, species class, "
             "or any map where pixel values are category codes rather "
             "than measurements. Building pyramids averages neighbouring "
             "pixels, and averaging two categories produces a third that "
             "doesn't exist.</li>"
-            "<li><b>Multispectral rasters</b>, or anything with more "
+            "<li>Multispectral rasters, or anything with more "
             "than four bands.</li>"
-            "<li><b>Files with no coordinate reference system.</b></li>"
+            "<li>Files with no coordinate reference system.</li>"
             "</ul>"
 
             "<p><b>Your source file is never modified.</b> The tool "
@@ -262,21 +262,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
             "<p><b>Glossary</b></p>"
             "<ul>"
-            "<li><b>NoData</b>: a pixel value the file declares to "
+            "<li>NoData: a pixel value the file declares to "
             "mean \"nothing here\". Safe on elevation data, where you "
             "can pick a value no real height could ever be, such as "
             "-9999. Risky on 8-bit imagery, where every value from 0 to "
             "255 is a legitimate colour and 0 is simply black.</li>"
-            "<li><b>Alpha band</b>: an extra band recording which "
+            "<li>Alpha band: an extra band recording which "
             "pixels fall inside the surveyed area. It works by position "
             "rather than by value, so it never mistakes a black pixel "
             "for an empty one.</li>"
-            "<li><b>Collar</b>: the transparent border around a survey "
+            "<li>Collar: the transparent border around a survey "
             "area, where the image doesn't fill the rectangular "
             "file.</li>"
-            "<li><b>Pyramids / overviews</b>: pre-built smaller copies "
+            "<li>Pyramids / overviews: pre-built smaller copies "
             "of the image at successive zoom levels.</li>"
-            "<li><b>Tiling</b>: storing the image as small squares "
+            "<li>Tiling: storing the image as small squares "
             "instead of full-width rows.</li>"
             "</ul>"
         )
@@ -736,18 +736,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(result.size_note)
         if result.nodata_message:
             if result.nodata_message_emphasis:
-                # Automatic just revealed real content behind NoData -
-                # the plugin's most educational finding, per instruction,
-                # so it gets the strongest available log emphasis rather
-                # than blending into routine pushInfo lines. Blue, not
-                # the red used for an actual problem: nothing is wrong
-                # here, Automatic already handled it correctly.
-                # pushFormattedMessage(html, text) writes html to
-                # htmlLog() (the GUI log panel) and text to textLog()
-                # (console/qgis_process's plain-text fallback) -
-                # confirmed identical on QGIS 4.2 and 3.44 LTR.
+                # The plugin's most educational finding (real content
+                # found behind NoData, whether Automatic cleared it or
+                # Keep as-is left it), so it gets the strongest available
+                # log emphasis rather than blending into routine pushInfo
+                # lines. No hardcoded colour: an earlier version used a
+                # fixed blue here, which reads poorly against a dark
+                # theme's log background for the same reason the help
+                # panel's hardcoded colours did. Bold alone carries the
+                # emphasis and inherits whatever the theme's own text
+                # colour is. pushFormattedMessage(html, text) writes html
+                # to htmlLog() (the GUI log panel) and text to textLog()
+                # (console/qgis_process's plain-text fallback) - confirmed
+                # identical on QGIS 4.2 and 3.44 LTR.
                 html = (
-                    '<p style="color:#1c5f8c; font-weight:bold; margin:4px 0;">{}</p>'
+                    '<p style="font-weight:bold; margin:4px 0;">{}</p>'
                 ).format(result.nodata_message)
                 text = "*** {} ***".format(result.nodata_message)
                 feedback.pushFormattedMessage(html, text)
