@@ -241,6 +241,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<p>Both profiles produce a file that loads at the same "
             "speed. The choice only affects file size and whether "
             "pixel values survive unchanged.</p>"
+            "<p>Multispectral and 16-bit imagery are always processed "
+            "losslessly too, the same as elevation: JPEG compression "
+            "needs exactly three 8-bit colour bands, which doesn't "
+            "apply to either.</p>"
 
             "<p><b>What it won't process</b></p>"
             "<p>Some rasters can't be optimised safely with these "
@@ -252,8 +256,6 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "than measurements. Building pyramids averages neighbouring "
             "pixels, and averaging two categories produces a third that "
             "doesn't exist.</li>"
-            "<li>Multispectral rasters, or anything with more "
-            "than four bands.</li>"
             "<li>Files with no coordinate reference system.</li>"
             "</ul>"
 

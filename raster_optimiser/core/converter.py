@@ -93,7 +93,13 @@ class ConversionResult:
 def _settings_key(detection: "DetectionResult", profile: str) -> str:
     if profile == "lossy":
         return "lossy"
-    return "lossless_float" if detection.content_type == "FLOAT32_CONTINUOUS" else "lossless_integer"
+    # Predictor by dtype, not by content type: checking dtype directly
+    # (rather than the FLOAT32_CONTINUOUS sentinel, which only ever
+    # applied to single-band elevation) is what makes this correct for
+    # the CONTINUOUS bucket too - a multi-band Float32 file needs
+    # PREDICTOR=3 exactly the same way single-band elevation does, and a
+    # content-type check alone would miss that.
+    return "lossless_float" if detection.dtype == "Float32" else "lossless_integer"
 
 
 # NoData mode identity strings - self-describing everywhere, same reason

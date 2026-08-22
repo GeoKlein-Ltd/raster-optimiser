@@ -49,8 +49,27 @@ gdal.UseExceptions()
 # elevation-like values" reliably.
 CLASSIFIED_SAMPLE_TARGET_DIM = 500
 
-# Single-band integer raster with no colour table: at or under this many
-# unique values in the sample reads as classified/categorical.
+# At or under this many unique values in the sample reads as
+# classified/categorical - originally single-band only, now checked per
+# band across the continuous bucket too (see CONTINUOUS content type
+# below), whichever band count the file has.
+#
+# Known gap, deliberately not fixed: a genuinely categorical raster with
+# MORE than this many codes and no embedded colour table reads as
+# continuous instead, since a higher unique-value count means "looks
+# less classified" under this heuristic - the wrong direction for that
+# case. Real products with this shape exist (e.g. USDA Cropland Data
+# Layer, 100+ crop-type codes, not always shipped with a GDAL-readable
+# colour table). This isn't a new risk from supporting the continuous
+# bucket - it already existed for single-band data - but that bucket
+# does widen exposure to it, since band count and dtype used to keep
+# some file shapes (5+ bands, non-Byte 3-4 band) away from this check
+# entirely, and no longer do. Candidate fix if this ever bites in
+# practice: check value DENSITY, not just count - real continuous
+# measurements sample as a dense spread across their range, while
+# classified codes sample as sparse, isolated integers (e.g.
+# 1,2,3,4,5,11,12,21,22...) regardless of how many of them there are.
+# Not built speculatively - recorded here instead.
 CLASSIFIED_MAX_UNIQUE_VALUES = 100
 
 # Spatial bins per axis when checking for localized NoData=0 clusters.
@@ -197,14 +216,15 @@ class DetectionResult:
 
     # True when the metadata-only pass (detect_metadata_only) could not
     # fully resolve classification and a pixel read is genuinely required -
-    # either a single-band integer raster with no colour table (classified
-    # vs. unrecognised needs a unique-value count) or an RGB file with
-    # NoData=0 whose black-pixel risk hasn't been sampled yet. detect()
-    # always resolves this to False before returning; only a result
-    # returned directly by detect_metadata_only() can still have it True.
+    # either a CONTINUOUS-bucket raster (any band count) with no colour
+    # table on band 1 (classified vs. genuinely continuous needs a
+    # per-band unique-value count) or an RGB_8BIT file with NoData=0
+    # whose black-pixel risk hasn't been sampled yet. detect() always
+    # resolves this to False before returning; only a result returned
+    # directly by detect_metadata_only() can still have it True.
     needs_pixel_sampling: bool = False
 
-    content_type: Optional[str] = None  # RGB_8BIT | RGB_16BIT | FLOAT32_CONTINUOUS
+    content_type: Optional[str] = None  # RGB_8BIT | FLOAT32_CONTINUOUS | CONTINUOUS
     band_count: Optional[int] = None
     dtype: Optional[str] = None
     has_alpha: bool = False
@@ -422,18 +442,21 @@ def detect_metadata_only(path: str) -> DetectionResult:
     Two things are deliberately left unresolved here, flagged via
     result.needs_pixel_sampling=True:
 
-    - single-band integer data with no colour table: classified vs.
-      unrecognised depends on a unique-value count over a decimated read.
-    - RGB with NoData=0 and real (non-nodata-only) transparency: the
+    - CONTINUOUS-bucket data (any band count) with no colour table on
+      band 1: classified vs. genuinely continuous needs a per-band
+      unique-value count over a decimated read, checked across every
+      non-alpha band by detect() - see that function and CONTINUOUS
+      below.
+    - RGB_8BIT with NoData=0 and real (non-nodata-only) transparency: the
       black-pixel cluster risk assessment depends on the same kind of
       sample. This never blocks the lossy profile (nodata risk is
       advisory, see module docstring/docs/plugin_design_notes.md) so it
       doesn't affect what checkParameterValues can decide - it only
       means nodata_risk is incomplete on a result returned from here.
 
-    Every other refusal (no CRS, unsupported dtype, multispectral,
-    16-bit-blocks-lossy, nodata-only-transparency-blocks-lossy,
-    colour-table-classified) is fully resolved here.
+    Every other refusal (no CRS, unsupported dtype, colour-table-
+    classified, nodata-only-transparency-blocks-lossy) is fully resolved
+    here.
     """
     result = DetectionResult(path=path)
 
@@ -455,146 +478,34 @@ def detect_metadata_only(path: str) -> DetectionResult:
         ds = None
 
 
-def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> DetectionResult:
-    result.raster_size = (ds.RasterXSize, ds.RasterYSize)
-    result.has_crs = _has_georeferencing(ds)
-    result.has_aux_xml = os.path.exists(result.path + ".aux.xml")
+def _is_alpha_band(band: "gdal.Band") -> bool:
+    return gdal.GetColorInterpretationName(band.GetColorInterpretation()) == "Alpha"
 
-    if not result.has_crs:
-        return _refuse(
-            result,
-            "NO_CRS",
-            "No coordinate reference system found. This looks like a plain "
-            "image, not a georeferenced raster.",
-        )
 
-    band_count = ds.RasterCount
-    result.band_count = band_count
-    band1 = ds.GetRasterBand(1)
-    dtype = gdal.GetDataTypeName(band1.DataType)
-    result.dtype = dtype
-    result.block_size = tuple(band1.GetBlockSize())
-    result.overview_count = band1.GetOverviewCount()
-    result.has_overviews = result.overview_count > 0
-
-    for i in range(2, band_count + 1):
-        other_dtype = gdal.GetDataTypeName(ds.GetRasterBand(i).DataType)
-        if other_dtype != dtype:
-            result.warnings.append(
-                f"Band {i} has data type {other_dtype}, differs from band 1 "
-                f"({dtype}). Detection uses band 1's type."
-            )
-
-    # ---- Stage 1: content-type classification ----
-
-    if band_count == 1:
-        if dtype == "Float32":
-            result.content_type = "FLOAT32_CONTINUOUS"
-        elif dtype in INTEGER_DTYPES:
-            has_color_table = band1.GetColorTable() is not None
-            if has_color_table:
-                return _refuse(
-                    result,
-                    "CLASSIFIED",
-                    "This looks like a classified/categorical raster (a "
-                    "colour table is present). Building pyramids with "
-                    "average resampling blends category codes into "
-                    "meaningless fractional values - silent corruption. "
-                    "Nearest-neighbour handling for classified rasters "
-                    "isn't in v1 yet.",
-                )
-            # No colour table: classified vs. unrecognised needs a
-            # unique-value count over pixels - can't resolve from
-            # metadata alone. detect() finishes this.
-            result.needs_pixel_sampling = True
-            result.ok = True
-            return result
-        else:
-            return _refuse(
-                result,
-                "UNSUPPORTED_DTYPE",
-                f"Single-band data type {dtype} isn't supported in v1. "
-                "Supported: Float32 elevation, or classified integer "
-                "rasters (which are refused with a different message).",
-            )
-
-    elif band_count in (3, 4):
-        if dtype not in ("Byte", "UInt16"):
-            return _refuse(
-                result,
-                "UNSUPPORTED_DTYPE",
-                f"{band_count}-band data of type {dtype} isn't supported in "
-                "v1. Supported: 8-bit or 16-bit RGB (3-4 band).",
-            )
-
-        alpha_index = None
-        if band_count == 4:
-            band4 = ds.GetRasterBand(4)
-            if gdal.GetColorInterpretationName(band4.GetColorInterpretation()) == "Alpha":
-                alpha_index = 4
-            else:
-                return _refuse(
-                    result,
-                    "MULTISPECTRAL",
-                    f"This raster has {band_count} bands and band 4 isn't "
-                    "flagged as alpha, so it reads as multispectral rather "
-                    "than RGB imagery. Multispectral isn't in v1. "
-                    "Supported: 8-bit/16-bit RGB (3-4 band), single-band "
-                    "Float32 elevation.",
-                )
-
-        result.has_alpha = alpha_index is not None
-        result.alpha_band_index = alpha_index
-        result.content_type = "RGB_8BIT" if dtype == "Byte" else "RGB_16BIT"
-
-    elif band_count > 4:
-        return _refuse(
-            result,
-            "MULTISPECTRAL",
-            f"This raster has {band_count} bands - reads as multispectral "
-            "rather than RGB imagery. Multispectral isn't in v1. Supported: "
-            "8-bit/16-bit RGB (3-4 band), single-band Float32 elevation.",
-        )
-
-    else:
-        return _refuse(result, "NO_BANDS", "This raster has no readable bands.")
-
-    # ---- Stage 2: profile resolution ----
-
-    if result.content_type == "FLOAT32_CONTINUOUS":
-        result.profile_mode = "forced"
-        result.forced_profile = "lossless"
-        settings = RECOMMENDED_SETTINGS["lossless_float"]
-        result.profile_options = [
-            ProfileOption(
-                profile="lossless",
-                available=True,
-                recommended_settings=settings,
-                translate_extra_args=[],
-            )
-        ]
-        result.ok = True
-        return result
-
-    # RGB_8BIT or RGB_16BIT: profile is a live choice, subject to Stage 2A checks.
+def _finish_rgb_8bit(result: DetectionResult, band1: "gdal.Band", has_alpha: bool, alpha_index) -> DetectionResult:
+    """Shared profile-resolution tail for RGB_8BIT, reached from either
+    the 3-band or the 4-band-with-real-alpha case in Stage 1 below - the
+    two differ only in has_alpha/alpha_index, everything after that is
+    identical. Kept as its own function specifically so that difference
+    doesn't get duplicated: a 4-band Byte file WITHOUT real alpha in
+    band 4 must never reach this function (it falls through to
+    CONTINUOUS instead - see Stage 1), since offering JPEG/YCbCr lossy on
+    an unflagged 4th band would silently mishandle it, not because the
+    band count itself is unsafe.
+    """
+    result.has_alpha = has_alpha
+    result.alpha_band_index = alpha_index
+    result.content_type = "RGB_8BIT"
     result.profile_mode = "choice"
+
     nodata_value = band1.GetNoDataValue()
-    transparency_source = _transparency_source(band1, nodata_value, result.has_alpha)
+    transparency_source = _transparency_source(band1, nodata_value, has_alpha)
     result.transparency_source = transparency_source
 
-    rgb_indices = [1, 2, 3]
     nodata_risk = NoDataRisk()
     lossy_blocked_reason = None
 
-    if result.content_type == "RGB_16BIT":
-        lossy_blocked_reason = (
-            "JPEG needs 8-bit data. Converting your 16-bit values down "
-            "means guessing a scale, which risks wrecking contrast - not "
-            "something this plugin will do silently. Choose the lossless "
-            "option instead, or convert to 8-bit yourself first if you're "
-            "sure of the intended range."
-        )
-    elif nodata_value == 0:
+    if nodata_value == 0:
         nodata_risk.applies = True
         nodata_risk.nodata_value = nodata_value
         if transparency_source == "nodata_only":
@@ -618,27 +529,25 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
             # question is whether it reveals real content, which is what
             # the pixel sample below decides. This is the single source
             # of truth converter.py uses to decide whether the NoData
-            # handling choice (Keep/Clear/Auto) is even actionable on
-            # this file - see convert()'s "resolve NoData handling" step.
+            # handling choice (Automatic/Reveal/Keep) is even actionable
+            # on this file - see convert()'s "resolve NoData handling" step.
             result.needs_pixel_sampling = True
             nodata_risk.clear_possible = True
 
     result.nodata_risk = nodata_risk
 
-    settings_key = "lossless_integer"
     # No -a_nodata handling here any more: whether NoData gets cleared is
-    # now driven entirely by the caller's nodata_handling choice in
-    # convert(), independent of which profile is picked - see that
-    # function's "resolve NoData handling" step. This used to be baked
-    # in here (lossy always cleared when structurally safe, lossless
-    # never did, regardless of the detected risk) - an inconsistency
-    # nobody chose and the new parameter replaces outright. The band-
-    # selection/mask args below are still genuinely profile-specific
-    # (only the lossy profile needs to drop the alpha band to unlock
-    # YCbCr) and stay here.
+    # now driven entirely by the caller's nodata_mode choice in convert(),
+    # independent of which profile is picked - see that function's
+    # "resolve NoData handling" step. This used to be baked in here
+    # (lossy always cleared when structurally safe, lossless never did,
+    # regardless of the detected risk) - an inconsistency nobody chose
+    # and the new parameter replaces outright. The band-selection/mask
+    # args below are still genuinely profile-specific (only the lossy
+    # profile needs to drop the alpha band to unlock YCbCr) and stay here.
     translate_extra_lossy = []
-    if result.has_alpha:
-        translate_extra_lossy = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(result.alpha_band_index)]
+    if has_alpha:
+        translate_extra_lossy = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(alpha_index)]
 
     lossy_option = ProfileOption(
         profile="lossy",
@@ -650,10 +559,140 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     lossless_option = ProfileOption(
         profile="lossless",
         available=True,
-        recommended_settings=RECOMMENDED_SETTINGS[settings_key],
+        recommended_settings=RECOMMENDED_SETTINGS["lossless_integer"],
         translate_extra_args=[],
     )
     result.profile_options = [lossy_option, lossless_option]
+    result.ok = True
+    return result
+
+
+def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> DetectionResult:
+    result.raster_size = (ds.RasterXSize, ds.RasterYSize)
+    result.has_crs = _has_georeferencing(ds)
+    result.has_aux_xml = os.path.exists(result.path + ".aux.xml")
+
+    if not result.has_crs:
+        return _refuse(
+            result,
+            "NO_CRS",
+            "No coordinate reference system found. This looks like a plain "
+            "image, not a georeferenced raster.",
+        )
+
+    band_count = ds.RasterCount
+    result.band_count = band_count
+    if band_count < 1:
+        return _refuse(result, "NO_BANDS", "This raster has no readable bands.")
+
+    band1 = ds.GetRasterBand(1)
+    dtype = gdal.GetDataTypeName(band1.DataType)
+    result.dtype = dtype
+    result.block_size = tuple(band1.GetBlockSize())
+    result.overview_count = band1.GetOverviewCount()
+    result.has_overviews = result.overview_count > 0
+
+    for i in range(2, band_count + 1):
+        other_dtype = gdal.GetDataTypeName(ds.GetRasterBand(i).DataType)
+        if other_dtype != dtype:
+            result.warnings.append(
+                f"Band {i} has data type {other_dtype}, differs from band 1 "
+                f"({dtype}). Detection uses band 1's type."
+            )
+
+    # ---- Stage 1a: elevation - single-band Float32, unconditionally
+    # forced lossless. Kept as its own case, deliberately not folded into
+    # CONTINUOUS below: this forced-profile-plus-optional-warning
+    # behaviour was tuned deliberately over several rounds and must not
+    # change as a side effect of CONTINUOUS existing.
+    if band_count == 1 and dtype == "Float32":
+        result.content_type = "FLOAT32_CONTINUOUS"
+        result.profile_mode = "forced"
+        result.forced_profile = "lossless"
+        settings = RECOMMENDED_SETTINGS["lossless_float"]
+        result.profile_options = [
+            ProfileOption(
+                profile="lossless",
+                available=True,
+                recommended_settings=settings,
+                translate_extra_args=[],
+            )
+        ]
+        result.ok = True
+        return result
+
+    # ---- Stage 1b: RGB imagery - 3-4 band Byte, the only content type
+    # where lossy is ever actually offered (JPEG/YCbCr genuinely needs
+    # exactly three 8-bit visible bands, which is what this is). A
+    # 4-band Byte file whose 4th band ISN'T real alpha does NOT enter
+    # this branch - it falls through to Stage 1d/CONTINUOUS below,
+    # lossless only, rather than being refused (as it was in v1) or
+    # silently offered a lossy path that would mishandle its 4th band.
+    if band_count == 3 and dtype == "Byte":
+        return _finish_rgb_8bit(result, band1, has_alpha=False, alpha_index=None)
+
+    if band_count == 4 and dtype == "Byte":
+        band4 = ds.GetRasterBand(4)
+        if _is_alpha_band(band4):
+            return _finish_rgb_8bit(result, band1, has_alpha=True, alpha_index=4)
+        # else: falls through below.
+
+    # ---- Stage 1c: single-band integer with an embedded colour table -
+    # definitely classified, resolvable from metadata alone, no pixel
+    # read needed.
+    if band_count == 1 and dtype in INTEGER_DTYPES:
+        has_color_table = band1.GetColorTable() is not None
+        if has_color_table:
+            return _refuse(
+                result,
+                "CLASSIFIED",
+                "This looks like a classified/categorical raster (a "
+                "colour table is present). Building pyramids with "
+                "average resampling blends category codes into "
+                "meaningless fractional values - silent corruption. "
+                "Nearest-neighbour handling for classified rasters "
+                "isn't in v1 yet.",
+            )
+
+    # ---- Stage 1d: CONTINUOUS - everything else this plugin already
+    # trusts the dtype of: any other band count (1 without a colour
+    # table, 2, non-Byte 3-4, 5+) with integer or Float32 data. Absorbs
+    # what used to be three separate cases - unrecognised single-band
+    # integer data, 16-bit RGB (whose "choice" was already a no-op, since
+    # lossy was never actually available on it), and multispectral (5+
+    # bands) - because none of them need band count or "what this raster
+    # represents" to process correctly: only dtype (for the predictor)
+    # and "is it classified", which is still unknown at this point and
+    # needs an actual pixel read per band - exactly what
+    # detect_metadata_only() can't do. detect() resolves it; see
+    # CLASSIFIED_MAX_UNIQUE_VALUES's comment for the one known gap in
+    # how it resolves it.
+    if dtype not in INTEGER_DTYPES and dtype != "Float32":
+        return _refuse(
+            result,
+            "UNSUPPORTED_DTYPE",
+            f"Data type {dtype} isn't supported in v1. Supported: 8-bit "
+            "RGB (3-4 band) for lossy/lossless, or Float32/integer data "
+            "elsewhere for lossless once it's confirmed not classified.",
+        )
+
+    result.content_type = "CONTINUOUS"
+    result.needs_pixel_sampling = True
+    result.profile_mode = "choice"
+    settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
+    lossy_blocked_reason = (
+        "JPEG needs exactly three 8-bit colour bands (YCbCr) - this file "
+        "doesn't fit that model, so only the lossless option is offered."
+    )
+    result.profile_options = [
+        ProfileOption(profile="lossy", available=False, reason_blocked=lossy_blocked_reason),
+        ProfileOption(
+            profile="lossless",
+            available=True,
+            recommended_settings=RECOMMENDED_SETTINGS[settings_key],
+            translate_extra_args=[],
+        ),
+    ]
     result.ok = True
     return result
 
@@ -694,33 +733,40 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
 
 
 def _detect_body(result: DetectionResult, ds: "gdal.Dataset", progress_cb, progress_cb_data) -> DetectionResult:
-    if result.band_count == 1:
-        # Deferred from detect_metadata_only: integer, no colour table -
-        # classified vs. unrecognised needs a unique-value count.
-        band1 = ds.GetRasterBand(1)
-        unique_count = _classified_unique_count(ds, band1)
+    if result.content_type == "CONTINUOUS":
+        # Deferred from detect_metadata_only: classified vs. genuinely
+        # continuous needs a unique-value count over pixels, checked
+        # across every non-alpha band - not just band 1 - so a hidden
+        # categorical band (a QA/quality-flag band bundled into an
+        # otherwise continuous multispectral product, for example)
+        # doesn't slip through undetected. Alpha/mask bands are skipped
+        # outright: a real alpha channel is expected to have very few
+        # unique values (a near-binary mask), which would otherwise
+        # misread as classified - confirmed on this project's own
+        # MSTIFF.tif test file, whose alpha band sampled to exactly 2
+        # unique values.
+        for i in range(1, result.band_count + 1):
+            band = ds.GetRasterBand(i)
+            if _is_alpha_band(band):
+                continue
+            unique_count = _classified_unique_count(ds, band)
+            if unique_count <= CLASSIFIED_MAX_UNIQUE_VALUES:
+                result.needs_pixel_sampling = False
+                return _refuse(
+                    result,
+                    "CLASSIFIED",
+                    f"Band {i} looks classified/categorical (only "
+                    f"{unique_count} unique values in a "
+                    f"{CLASSIFIED_SAMPLE_TARGET_DIM}px sample). Building "
+                    "pyramids with average resampling blends category "
+                    "codes into meaningless fractional values - silent "
+                    "corruption. Nearest-neighbour handling for "
+                    "classified rasters isn't in v1 yet.",
+                )
         result.needs_pixel_sampling = False
-        if unique_count <= CLASSIFIED_MAX_UNIQUE_VALUES:
-            return _refuse(
-                result,
-                "CLASSIFIED",
-                "This looks like a classified/categorical raster "
-                f"(only {unique_count} unique values in a "
-                f"{CLASSIFIED_SAMPLE_TARGET_DIM}px sample). Building pyramids with "
-                "average resampling blends category codes into "
-                "meaningless fractional values - silent corruption. "
-                "Nearest-neighbour handling for classified rasters isn't "
-                "in v1 yet.",
-            )
-        return _refuse(
-            result,
-            "SINGLE_BAND_UNRECOGNIZED",
-            f"Single-band {result.dtype} data that isn't Float32 "
-            "elevation and doesn't look classified isn't a recognised "
-            "v1 case yet.",
-        )
+        return result
 
-    # Deferred from detect_metadata_only: RGB with NoData=0 and real
+    # Deferred from detect_metadata_only: RGB_8BIT with NoData=0 and real
     # transparency - black-pixel cluster risk needs the pixel sample.
     stats = _black_pixel_sample(
         ds, [1, 2, 3], alpha_index=result.alpha_band_index,
@@ -801,7 +847,7 @@ def _print_report(result: DetectionResult) -> None:
     print(f"  Block size: {result.block_size[0]}x{result.block_size[1]}")
     print(f"  Overviews: {result.overview_count}")
     print(f"  Content type: {result.content_type}")
-    if result.content_type in ("RGB_8BIT", "RGB_16BIT"):
+    if result.content_type == "RGB_8BIT":
         print(f"  Alpha band: {result.alpha_band_index if result.has_alpha else 'none'}")
         print(f"  Transparency source: {result.transparency_source}")
 

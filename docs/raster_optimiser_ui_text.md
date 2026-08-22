@@ -45,12 +45,13 @@ This tool adds both, and compresses the file sensibly on the way through.
 
 Both profiles produce a file that loads at the same speed. The choice only affects file size and whether pixel values survive unchanged.
 
+Multispectral and 16-bit imagery are always processed losslessly too, the same as elevation: JPEG compression needs exactly three 8-bit colour bands, which doesn't apply to either.
+
 **What it won't process**
 
 Some rasters can't be optimised safely with these settings, so the tool detects them and stops rather than producing something quietly wrong:
 
 - **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two categories produces a third that doesn't exist.
-- **Multispectral rasters**, or anything with more than four bands.
 - **Files with no coordinate reference system.**
 
 **Your source file is never modified.** The tool always writes a new file.
