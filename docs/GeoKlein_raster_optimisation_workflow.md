@@ -59,8 +59,8 @@ They add roughly a third to the file size, because each level is a quarter the p
 
 Pyramids can be stored two ways:
 
-- **Internal** — written inside the TIFF. One self-contained file. Modifies the source, cannot be undone.
-- **External** — written to a sidecar file called `yourfile.tif.ovr`. Source untouched. But if the `.ovr` gets separated from the `.tif`, it stops working entirely. There is no search path. It has to sit in the same folder with the same base name.
+- **Internal**: written inside the TIFF. One self-contained file. Modifies the source, cannot be undone.
+- **External**: written to a sidecar file called `yourfile.tif.ovr`. Source untouched. But if the `.ovr` gets separated from the `.tif`, it stops working entirely. There is no search path. It has to sit in the same folder with the same base name.
 
 Use External on someone else's original. Use Internal on files you produce.
 
@@ -68,8 +68,8 @@ Use External on someone else's original. Use Internal on files you produce.
 
 Pixels have to be stored in some order. Two options:
 
-- **Stripped** — stored in horizontal rows spanning the full width. Reading anything in a row means reading the whole row.
-- **Tiled** — stored as independent squares, typically 256x256 or 512x512. Software can read any square without touching the rest.
+- **Stripped**: stored in horizontal rows spanning the full width. Reading anything in a row means reading the whole row.
+- **Tiled**: stored as independent squares, typically 256x256 or 512x512. Software can read any square without touching the rest.
 
 For map navigation, tiled is essential. Stripped files are painful regardless of what else you do.
 

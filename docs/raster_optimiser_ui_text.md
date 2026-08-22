@@ -1,4 +1,4 @@
-# Raster Optimiser — UI text
+# Raster Optimiser UI text
 
 The user-facing strings as shipped in the code - this doc is kept in sync with `algorithms/optimise_raster.py` and `core/converter.py`, not the other way round. If you're changing wording, change the code first and update this file to match, not the reverse.
 
@@ -6,7 +6,7 @@ The NoData parameter is the three-option dropdown described below (Automatic / R
 
 ---
 
-## shortDescription() — toolbox hover tooltip
+## shortDescription() (toolbox hover tooltip)
 
 > Makes slow, oversized rasters load and pan quickly in QGIS.
 
@@ -32,16 +32,16 @@ Makes large rasters load and pan quickly in QGIS, and reduces their file size.
 
 Most orthomosaics and elevation rasters come out of processing software missing two things GDAL needs in order to draw them quickly:
 
-- **Pyramids**, also called overviews — pre-built smaller copies of the image. Without them, QGIS has to read every pixel in the file just to draw a zoomed-out view. On a 470-megapixel ortho, that's the entire file, on every pan and every zoom.
-- **Tiling** — storing pixels as small squares rather than full-width rows, so software can read one part of the image without touching the rest.
+- **Pyramids**, also called overviews: pre-built smaller copies of the image. Without them, QGIS has to read every pixel in the file just to draw a zoomed-out view. On a 470-megapixel ortho, that's the entire file, on every pan and every zoom.
+- **Tiling**: storing pixels as small squares rather than full-width rows, so software can read one part of the image without touching the rest.
 
 This tool adds both, and compresses the file sensibly on the way through.
 
 **Choosing a compression profile**
 
-*Preserve pixel values (lossless)* — a smaller file with every pixel value exactly as it was. Use this whenever you'll measure something from the image: vegetation indices, classification, crown segmentation, change detection. Elevation data always uses this, whatever you select.
+*Preserve pixel values (lossless)*: a smaller file with every pixel value exactly as it was. Use this whenever you'll measure something from the image: vegetation indices, classification, crown segmentation, change detection. Elevation data always uses this, whatever you select.
 
-*Smallest file size (lossy)* — typically 15 to 30 times smaller, but pixel values shift slightly. Invisible on screen, measurable in analysis. Use it for basemaps, client copies, QField backdrops — anything you look at rather than measure.
+*Smallest file size (lossy)*: typically 15 to 30 times smaller, but pixel values shift slightly. Invisible on screen, measurable in analysis. Use it for basemaps, client copies, QField backdrops: anything you look at rather than measure.
 
 Both profiles produce a file that loads at the same speed. The choice only affects file size and whether pixel values survive unchanged.
 
@@ -49,7 +49,7 @@ Both profiles produce a file that loads at the same speed. The choice only affec
 
 Some rasters can't be optimised safely with these settings, so the tool detects them and stops rather than producing something quietly wrong:
 
-- **Classified rasters** — land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two categories produces a third that doesn't exist.
+- **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two categories produces a third that doesn't exist.
 - **Multispectral rasters**, or anything with more than four bands.
 - **Files with no coordinate reference system.**
 
@@ -57,11 +57,11 @@ Some rasters can't be optimised safely with these settings, so the tool detects 
 
 **Glossary**
 
-- **NoData** — a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could ever be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 is simply black.
-- **Alpha band** — an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
-- **Collar** — the transparent border around a survey area, where the image doesn't fill the rectangular file.
-- **Pyramids / overviews** — pre-built smaller copies of the image at successive zoom levels.
-- **Tiling** — storing the image as small squares instead of full-width rows.
+- **NoData**: a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could ever be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 is simply black.
+- **Alpha band**: an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
+- **Collar**: the transparent border around a survey area, where the image doesn't fill the rectangular file.
+- **Pyramids / overviews**: pre-built smaller copies of the image at successive zoom levels.
+- **Tiling**: storing the image as small squares instead of full-width rows.
 
 ---
 
@@ -85,7 +85,7 @@ Options:
 2. **Smallest file size (lossy)**
 
 Help:
-> Lossless keeps every pixel value exactly as it is — use it for anything you'll measure or analyse. Lossy produces a much smaller file by discarding detail the eye won't notice — use it for basemaps and anything you only look at.
+> Lossless keeps every pixel value exactly as it is: use it for anything you'll measure or analyse. Lossy produces a much smaller file by discarding detail the eye won't notice: use it for basemaps and anything you only look at.
 >
 > Both load at the same speed. Elevation data is always processed losslessly, whatever you choose here.
 
@@ -96,12 +96,12 @@ Help:
 Label: **Hidden pixels (NoData)**
 
 Options:
-1. **Automatic — decide per file (recommended)**
+1. **Automatic: decide per file (recommended)**
 2. **Reveal hidden pixels**
 3. **Keep as-is**
 
 Help:
-> Many orthomosaics mark transparency using a NoData value of 0. On 8-bit imagery that's unsafe, because 0 is also the value of a genuinely black pixel — so deep shadow, dark water and wet tarmac get treated as empty and punched out as holes.
+> Many orthomosaics mark transparency using a NoData value of 0. On 8-bit imagery that's unsafe, because 0 is also the value of a genuinely black pixel, so deep shadow, dark water and wet tarmac get treated as empty and punched out as holes.
 >
 > **Automatic** checks each file and only clears NoData when real content is hidden behind it. Files where NoData marks nothing but the transparent collar are left alone.
 >
@@ -129,7 +129,7 @@ Label: **Reprocess even if already optimised**
 Help:
 > By default, a file that's already tiled with pyramids is left alone, since converting it again wouldn't make it any faster.
 >
-> Tick this to convert it anyway — for example to switch an existing file from lossless to lossy compression to save disk space.
+> Tick this to convert it anyway, for example to switch an existing file from lossless to lossy compression to save disk space.
 
 ---
 
@@ -155,11 +155,13 @@ Help:
 
 ## Warning messages
 
+Only two things ever block execution: lossy compression on elevation data, and reprocessing an already-optimised file. Both have a real, different parameter to change (Profile, or Force reprocess). NoData never blocks, however consequential the finding: `checkParameterValues()` can only refuse, not accept-with-acknowledgement, and every NoData choice (Automatic, Reveal hidden pixels, Keep as-is) is a legitimate one. What NoData gets instead is a prominent log message when the finding is consequential, see below.
+
 ### Lossy compression on elevation data
 
 Blocks execution. No override.
 
-> This is elevation data — a DSM, DTM or CHM.
+> This is elevation data: a DSM, DTM or CHM.
 >
 > Lossy compression works by discarding detail the eye won't notice. That's fine for photographs, but elevation pixels are height measurements, not colours, so discarding detail changes the actual heights.
 >
@@ -173,31 +175,25 @@ Blocks execution. Escapable via Reprocess.
 
 > This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS.
 >
-> Converting it again won't make it any faster — it would just produce a second large file.
+> Converting it again won't make it any faster. It would just produce a second large file.
 >
 > If you're reconverting deliberately, for example to switch from lossless to lossy compression, tick **Reprocess even if already optimised** under Advanced parameters.
 
 ---
 
-### Real content hidden behind NoData
+### Log message when Automatic clears NoData
 
-Fires only when the user has explicitly chosen **Keep as-is**. Escapable by changing the dropdown.
+Not a warning: informational, but should stand out. This is the most educational thing the plugin says. `processAlgorithm()`, not `checkParameterValues()` - see the note below on why NoData never blocks execution.
 
-> Around **{pct}** of the interior of this image is pure black and currently hidden by a NoData value of 0 — usually shadow or water that happens to sit on the same value the file uses to mean "nothing here".
->
-> You've chosen to keep NoData as it is, so those pixels will stay hidden in the output.
->
-> Choose **Automatic** or **Reveal hidden pixels** to bring them back.
-
-If `{pct}` would round to 0.00%, write "a small but detectable amount" instead of a figure.
+> Cleared NoData: around **{pct}** of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
 
 ---
 
-### Log message when Automatic clears NoData
+### Log message when Keep as-is finds real content
 
-Not a warning — informational, but should stand out. This is the most educational thing the plugin says.
+Not a warning either, for the same reason: `checkParameterValues()` can only refuse, never accept-with-acknowledgement, and Keep as-is is a legitimate choice, not a mistake. Gating this in `checkParameterValues()` was tried twice and produced an unclosable modal loop both times (OK dismisses it, Run fires it again). Given the same emphasis as the message above: the finding is exactly as consequential either way, only the outcome (kept vs cleared) differs.
 
-> Cleared NoData: around **{pct}** of this image's interior was pure black and hidden behind a NoData value of 0 — real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
+> NoData handling: kept, as requested. Around **{pct}** of this image's interior is pure black and hidden behind a NoData value of 0, usually shadow or water, not the transparent collar. Those pixels stay hidden in this output. Run again with Reveal hidden pixels or Automatic to bring them back.
 
 ---
 
@@ -211,11 +207,13 @@ Routine. No emphasis needed. Fires when detection sampled the file and found NoD
 
 ### Log message when Automatic couldn't tell
 
-Routine. No emphasis needed, but must not be conflated with the message above — this fires when detection *couldn't determine* whether real content was hidden, not when it confirmed there wasn't any. Saying "nothing real was hidden" here would be a false reassurance the file never earned.
+Routine. No emphasis needed, but must not be conflated with the message above: this fires when detection *couldn't determine* whether real content was hidden, not when it confirmed there wasn't any. Saying "nothing real was hidden" here would be a false reassurance the file never earned.
 
 Reachable for two different reasons, not just a small file: the image's dimensions can be too small for the sampling grid to have any interior cells at all, or a large file can still have sparse, thin coverage (an oddly-shaped survey area) where every interior cell individually falls under the minimum valid-pixel threshold. The wording below is deliberately neutral about which.
 
 > Kept NoData: this file didn't have enough interior area to sample reliably, so it wasn't possible to tell whether real content is hidden behind NoData=0. Left unchanged. If dark areas look like they have holes in them, run again with **Reveal hidden pixels**.
+
+If `{pct}` would round to 0.00% in any of the messages above, write "a small but detectable amount" instead of a figure.
 
 ---
 
@@ -227,3 +225,4 @@ Reachable for two different reasons, not just a small file: the image's dimensio
 - Second person throughout. "Your source file is never modified", not "the source file is not modified".
 - No exclamation marks. No "just" or "simply" as minimisers ("simply tick the box") - they imply the task is trivial and make people feel stupid when it isn't. "Just" meaning "only" or "merely" ("it would just produce a second large file") is fine and often the clearest word available.
 - British spelling: optimise, colour, behaviour.
+- No em dashes, anywhere. Use a comma, colon, bracket or full stop, whichever reads best for that sentence.

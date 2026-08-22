@@ -124,9 +124,20 @@ def _auto_cleared_message(nodata_risk: "NoDataRisk") -> str:
     pct = nodata_risk.interior_max_cell_fraction * 100
     return (
         "Cleared NoData: around {} of this image's interior was pure "
-        "black and hidden behind a NoData value of 0 — real content, "
+        "black and hidden behind a NoData value of 0, real content, "
         "usually shadow or water, not just the transparent collar. "
         "Those pixels are now visible in the output."
+    ).format(nodata_pct_phrase(pct))
+
+
+def _keep_meaningful_message(nodata_risk: "NoDataRisk") -> str:
+    pct = nodata_risk.interior_max_cell_fraction * 100
+    return (
+        "NoData handling: kept, as requested. Around {} of this "
+        "image's interior is pure black and hidden behind a NoData "
+        "value of 0, usually shadow or water, not the transparent "
+        "collar. Those pixels stay hidden in this output. Run again "
+        "with Reveal hidden pixels or Automatic to bring them back."
     ).format(nodata_pct_phrase(pct))
 
 
@@ -218,6 +229,16 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
         return True, "NoData handling: cleared, as requested.", False
 
     if mode == NODATA_MODE_KEEP:
+        if nodata_risk.assessment == "meaningful":
+            # Not a refusal - Keep as-is is a fully legitimate choice,
+            # not gated by checkParameterValues() (see
+            # algorithms/optimise_raster.py's module docstring for why
+            # gating it there produced an unclosable modal loop twice).
+            # Surfaced here instead, with the same pushFormattedMessage
+            # emphasis as Automatic's "cleared" finding (emphasis=True
+            # below) - the finding is exactly as consequential either
+            # way, only the outcome (kept vs cleared) differs.
+            return False, _keep_meaningful_message(nodata_risk), True
         return False, "NoData handling: kept, as requested.", False
 
     # mode == NODATA_MODE_AUTO

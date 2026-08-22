@@ -1,4 +1,4 @@
-# Raster Optimiser — plugin design notes
+# Raster Optimiser: plugin design notes
 
 Decisions and deferred ideas specific to the plugin's implementation, as
 distinct from `GeoKlein_raster_optimisation_workflow.md`, which documents
@@ -59,14 +59,14 @@ sampling only (see `core/detector.py`).
 **The idea:** when NoData=0 is detected on 8-bit RGB, render a preview
 where NoData pixels are filled with a colour that never occurs in real
 imagery (magenta/cyan), shown against the normal render. The user sees
-exactly what NoData is hiding — magenta speckled through shadows means a
+exactly what NoData is hiding: magenta speckled through shadows means a
 real problem; magenta only as a clean edge collar means it's safe to
 clear. This is QGIS's own manual "NoData toggle test"
 (workflow doc, "The NoData toggle test") done inside the plugin, so the
 user never needs to know to go run it themselves.
 
 **Why it matters:** any automated sampling threshold is inherently
-arguable and can miss localised clusters — proven on a real file
+arguable and can miss localised clusters: proven on a real file
 (`Ortho_school_v1_nick.tif`, a 1.74 GB ortho): a shadow region under one
 structure held real black content, but as a *fraction of the whole
 image* it diluted to 0.01%, under any sane global threshold. A visual
@@ -75,13 +75,13 @@ by letting the user look, rather than trust a number.
 
 **Intended eventual role:** primary decision mechanism for the NoData
 question. The automated sampling in `core/detector.py` becomes a hint
-that pre-fills the recommendation ("looks like real content is hidden —
+that pre-fills the recommendation ("looks like real content is hidden,
 check the preview") rather than the sole decider.
 
 **Architectural constraint this places on the code now:** the NoData
 decision must stay a separate step from detection, not baked into it.
 `DetectionResult.nodata_risk` (a `NoDataRisk` dataclass) already holds
-this correctly — it carries the raw sample stats, an `assessment`, and a
+this correctly: it carries the raw sample stats, an `assessment`, and a
 `needs_user_decision` flag as advisory output. It does not by itself
 block or force a profile choice (the lossy profile's availability is never
 gated on the sampling assessment, only on `nodata_only_transparency`,
@@ -107,14 +107,14 @@ confined to one structure's footprint was ~0.4-1.2% black locally but
 Empirical testing against that file (44488x34255 px, no overviews)
 ruled out two alternatives:
 
-- **N random full-resolution windows** — fast (0.46s for 30x
+- **N random full-resolution windows**: fast (0.46s for 30x
   1024x1024 windows) but *less* reliable than the naive global read on
   this file: random placement happened to mostly miss the cluster
   (0.0056% aggregate, worse than the 0.012% global decimated read it
   was meant to improve on). Sparse random coverage has the same
   dilution problem as decimation, just stochastic instead of
   systematic.
-- **Reading at a denser decimated target resolution alone** — no help
+- **Reading at a denser decimated target resolution alone**: no help
   either, and notably no extra I/O cost: with no overviews present,
   GDAL's decimated `ReadAsArray` already has to touch nearly every
   source tile regardless of requested output size (1000px and 4000px
@@ -125,7 +125,7 @@ The fix: keep the single decimated whole-image read (its cost is fixed
 regardless of target size, so there's no reason not to make it
 reasonably dense), but stop aggregating it into one global fraction.
 Instead bin the same in-memory sample into a spatial grid and flag on
-the worst single cell's fraction. This costs no extra I/O — it re-uses
-the array already read — and caught the real cluster cleanly (worst
+the worst single cell's fraction. This costs no extra I/O (it re-uses
+the array already read) and caught the real cluster cleanly (worst
 cell 0.37-1.2% depending on grid density, both well above the 0.1%
 per-cell threshold, versus 0.012% globally).
