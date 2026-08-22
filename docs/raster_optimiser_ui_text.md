@@ -20,7 +20,7 @@ The NoData parameter is the three-option dropdown described below (Automatic / R
 
 ## shortHelpString()
 
-QGIS renders this as HTML. Use `<b>` for headings and `<ul>`/`<li>` for lists.
+QGIS renders this as HTML. Section headings are plain `<p>` text, not `<b>`: QGIS's own help-panel template applies a fixed, non-theme-aware colour to bold text that reads as dark grey on dark grey in the Night Mapping theme (and likely other dark themes), and no single inline colour can fix it (it can't satisfy WCAG contrast against both a near-white default theme and Night Mapping's `#535353` background at once). Lists use real `<ul>`/`<li>` tags. Headings are shown in **bold** below purely as a doc-formatting convention to mark them as headings, it doesn't mean the code wraps them in `<b>`.
 
 ---
 
@@ -41,11 +41,11 @@ This tool adds both, and compresses the file sensibly on the way through.
 
 *Preserve pixel values (lossless)*: a smaller file with every pixel value exactly as it was. Use this whenever you'll measure something from the image: vegetation indices, classification, crown segmentation, change detection. Elevation data always uses this, whatever you select.
 
-*Smallest file size (lossy)*: typically 15 to 30 times smaller, but pixel values shift slightly. Invisible on screen, measurable in analysis. Use it for basemaps, client copies, QField backdrops: anything you look at rather than measure.
+*Smallest file size (lossy)*: typically 15 to 30 times smaller, but pixel values shift slightly. Invisible on screen, measurable in analysis. Still a GeoTIFF either way, never a .jpg file. Use it for basemaps, client copies, QField backdrops: anything you look at rather than measure.
 
 Both profiles produce a file that loads at the same speed. The choice only affects file size and whether pixel values survive unchanged.
 
-Multispectral and 16-bit imagery are always processed losslessly too, the same as elevation: JPEG compression needs exactly three 8-bit colour bands, which doesn't apply to either.
+Multispectral and 16-bit imagery are always processed losslessly too, the same as elevation: the lossy option is built for colour photographs, which need exactly three 8-bit colour bands - that doesn't apply to either.
 
 **What it won't process**
 
@@ -54,7 +54,7 @@ Some rasters can't be optimised safely with these settings, so the tool detects 
 - **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two categories produces a third that doesn't exist.
 - **Files with no coordinate reference system.**
 
-**Your source file is never modified.** The tool always writes a new file.
+Your source file is never modified. The tool always writes a new file. (No longer `<b>` in code either, for the same reason as the section headings above.)
 
 **Glossary**
 
@@ -88,7 +88,7 @@ Options:
 Help:
 > Lossless keeps every pixel value exactly as it is: use it for anything you'll measure or analyse. Lossy produces a much smaller file by discarding detail the eye won't notice: use it for basemaps and anything you only look at.
 >
-> Both load at the same speed. Elevation data is always processed losslessly, whatever you choose here.
+> Both load at the same speed, and both are always written as GeoTIFF - lossy never means a .jpg file. Elevation data is always processed losslessly, whatever you choose here.
 
 ---
 
@@ -117,7 +117,7 @@ Help:
 Label: **Warn me before running if something looks wrong**
 
 Help:
-> Inspects the file before converting and stops with an explanation if you've chosen lossy compression for elevation data, or if the file is already optimised.
+> Inspects the file before converting and stops with an explanation if you've chosen lossy compression for elevation data, or if the file already has nothing left to gain (tiled, with pyramids, and already at the target compression). A file that's tiled with pyramids but on a less efficient compression still gets reprocessed, since there's real file size to save there.
 >
 > These are quick checks that read the file's structure rather than its contents, so leaving this on costs nothing.
 
@@ -128,9 +128,9 @@ Help:
 Label: **Reprocess even if already optimised**
 
 Help:
-> By default, a file that's already tiled with pyramids is left alone, since converting it again wouldn't make it any faster.
+> By default, a file that's already tiled with pyramids and already at the target compression is left alone, since converting it again wouldn't make it any faster or smaller. A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save there.
 >
-> Tick this to convert it anyway, for example to switch an existing file from lossless to lossy compression to save disk space.
+> Tick this to convert an already-optimal file anyway, for example to switch it from lossless to lossy compression to save disk space.
 
 ---
 
@@ -156,7 +156,7 @@ Help:
 
 ## Warning messages
 
-Only two things ever block execution: lossy compression on elevation data, and reprocessing an already-optimised file. Both have a real, different parameter to change (Profile, or Force reprocess). NoData never blocks, however consequential the finding: `checkParameterValues()` can only refuse, not accept-with-acknowledgement, and every NoData choice (Automatic, Reveal hidden pixels, Keep as-is) is a legitimate one. What NoData gets instead is a prominent log message when the finding is consequential, see below.
+Three things block execution: lossy compression on elevation data, lossy compression on anything else that isn't 8-bit RGB (16-bit imagery, multispectral), and reprocessing an already-optimised file. Each has a real, different parameter to change (Profile, or Force reprocess). NoData never blocks, however consequential the finding: `checkParameterValues()` can only refuse, not accept-with-acknowledgement, and every NoData choice (Automatic, Reveal hidden pixels, Keep as-is) is a legitimate one. What NoData gets instead is a prominent log message when the finding is consequential, see below.
 
 ### Lossy compression on elevation data
 
@@ -170,15 +170,31 @@ Blocks execution. No override.
 
 ---
 
+### Lossy compression on 16-bit or multispectral imagery
+
+Blocks execution. No override. Doesn't lead with the codec name - "JPEG" first reads as "this might output a .jpg file", which it never does.
+
+> The lossy option compresses colour photographs, so it needs exactly three 8-bit colour bands. This file doesn't fit that, so only lossless is offered.
+
+---
+
 ### File is already optimised
 
-Blocks execution. Escapable via Reprocess.
+Blocks execution. Escapable via Reprocess. Compression-aware: only fires when the file is tiled, has pyramids, AND is already using the target compression for the profile that would be used (ZSTD for lossless, YCbCr JPEG for lossy). A file that's tiled with pyramids but still on a less efficient compression (LZW, DEFLATE, uncompressed) does NOT hit this, see the log entry below instead.
 
-> This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS.
+> This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS. It's also already using the target compression, so reprocessing wouldn't shrink it either.
 >
-> Converting it again won't make it any faster. It would just produce a second large file.
+> Converting it again won't make it any faster or smaller. It would just produce a second large file.
 >
 > If you're reconverting deliberately, for example to switch from lossless to lossy compression, tick **Reprocess even if already optimised** under Advanced parameters.
+
+---
+
+### Log message when tiled and has overviews, but compression isn't the target yet
+
+Not a warning, doesn't block: this is a warning-severity log line (`feedback.pushWarning()`), not a `checkParameterValues()` refusal. Fires when the file is tiled with pyramids (so pan/zoom speed is already fine) but the current compression isn't the target one for the profile in use, e.g. MSTIFF.tif arriving as LZW when the target is ZSTD. Runs regardless of Force reprocess: unlike the fully-optimised case above, there's a real file-size gain here, so this isn't a redundant rebuild that needs an explicit override.
+
+> Already tiled with overviews, so pan/zoom speed was already fine. Reprocessing anyway because the current compression ({current}) isn't {target} yet - expect a smaller file, not a faster one.
 
 ---
 
@@ -220,7 +236,7 @@ If `{pct}` would round to 0.00% in any of the messages above, write "a small but
 
 ## Writing conventions used here
 
-- Headings are bold, never followed by a colon.
+- Headings are never followed by a colon. In `shortHelpString()`'s actual HTML they're plain `<p>` text rather than `<b>`, because QGIS's own help-panel template gives bold text a fixed colour that's unreadable in dark themes; this doc still shows them in **bold** as a doc-only convention for marking a heading.
 - Technical terms are explained the first time they appear, or defined in the glossary.
 - Every warning states what was found, why it matters, and what to do about it, in that order.
 - Second person throughout. "Your source file is never modified", not "the source file is not modified".

@@ -525,28 +525,60 @@ def convert(
     result.profile_used = profile
 
     # ---- compare current state to target, decide whether to do anything ----
+    # Settings are resolved here (rather than just below, where they used
+    # to be) because deciding whether there's anything left to gain needs
+    # the target compression, not just tiling/overviews.
+    settings_key = _settings_key(detection, profile)
+    settings = RECOMMENDED_SETTINGS[settings_key]
+    creation_options = settings["creation_options"]
+    overview_config = settings["overview_config"]
+    target_compression = creation_options["COMPRESS"]
+
     is_tiled = _is_tiled(detection.block_size, detection.raster_size)
     has_overviews = detection.overview_count > 0
     already_optimised = is_tiled and has_overviews
+    # Uppercase compare: GDAL's COMPRESSION tag and this module's COMPRESS
+    # creation option value are both already all-caps in practice, but
+    # this is the one place that assumption gets baked in, so guard it
+    # rather than trust it.
+    at_target_compression = (
+        already_optimised
+        and (detection.compression or "").upper() == target_compression.upper()
+    )
 
-    if already_optimised and not force_reprocess:
-        result.ok = True
-        result.action = "already_optimised"
-        result.message = (
-            "Already tiled with overviews - the speed problem this plugin "
-            "exists to fix is already solved here. Not touching it."
-        )
-        return result
-
-    if already_optimised:
-        # already_optimised and force_reprocess both true: a deliberate
-        # override (e.g. switching profile after the fact), not a normal
-        # tiling/overviews rebuild - primary_reason wouldn't mean anything
-        # here (both are already true), so this is recorded as a warning
-        # instead of a reason.
+    if already_optimised and at_target_compression:
+        if not force_reprocess:
+            result.ok = True
+            result.action = "already_optimised"
+            result.message = (
+                "Already tiled with overviews, and already compressed with "
+                f"{target_compression} - the speed problem this plugin "
+                "exists to fix is already solved here, and there's nothing "
+                "left to gain on file size either. Not touching it."
+            )
+            return result
+        # force_reprocess overrides a genuinely nothing-to-gain file: a
+        # deliberate choice (e.g. switching profile after the fact), not
+        # a normal tiling/overviews/compression rebuild - primary_reason
+        # wouldn't mean anything here, so this is a warning instead.
         result.warnings.append(
-            "Already tiled with overviews, but reprocessing anyway - "
-            "Force reprocess is ticked."
+            "Already tiled, with overviews, and at the target compression, "
+            "but reprocessing anyway - Force reprocess is ticked."
+        )
+    elif already_optimised:
+        # Tiled with overviews, so pan/zoom speed is already fine, but the
+        # current compression isn't the target one (LZW, DEFLATE, or
+        # uncompressed rather than ZSTD/JPEG) - there's a real file-size
+        # gain here, so this proceeds regardless of force_reprocess. Force
+        # reprocess stays reserved for the genuinely-nothing-to-gain case
+        # above, per the user's explicit "force reprocess stays for the
+        # first case only" instruction.
+        result.primary_reason = "compression"
+        result.warnings.append(
+            "Already tiled with overviews, so pan/zoom speed was already "
+            f"fine. Reprocessing anyway because the current compression "
+            f"({detection.compression or 'none'}) isn't {target_compression} "
+            "yet - expect a smaller file, not a faster one."
         )
     else:
         result.primary_reason = "tiling" if not is_tiled else "overviews"
@@ -571,11 +603,6 @@ def convert(
         result.output_path = output_path
         result.message = output_exists_message(output_path)
         return result
-
-    settings_key = _settings_key(detection, profile)
-    settings = RECOMMENDED_SETTINGS[settings_key]
-    creation_options = settings["creation_options"]
-    overview_config = settings["overview_config"]
 
     co_args = []
     for k, v in creation_options.items():

@@ -240,6 +240,7 @@ class DetectionResult:
     block_size: Optional[tuple] = None
     has_overviews: bool = False
     overview_count: int = 0
+    compression: Optional[str] = None  # IMAGE_STRUCTURE COMPRESSION tag, e.g. "LZW", "ZSTD", None if uncompressed
     has_aux_xml: Optional[bool] = None
     has_crs: Optional[bool] = None
     raster_size: Optional[tuple] = None
@@ -591,6 +592,7 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     result.block_size = tuple(band1.GetBlockSize())
     result.overview_count = band1.GetOverviewCount()
     result.has_overviews = result.overview_count > 0
+    result.compression = ds.GetMetadata("IMAGE_STRUCTURE").get("COMPRESSION")
 
     for i in range(2, band_count + 1):
         other_dtype = gdal.GetDataTypeName(ds.GetRasterBand(i).DataType)
@@ -680,9 +682,13 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     result.needs_pixel_sampling = True
     result.profile_mode = "choice"
     settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
+    # Leads with what the lossy option is FOR, not the codec name - "JPEG"
+    # first reads as "this plugin might output a .jpg file", which it
+    # never does (always GeoTIFF, whichever profile is used).
     lossy_blocked_reason = (
-        "JPEG needs exactly three 8-bit colour bands (YCbCr) - this file "
-        "doesn't fit that model, so only the lossless option is offered."
+        "The lossy option compresses colour photographs, so it needs "
+        "exactly three 8-bit colour bands. This file doesn't fit that, "
+        "so only lossless is offered."
     )
     result.profile_options = [
         ProfileOption(profile="lossy", available=False, reason_blocked=lossy_blocked_reason),
