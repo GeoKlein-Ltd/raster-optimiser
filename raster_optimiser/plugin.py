@@ -3,9 +3,10 @@ a toolbar button + Raster-menu entry as one-click entry points into the
 same algorithm dialog the Processing Toolbox already opens.
 
 Still no custom dialog (see docs/plugin_design_notes.md): the QAction's
-only job is to call processing.execAlgorithmDialog() with this plugin's
-algorithm ID, so there's exactly one parameter UI to maintain - the
-Toolbox entry and this action just open it two different ways.
+only job is to build and show this plugin's algorithm dialog non-modally
+(see _run()'s own comment for why not processing.execAlgorithmDialog()),
+so there's exactly one parameter UI to maintain - the Toolbox entry and
+this action just open it two different ways.
 
 QAction cross-version note: PyQt6 moved QAction from QtWidgets to QtGui
 upstream, a common Qt5->Qt6 migration trap. qgis.PyQt.QtWidgets.QAction

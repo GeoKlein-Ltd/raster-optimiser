@@ -666,8 +666,9 @@ def detect_metadata_only(path: str) -> DetectionResult:
       means nodata_risk is incomplete on a result returned from here.
 
     Every other refusal (no CRS, unsupported dtype, colour-table-
-    classified, nodata-only-transparency-blocks-lossy) is fully resolved
-    here.
+    classified) is fully resolved here, as is the RGB_8BIT
+    nodata-only-transparency case, which forces lossless rather than
+    refusing (see _finish_rgb_8bit()).
     """
     result = DetectionResult(path=path)
 
@@ -1155,7 +1156,7 @@ def _print_report(result: DetectionResult) -> None:
             print(f"  worst edge cell (diagnostic only, not decisive): "
                   f"{nr.edge_max_cell_fraction * 100:.3f}% black")
         if nr.needs_user_decision:
-            print("  -> needs a decision: [Clear / Keep / not sure]")
+            print("  -> needs a decision: [Automatic / Reveal hidden pixels / Keep as-is]")
 
     for w in result.warnings:
         print(f"\nWarning: {w}")

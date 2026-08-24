@@ -174,7 +174,7 @@ remaining blocker is unchanged: the lossy `ProfileOption` for this file
 type isn't populated with real creation options/translate args (it's
 currently just absent, since the file is `profile_mode == "forced"`),
 and reconstructing one would need the resolution layer
-(`_resolve_profile()` in `algorithms/optimise_raster.py`, and
+(`_log_profile_decision()` in `algorithms/optimise_raster.py`, and
 `convert()`'s own profile lookup in `core/converter.py`) to read
 NODATA_MODE and override the structural forced-lossless decision
 post-hoc - detection itself still can't take NODATA_MODE as an input
@@ -238,3 +238,25 @@ category it falls into before being written: a fact about what the file
 was *previously done to it*, which detection cannot see just by reading
 the file's current state and which needs its own explicit check, the
 way this one now has.
+
+---
+
+## Comments go stale in the same rounds the design changes
+
+**Status:** audit done, 2026-08-24. Five stale comments/docstrings found
+and fixed across `plugin.py`, `algorithms/optimise_raster.py`,
+`core/detector.py` and `core/converter.py` (one CLI debug string fixed
+alongside them). All five described behaviour from before the
+purpose-question rework: a removed `execAlgorithmDialog()` call, two
+`checkParameterValues()` checks that were coerced into log-only Bucket A
+behaviour, a forced-lossless case still described as a refusal, and an
+already-optimised short-circuit described as compression-blind after it
+became compression-aware.
+
+None of these were random drift - every one was left behind by a design
+change that touched the code but not the comment sitting next to it.
+That makes this a predictable failure mode, not a one-off cleanup: the
+next significant design change to this codebase should be followed by
+the same kind of pass (read every docstring and comment in the changed
+files against what the code now does) rather than assuming comments
+updated themselves alongside the behaviour they describe.

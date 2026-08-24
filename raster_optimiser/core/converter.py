@@ -10,12 +10,13 @@ resolved creation options and extra command-line parameters.
 Detection stays pure content-type/profile classification and never
 judges "is this file already good enough" - that's this module's job:
 it always compares the current file's structure against the target
-settings BEFORE writing anything, and does nothing at all if the file
-is already tiled with overviews, regardless of what compression it
-currently uses. The speed problem (the plugin's core promise) is what
-that check is protecting against re-doing unnecessarily; compression
-choice is a separate, optional concern once tiling+pyramids are in place.
-See docs/plugin_design_notes.md for the reasoning.
+settings BEFORE writing anything, and does nothing at all only when the
+file is already tiled, has overviews, AND is already on the target
+compression - compression-aware, not just tiling/overviews (see
+convert()'s already_optimised/at_target_compression check below). A file
+that's tiled with overviews but still on a non-target codec proceeds
+anyway, for the compression gain alone. See docs/plugin_design_notes.md
+for the reasoning.
 
 Run directly against a file:
 
@@ -257,11 +258,11 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     keep, but with different messages - conflating them would report
     "confirmed nothing was hidden" for a file detection actually
     couldn't read at all, which is a false reassurance neither the file
-    nor the user earned. The QGIS wrapper's checkParameterValues() only
-    ever blocks execution for NODATA_MODE_KEEP on a "meaningful" file
-    (escapable by picking a different mode), never for Automatic, since
-    Automatic already acted
-    on the same finding instead of asking the user to.
+    nor the user earned. NODATA_MODE_KEEP on a "meaningful" file is never
+    gated by the QGIS wrapper's checkParameterValues() - it's a fully
+    legitimate choice, surfaced here with "emphasis" severity instead
+    (see algorithms/optimise_raster.py's module docstring for why a hard
+    gate on this was tried and reverted).
     """
     nodata_risk = detection.nodata_risk
 
@@ -509,9 +510,46 @@ def _format_applied_settings(applied: "AppliedSettings") -> str:
     return ", ".join(parts)
 
 
+def _format_reproduce_commands(full_args: list, overview_config: dict, overview_levels: list) -> str:
+    """GEOKLEIN_7_REPRODUCE's text: the actual gdal_translate and gdaladdo
+    invocations for this run, built from full_args (exactly what was
+    passed to gdal.Translate - the same co_args this module built plus
+    whatever translate_extra_args/-a_nodata applied) and overview_config/
+    overview_levels (exactly what BuildOverviews used below) - not a
+    hand-written second copy of the settings, so this can't drift from
+    what the run actually did.
+
+    "input.tif"/"output.tif" stand in for the real paths deliberately:
+    the real source path embeds the local folder structure and the
+    Windows username, and the real output path is frequently a temp
+    directory that no longer exists by the time anyone reads this
+    metadata back - neither is reproducible information, and whoever
+    reproduces this will substitute their own paths anyway. The flags
+    are the part nobody could reconstruct unaided.
+    """
+    translate_cmd = "gdal_translate " + " ".join(full_args) + ' "input.tif" "output.tif"'
+
+    addo_parts = ["gdaladdo"]
+    for key, value in overview_config.items():
+        if key != "RESAMPLING":
+            addo_parts += ["--config", key, value]
+    resampling = overview_config.get("RESAMPLING", "AVERAGE").lower()
+    levels = " ".join(str(level) for level in overview_levels)
+    addo_parts += ["-r", resampling, '"output.tif"', levels]
+    addo_cmd = " ".join(addo_parts)
+
+    return (
+        f"{translate_cmd}\n{addo_cmd}\n"
+        "Same operations in QGIS: Raster > Conversion > Translate, and "
+        "Raster > Miscellaneous > Build Overviews. Full manual workflow: "
+        "docs/GeoKlein_raster_optimisation_workflow.md."
+    )
+
+
 def _write_decision_metadata(
     out_ds: "gdal.Dataset", detection: "DetectionResult", requested_profile: Optional[str],
     profile_used: str, decisions: "DecisionSummary",
+    full_args: list, overview_config: dict, overview_levels: list,
 ) -> None:
     """Writes the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
     onto the output dataset - Phase 5 of the purpose-question rework.
@@ -519,6 +557,11 @@ def _write_decision_metadata(
     BuildOverviews - metadata belongs in the TIFF header at the front of
     the file, settled before hundreds of megabytes of pyramid data are
     appended behind it, not rewritten afterwards.
+
+    full_args/overview_config/overview_levels are passed in (rather than
+    re-derived here) purely for GEOKLEIN_7_REPRODUCE - see
+    _format_reproduce_commands()'s docstring for why reusing the exact
+    values convert() already built matters.
 
     Strips any inherited GEOKLEIN_* keys first: Translate (like
     CreateCopy) inherits source metadata, so re-running this tool on a
@@ -533,10 +576,22 @@ def _write_decision_metadata(
     today = datetime.date.today()
     date_str = f"{today.day} {today.strftime('%B')} {today.year}"
 
-    requested_label = "Viewing" if (requested_profile or profile_used) == "lossy" else "Analysis"
+    requested_name = "Viewing" if (requested_profile or profile_used) == "lossy" else "Analysis"
+    # Names both options and what each does, chosen one first, so a
+    # later reader (client, auditor) knows what the alternative would
+    # have done without this doc open - a bare "Viewing" on its own
+    # didn't say that.
+    requested_label = (
+        f"{requested_name}, chosen from Analysis (every pixel value "
+        "preserved) or Viewing (smallest possible file)"
+    )
 
     items = {
-        "GEOKLEIN_1_TOOL": f"GeoKlein Raster Optimiser {version}, {date_str}",
+        "GEOKLEIN_1_TOOL": (
+            f"GeoKlein Raster Optimiser {version}, a QGIS plugin, {date_str}. "
+            "https://plugins.qgis.org/plugins/raster_optimiser/ (placeholder "
+            "until the plugins.qgis.org listing exists)"
+        ),
         "GEOKLEIN_2_DETECTED": describe_detection(detection),
         "GEOKLEIN_3_REQUESTED": requested_label,
         "GEOKLEIN_4_DECISION": decisions.profile_reason,
@@ -544,6 +599,9 @@ def _write_decision_metadata(
     }
     if decisions.nodata_message:
         items["GEOKLEIN_6_HIDDEN_PIXELS"] = decisions.nodata_message
+    items["GEOKLEIN_7_REPRODUCE"] = _format_reproduce_commands(
+        full_args, overview_config, overview_levels
+    )
 
     for key, value in items.items():
         out_ds.SetMetadataItem(key, value)
@@ -618,6 +676,30 @@ def _is_tiled(block_size: tuple, raster_size: tuple) -> bool:
     # usually just a few rows tall). Tiled data has both dimensions
     # smaller than the image itself.
     return block_size[0] < raster_size[0] and block_size[1] < raster_size[1]
+
+
+def already_optimised_at_target(detection: "DetectionResult", resolved_profile: str) -> bool:
+    """True only when there's genuinely nothing left to gain: tiled,
+    with overviews, AND already compressed with the target codec for the
+    profile that would be used. A file that's tiled with overviews but
+    still on LZW/DEFLATE/uncompressed does NOT count as "already
+    optimised" here.
+
+    Public (no leading underscore) and imported by the QGIS wrapper's
+    checkParameterValues() pre-flight block - this used to be a second,
+    hand-mirrored copy of the rule living in algorithms/optimise_raster.py,
+    with its own comment saying so. One function now, so the pre-flight
+    block and convert()'s own decision below cannot drift apart.
+    """
+    if not (
+        _is_tiled(detection.block_size, detection.raster_size)
+        and detection.overview_count > 0
+    ):
+        return False
+    target_compression = RECOMMENDED_SETTINGS[
+        _settings_key(detection, resolved_profile)
+    ]["creation_options"]["COMPRESS"]
+    return (detection.compression or "").upper() == target_compression.upper()
 
 
 def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> VerificationResult:
@@ -759,17 +841,23 @@ def convert(
     overview_config = settings["overview_config"]
     target_compression = creation_options["COMPRESS"]
 
+    # Computed once here, from the source's own dimensions - Translate
+    # never resizes in any profile this tool uses, no -outsize is ever
+    # passed - and reused for both GEOKLEIN_7_REPRODUCE below and the
+    # real BuildOverviews() call in Step 4, so the reproduce command
+    # can never name a different level list than what was actually
+    # built.
+    overview_levels = _default_overview_levels(detection.raster_size[0], detection.raster_size[1])
+
     is_tiled = _is_tiled(detection.block_size, detection.raster_size)
     has_overviews = detection.overview_count > 0
     already_optimised = is_tiled and has_overviews
-    # Uppercase compare: GDAL's COMPRESSION tag and this module's COMPRESS
-    # creation option value are both already all-caps in practice, but
-    # this is the one place that assumption gets baked in, so guard it
-    # rather than trust it.
-    at_target_compression = (
-        already_optimised
-        and (detection.compression or "").upper() == target_compression.upper()
-    )
+    # Delegates to already_optimised_at_target() rather than repeating
+    # the compression-match logic inline - the same function
+    # algorithms/optimise_raster.py's checkParameterValues() calls for
+    # its pre-flight echo of this same decision, so the two can't drift
+    # apart.
+    at_target_compression = already_optimised_at_target(detection, profile)
 
     if already_optimised and at_target_compression:
         if not force_reprocess:
@@ -904,7 +992,10 @@ def convert(
     # on the still-open Translate handle, before it's closed and
     # reopened for BuildOverviews below - see _write_decision_metadata()'s
     # docstring for why this has to happen before pyramids, not after.
-    _write_decision_metadata(out_ds, detection, chosen_profile, profile, result.decisions)
+    _write_decision_metadata(
+        out_ds, detection, chosen_profile, profile, result.decisions,
+        full_args, overview_config, overview_levels,
+    )
     out_ds = None  # flush/close before reopening for BuildOverviews
     result.translate_ok = True
     result.output_path = output_path
@@ -923,10 +1014,9 @@ def convert(
         out_ds = None
         try:
             out_ds = gdal.Open(output_path, gdal.GA_Update)
-            levels = _default_overview_levels(out_ds.RasterXSize, out_ds.RasterYSize)
             out_ds.BuildOverviews(
                 overview_config.get("RESAMPLING", "AVERAGE"),
-                overviewlist=levels,
+                overviewlist=overview_levels,
                 callback=overview_tracker, callback_data=None,
             )
             out_ds = None
