@@ -151,6 +151,29 @@ any other.
   callback returns falsy, then computes an assessment from whatever it sampled.
   Does cancelling detection produce a partial result presented as a real one?
   What does the user see?
+  - Fixed, 2026-08-24: the stats dict now carries a `cancelled` flag, forced
+    onto `NoDataRisk.assessment = "insufficient_sample"` in `_detect_body()`
+    rather than letting a partial read report `"meaningful"`/`"collar_only"`.
+    `processAlgorithm()` also checks `feedback.isCanceled()` immediately after
+    `detect()` returns and stops the run there, matching a cancelled
+    Translate - previously a cancel during "Detecting raster type..." was
+    never honoured and the run continued into Translate regardless.
+  - Known deferred item, 2026-08-24: the fix above only covers the RGB/NoData
+    path. `_detect_body()`'s CONTINUOUS branch loops `_classified_unique_count()`
+    over every band and polls no callback at all, so a Cancel during a
+    many-band detection (a multispectral file with many bands, in
+    particular) is only caught once that loop finishes on its own -
+    `processAlgorithm()`'s `isCanceled()` check still stops the run
+    afterwards, so this is a latency problem, not a correctness one, and the
+    files where it's noticeable are narrow. Left unbuilt on that basis.
+    Design constraint worth keeping if this is ever built: a cancelled
+    classified scan must leave the result unresolved
+    (`needs_pixel_sampling` stays `True`) and must never be allowed to read
+    as "confirmed not classified". This is unlike the NoData sample, which
+    can degrade safely to `"insufficient_sample"` because nothing is gated
+    on it - the classified check is a safety refusal against silent
+    corruption, so a partial scan concluding "not classified" would be
+    exactly the wrong kind of wrong.
 - For each of the three phases (detection, Translate, BuildOverviews): what is
   left on disk after a cancel, and what is the user told?
 
