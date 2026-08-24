@@ -9,6 +9,10 @@ This is additional to normal testing, not a replacement for it. Tests confirm
 the code does what it was built to do. This finds the places where two parts of
 the codebase quietly stopped agreeing with each other.
 
+The examples attached to each question are historical. Most describe defects
+that have since been fixed, and they are kept because they explain what the
+question is protecting against, not because they are still present.
+
 ---
 
 ## When to run it
@@ -16,11 +20,12 @@ the codebase quietly stopped agreeing with each other.
 - After any round of changes that touches more than one file
 - After any change to how a decision is made, named, or explained
 - Before submitting a new version to plugins.qgis.org
+- After a GDAL or QGIS major version upgrade
 - Any time a defect is found that a targeted search would not have caught
 
-Do not run it in the middle of a change. Five of the six findings from the last
-review rewrote the files being reviewed, which made the report stale before it
-was acted on.
+Do not run it in the middle of a change. One earlier review produced six
+findings, five of which rewrote the files being reviewed, which made the report
+stale before it could be fully acted on.
 
 ---
 
@@ -33,9 +38,12 @@ Give this instruction:
 > section by section, with file and line. Say "clean" where you find nothing.
 > Change nothing until I have seen the whole report.
 
-The report-first rule matters. Several past findings turned out to need a
-decision rather than a fix, and one turned out not to be a defect at all once
-investigated.
+The report-first rule matters and has earned itself twice. Two findings that
+looked like live bugs turned out, on investigation, to be clean: one was
+version-specific behaviour that did not reproduce on the shipped GDAL, and one
+was already handled correctly by code elsewhere. Both would have been "fixed"
+into unnecessary complexity if the instruction had been to fix rather than
+report.
 
 ---
 
@@ -48,21 +56,47 @@ opened.
 
 The defects that get missed share a shape: they need two distant parts of the
 codebase held in mind at once. A function whose return value stopped being used
-by a call site three hundred lines away. An exception raised in one module with
-no handler anywhere between there and the top. A rule implemented in two files
-that drifted apart. No search term describes any of those, because the problem
-is a relationship, not a string.
+by a call site three hundred lines away. A rule implemented in three places
+that drifted apart. A comment that contradicts another comment eighty lines
+below it in the same function. No search term describes any of those, because
+the problem is a relationship, not a string.
 
 Anyone tempted to turn this checklist into a set of grep patterns should read
 this section again first.
 
 ---
 
-## Section 1: things written more than once
+## Section 1: comments and docstrings that no longer match the code
 
-- Is any rule or decision implemented in two places rather than written once
-  and imported? `_already_optimised_at_target()` was, in both the wrapper and
-  `convert()`, with a comment admitting it mirrored the other.
+The largest single category of defect found in this codebase, and the one most
+likely to recur. Seven were found across two reviews. Every one described
+behaviour that existed before a design change, which means comments go stale in
+the same rounds the design changes, and the files most worth checking are the
+ones just edited.
+
+- Does every module docstring still describe what its module does? One claimed
+  the plugin called `execAlgorithmDialog()` well after that was replaced.
+- Does any comment describe a gate, block, or refusal that has since become a
+  log message or a coercion? Four separate comments did.
+- Does any comment contradict another comment in the same file? One listed
+  three checks in a function that had only one left, contradicting a comment
+  eighty lines below it.
+- Do any user-facing strings outside the UI layer name options that no longer
+  exist? A CLI debug printer named "Clear" and "Keep" long after the dropdown
+  labels became Automatic, Reveal hidden pixels, and Keep as-is.
+- Where a comment says a branch is defensive or unreachable, is that still
+  true?
+
+Note that a targeted audit for stale comments found five and missed a sixth in
+a file it had already opened twice. This section needs the full read as much as
+any other.
+
+## Section 2: things written more than once
+
+- Is any rule or decision implemented in more than one place rather than
+  written once and imported? The already-optimised-at-target rule was written
+  three times: once in the wrapper, once as a helper, and once inline inside
+  `convert()`.
 - Is any user-facing sentence constructed at more than one call site rather
   than produced once and passed outward? The honoured-Analysis case had two
   different wordings for the same decision, one in the log and one in the
@@ -70,23 +104,40 @@ this section again first.
 - `metadata.txt`'s `tags=` and the algorithm's `tags()` claim to be kept in
   sync, but nothing enforces it. Do they still match?
 
-## Section 2: functions whose contract has drifted
+## Section 3: functions whose contract has drifted
 
 - Any function whose return value is discarded at every call site?
   `_resolve_profile()` kept two `return` statements after its result stopped
-  being read.
+  being read, and its name outlived what it did.
 - Any function whose name no longer describes what it does?
 - Any parameter passed but never read, or branch that can no longer be reached?
-- Where a branch is genuinely unreachable now, is the comment beside it honest
-  about that?
+- Any import left behind after the code that used it moved elsewhere?
 
-## Section 3: exceptions and failure paths
+## Section 4: exceptions and failure paths
 
 - `gdal.UseExceptions()` is on at module level in both core files. List every
   GDAL call that can raise under it, and for each say which handler catches it
   on the `processAlgorithm()` path specifically. The `checkParameterValues()`
-  path has a bare `except` that hides this class of problem rather than
-  solving it.
+  path has a bare `except` that hides this class of problem rather than solving
+  it.
+  - `GetGeoTransform()` was checked against GDAL 3.13.2 in August 2026 and does
+    not raise when no geotransform is set: GDAL reports no error at all, so
+    there is nothing for `UseExceptions()` to escalate. Older and other
+    versions have returned `CE_Failure` here. Re-check after any GDAL upgrade.
+    No guard was added, deliberately: a guard against something that cannot
+    currently happen becomes a comment nobody can verify.
+  - Known open item, 2026-08-24: the broader point above is still true beyond
+    `GetGeoTransform()`. Every other GDAL call after `gdal.Open()` in
+    `detect()`'s pipeline - `GetSpatialRef()`, `GetRasterBand()`,
+    `GetBlockSize()`, `GetOverviewCount()`, `GetColorTable()`, and, once pixel
+    sampling starts, `ReadAsArray()` inside `_classified_unique_count()` and
+    `_black_pixel_sample()` - sits inside a bare `try/finally`, not
+    `try/except`, and `processAlgorithm()` wraps none of it. `_verify()`'s
+    post-conversion reopen in `convert()` has the same gap, unguarded at both
+    ends. Unlike `GetGeoTransform()`, none of these have been individually
+    checked against the shipped GDAL - this is a known, deliberately deferred
+    gap, not a confirmed-clean one, so do not treat its absence from a future
+    report as new information.
 - Does every return path close its dataset, including early refusals?
 - Does every failure path either remove the partial output or tell the user it
   exists and what to do with it?
@@ -94,7 +145,7 @@ this section again first.
   `GetConfigOption` returned `None` for an option that was unset, does
   `SetConfigOption(k, None)` unset it again, or leave the value set?
 
-## Section 4: cancellation
+## Section 5: cancellation
 
 - `_black_pixel_sample()` breaks out of its grid loop when the progress
   callback returns falsy, then computes an assessment from whatever it sampled.
@@ -103,7 +154,7 @@ this section again first.
 - For each of the three phases (detection, Translate, BuildOverviews): what is
   left on disk after a cancel, and what is the user told?
 
-## Section 5: comparisons and matching
+## Section 6: comparisons and matching
 
 - Any `==` against a string GDAL reports, where GDAL might report a variant?
   GDAL returns `"YCbCr JPEG"` rather than `"JPEG"`, which nearly made the
@@ -114,7 +165,7 @@ this section again first.
 - Is case guarded everywhere strings are compared, or only in the one place it
   was noticed at the time?
 
-## Section 6: numbers shown to users
+## Section 7: numbers shown to users
 
 - Any place two numbers are displayed that let a reader derive a third, where
   independent rounding makes that derivation come out wrong? Source size,
@@ -123,8 +174,11 @@ this section again first.
 - Are all size units labelled to match the arithmetic actually used? The
   numbers were base-1024 while the labels read as decimal units.
 - Any division without a zero guard?
+- Does any claim about typical results still match measured results? The help
+  panel claimed 15 to 30 times smaller when the measured figure was closer to
+  five.
 
-## Section 7: edge-case inputs
+## Section 8: edge-case inputs
 
 - What happens on a raster smaller than `NODATA_WINDOW_SIZE`, or smaller than
   `NODATA_GRID_SIZE` cells on a side? Walk through `_cell_window()` and the
@@ -133,16 +187,21 @@ this section again first.
 - `GEOKLEIN_7_REPRODUCE` quotes `input.tif` and `output.tif`, but `full_args`
   values are joined unquoted. Can any creation option value contain a space or
   a shell-significant character that would break the command if pasted?
+- Does re-running the tool on its own output behave correctly in every
+  combination of purpose and NoData mode? The metadata strip-and-rewrite was
+  verified this way, two generations deep. The JPEG-source warning exists
+  because one such combination produced a file 4.4 times larger with no gain
+  in accuracy.
 
-## Section 8: translation consistency
+## Section 9: translation consistency
 
 - `self.tr()` is applied to some strings in `optimise_raster.py`, but the enum
   options passed as `options=PURPOSE_OPTIONS` and `options=NODATA_OPTIONS` are
   raw. List every user-facing string in that file that is not wrapped, and say
-  whether each is deliberate.
-- Strings in `core/detector.py` cannot be wrapped, since that module has no
-  QGIS imports. Confirm that is still the only reason any of them are
-  unwrapped.
+  whether each is deliberate. Not yet audited.
+- Strings in `core/detector.py` and `core/converter.py` cannot be wrapped,
+  since neither module imports QGIS. Confirm that is still the only reason any
+  of them are unwrapped.
 
 ---
 
@@ -153,6 +212,10 @@ would have caught. Write it with the real defect attached, the way every
 question above carries one. A question with no provenance reads as generic
 advice and will eventually be pruned by someone who does not know what it was
 protecting against.
+
+Where a question has been investigated and found clean, record that inline with
+the date and the version it was checked against, as Section 4 does for
+`GetGeoTransform()`. Clean is often version-specific rather than permanent.
 
 Remove a question only when the thing it guards against has become structurally
 impossible, not merely fixed once.

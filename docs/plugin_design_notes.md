@@ -210,10 +210,11 @@ lossy pass already changed some pixel values - to whether preserving
 those values losslessly now still means what the user thinks it means.
 Nothing about the file's current structure says so; only knowing what
 was previously done to it does. That's a genuinely new axis, which is
-why `resolve_profile_reason()` needed a second, separate `consequential`
-return value alongside `honoured`: this case is honoured (Analysis was
-requested and Analysis is exactly what ran) and consequential at the
-same time, a combination no purely nature-based rule ever produces.
+why `resolve_profile_reason()` needed `consequential` as its own axis,
+separate from whether the request was honoured: this case is honoured
+(Analysis was requested and Analysis is exactly what ran) and
+consequential at the same time, a combination no purely nature-based
+rule ever produces.
 
 Two things are worth noting about how this surfaced. First, the source
 compression value itself was already available in detection

@@ -70,6 +70,19 @@ CLASSIFIED_SAMPLE_TARGET_DIM = 500
 # classified codes sample as sparse, isolated integers (e.g.
 # 1,2,3,4,5,11,12,21,22...) regardless of how many of them there are.
 # Not built speculatively - recorded here instead.
+#
+# Known gap in the OTHER direction, also deliberately not fixed: a 1x1
+# raster, or one that's genuinely continuous but locally uniform (a tiny
+# crop, a flat single-value DEM tile), can sample down to a single
+# unique value - always <= this threshold, so it always reads as
+# CLASSIFIED regardless of what the file actually is. No minimum
+# sample-size guard is worth adding for this on its own: the threshold
+# such a guard would need has no real failing case to calibrate it
+# against (nobody runs this tool on a 1x1 file), and a refused file with
+# a clear reason is a far cheaper mistake than a silently wrong guess
+# would be. If a real case does turn up, it fails the same way the
+# too-many-codes gap above does - loudly, with a reason, not silently -
+# so it stays a documented limitation rather than a built guard.
 CLASSIFIED_MAX_UNIQUE_VALUES = 100
 
 # Spatial bins per axis when checking for localized NoData=0 clusters.
@@ -218,6 +231,13 @@ class NoDataRisk:
     interior_cells_checked: int = 0
     edge_max_cell_fraction: float = 0.0  # diagnostic only, never decides anything
     grid_cells: int = 0
+    # True if the black-pixel grid sample was cut short (progress_cb
+    # returned falsy, e.g. the user cancelled) before every row was
+    # read - see _black_pixel_sample()'s returned "cancelled" key.
+    # assessment is forced to "insufficient_sample" whenever this is
+    # True, in _detect_body(): a cancelled sample is not evidence of
+    # anything, however the partial numbers above happen to look.
+    cancelled: bool = False
     assessment: str = "not_applicable"  # not_applicable | collar_only | meaningful | insufficient_sample
     needs_user_decision: bool = False
     message: Optional[str] = None
@@ -342,39 +362,40 @@ def _is_jpeg_compression(compression: Optional[str]) -> bool:
     would silently miss the tool's own prior output, the precise case
     PROFILE_REASON_JPEG_SOURCE_ANALYSIS exists to catch. Confirmed
     directly against a real Viewing-profile output file.
+
+    .upper() guards case the same way core/converter.py's own
+    compression comparisons do (already_optimised_at_target(), _verify())
+    - GDAL's own convention for this tag is consistently uppercase, but
+    nothing enforces that convention, and this function had been the one
+    compression comparison in the codebase without the guard.
     """
-    return compression is not None and "JPEG" in compression
+    return compression is not None and "JPEG" in compression.upper()
 
 
 def resolve_profile_reason(detection: DetectionResult, requested: Optional[str]) -> tuple:
-    """Returns (reason: str, honoured: bool, consequential: bool)
-    explaining what profile was used and why - covering every case a
-    run can produce: forced and matched, forced and overridden, and
-    choice (RGB_8BIT only, always honoured now that Phase 2 of the
-    purpose-question rework removed the one file-specific block that
-    used to sit in "choice" mode).
+    """Returns (reason: str, consequential: bool) explaining what profile
+    was used and why - covering every case a run can produce: forced and
+    matched, forced and overridden, and choice (RGB_8BIT only, always
+    honoured now that Phase 2 of the purpose-question rework removed the
+    one file-specific block that used to sit in "choice" mode).
 
-    honoured=True means the user got the profile they asked for.
-    honoured=False means the file's nature required otherwise - not
-    "the user was overridden", a fact about the data, not an event done
-    to someone. On a forced file where the request happens to already
-    match what's forced (e.g. Analysis chosen on elevation, which was
-    always going to be lossless regardless), this still reports
-    honoured=True with the generic "as asked" wording: the file having
-    no other option doesn't change that this specific request was met.
-
-    consequential is a separate axis from honoured, the same way
-    core/converter.py's NoData handling already distinguishes what
-    happened from whether it's worth surfacing prominently
-    (nodata_cleared vs. nodata_consequential). A mismatch is always
-    consequential (honoured=False implies consequential=True). But a
-    genuine match can be consequential too: requesting Analysis on a
-    file whose source compression is already some JPEG variant (see
-    _is_jpeg_compression) is honoured exactly as asked - lossless ZSTD
-    is applied, nothing overridden - and still
-    worth a warning, because the pixel values being preserved were
-    already changed by that prior JPEG pass. Routine matches (anything
-    else) are honoured=True, consequential=False.
+    consequential means "worth surfacing prominently" (pushWarning
+    rather than pushInfo, in the QGIS wrapper) - the same distinction
+    core/converter.py's NoData handling already makes between what
+    happened and whether it's worth surfacing (nodata_cleared vs.
+    nodata_consequential). Whether the request was honoured - the user
+    got the profile they asked for, versus the file's nature requiring
+    otherwise - isn't returned as a value of its own: every case where
+    it wasn't honoured is already consequential (there's no scenario
+    where the file's nature overrode the request and that's NOT worth
+    mentioning), so consequential alone is enough to decide severity.
+    A genuine match can still be consequential, though: requesting
+    Analysis on a file whose source compression is already some JPEG
+    variant (see _is_jpeg_compression) is honoured exactly as asked -
+    lossless ZSTD is applied, nothing overridden - and still worth a
+    warning, because the pixel values being preserved were already
+    changed by that prior JPEG pass. Routine matches (anything else)
+    are consequential=False.
 
     requested may be None (a caller that never expressed a preference,
     e.g. the CLI's --profile is optional) - never a mismatch on its
@@ -383,20 +404,20 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
     if detection.profile_mode == "forced":
         actual = detection.forced_profile
         if requested is not None and requested != actual:
-            return detection.forced_reason, False, True
+            return detection.forced_reason, True
         if actual == "lossless":
             if requested == "lossless" and _is_jpeg_compression(detection.compression):
-                return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True, True
-            return PROFILE_REASON_ANALYSIS_HONOURED, True, False
-        return PROFILE_REASON_VIEWING_HONOURED_RGB, True, False
+                return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
+            return PROFILE_REASON_ANALYSIS_HONOURED, False
+        return PROFILE_REASON_VIEWING_HONOURED_RGB, False
 
     # profile_mode == "choice" (RGB_8BIT only): never blocked or
     # overridden any more, so always honoured.
     if requested == "lossy":
-        return PROFILE_REASON_VIEWING_HONOURED_RGB, True, False
+        return PROFILE_REASON_VIEWING_HONOURED_RGB, False
     if _is_jpeg_compression(detection.compression):
-        return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True, True
-    return PROFILE_REASON_ANALYSIS_HONOURED, True, False
+        return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
+    return PROFILE_REASON_ANALYSIS_HONOURED, False
 
 
 def content_label(detection: DetectionResult) -> str:
@@ -542,6 +563,7 @@ def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
     interior_flagged = 0
     interior_checked = 0
     edge_max_fraction = 0.0
+    cancelled = False
 
     for gy in range(grid):
         cy0, cy1 = gy * ysize // grid, (gy + 1) * ysize // grid
@@ -584,6 +606,7 @@ def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
                         interior_flagged += 1
 
         if progress_cb is not None and not progress_cb((gy + 1) / grid, "", progress_cb_data):
+            cancelled = True
             break
 
     return {
@@ -595,6 +618,12 @@ def _black_pixel_sample(ds: "gdal.Dataset", rgb_band_indices, alpha_index,
         "interior_checked": interior_checked,
         "edge_max_fraction": edge_max_fraction,
         "grid_cells": grid * grid,
+        # True if progress_cb returned falsy before every grid row was
+        # sampled - the stats above are then computed from a genuinely
+        # incomplete pass, not a deliberately coarse one. _detect_body()
+        # uses this to keep a cut-short sample from being reported as a
+        # confident "meaningful"/"collar_only" finding.
+        "cancelled": cancelled,
     }
 
 
@@ -1060,8 +1089,14 @@ def _detect_body(result: DetectionResult, ds: "gdal.Dataset", progress_cb, progr
     nodata_risk.interior_cells_checked = stats["interior_checked"]
     nodata_risk.edge_max_cell_fraction = stats["edge_max_fraction"]
     nodata_risk.grid_cells = stats["grid_cells"]
+    nodata_risk.cancelled = stats["cancelled"]
     result.needs_pixel_sampling = False
-    if stats["interior_checked"] == 0:
+    # A cut-short sample (cancelled) is forced into insufficient_sample
+    # regardless of what the partial numbers happen to show - it hasn't
+    # earned "collar_only" (confirmed nothing hidden) or "meaningful"
+    # (confirmed something hidden), only whatever fraction of the grid
+    # was actually read before the callback returned falsy.
+    if stats["cancelled"] or stats["interior_checked"] == 0:
         nodata_risk.assessment = "insufficient_sample"
         nodata_risk.needs_user_decision = True
         nodata_risk.message = (

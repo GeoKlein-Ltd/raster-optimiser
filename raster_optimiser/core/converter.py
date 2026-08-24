@@ -99,13 +99,16 @@ class DecisionSummary:
     assembled once inside convert() so the end-of-run summary and the
     output file's embedded metadata read identical text rather than
     each formatting their own. profile_reason/nodata_message describe
-    facts, not display policy - profile_honoured/nodata_consequential
+    facts, not display policy - profile_consequential/nodata_consequential
     are also facts (what happened), and it's up to whichever caller
     reads this (the log summary vs. the file metadata) to decide which
     facts are worth including under its own rule.
+
+    No profile_honoured field: resolve_profile_reason() doesn't return
+    one (see its docstring) - consequential alone already decides
+    everything a caller needs to about severity.
     """
     profile_reason: str
-    profile_honoured: bool
     profile_consequential: bool = False  # a genuine match can still be worth flagging - see resolve_profile_reason()'s docstring (e.g. Analysis requested on a JPEG source)
     nodata_message: Optional[str] = None  # same object as ConversionResult.nodata_message, not duplicated text
     nodata_consequential: bool = False  # derived from nodata_message_severity != "routine"
@@ -489,18 +492,25 @@ def _read_plugin_version() -> str:
     return parser.get("general", "version", fallback="unknown")
 
 
+def _compression_display_label(compression: str) -> str:
+    """The user-facing name for a COMPRESS creation-option value.
+    "Lossless" is prefixed for ZSTD (used for both the lossless-integer
+    and lossless-float settings, so the word is needed to disambiguate)
+    but not for JPEG, which is unambiguously lossy in this codebase -
+    matches Phase 5's own worked examples. One function, used by both
+    GEOKLEIN_5_APPLIED and TIFFTAG_IMAGEDESCRIPTION below, so the same
+    compression can't end up described two different ways - this used
+    to be written independently in each place.
+    """
+    return f"Lossless {compression}" if compression == "ZSTD" else compression
+
+
 def _format_applied_settings(applied: "AppliedSettings") -> str:
     """GEOKLEIN_5_APPLIED's text, built from the structured record
     rather than re-deriving anything from GDAL creation-option key
-    names a second time. "Lossless" is prefixed for ZSTD (used for both
-    the lossless-integer and lossless-float settings, so the word is
-    needed to disambiguate) but not for JPEG, which is unambiguously
-    lossy in this codebase - matches Phase 5's own worked examples.
+    names a second time.
     """
-    if applied.compression == "ZSTD":
-        parts = [f"Lossless ZSTD {applied.compression_detail}"]
-    else:
-        parts = [f"{applied.compression} {applied.compression_detail}"]
+    parts = [f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
     if applied.predictor:
         parts.append(f"predictor {applied.predictor}")
     if applied.alpha_reattached:
@@ -612,13 +622,11 @@ def _write_decision_metadata(
     # short line, not the same paragraph repeated a second time in
     # Layer Properties. One sentence: tool and version, what the file
     # is, what compression was applied.
-    compression_label = decisions.applied.compression
-    if compression_label == "ZSTD":
-        compression_label = f"Lossless {compression_label}"
     out_ds.SetMetadataItem(
         "TIFFTAG_IMAGEDESCRIPTION",
         f"Optimised by GeoKlein Raster Optimiser {version}. "
-        f"{content_label(detection)}, written as {compression_label}.",
+        f"{content_label(detection)}, written as "
+        f"{_compression_display_label(decisions.applied.compression)}.",
     )
 
 
@@ -699,7 +707,15 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
     target_compression = RECOMMENDED_SETTINGS[
         _settings_key(detection, resolved_profile)
     ]["creation_options"]["COMPRESS"]
-    return (detection.compression or "").upper() == target_compression.upper()
+    # Containment, not exact equality - GDAL reports "YCbCr JPEG" for
+    # this tool's own lossy/Viewing output, not bare "JPEG" (the same
+    # trap _is_jpeg_compression() above exists to document). An exact
+    # match here meant a Viewing-profile output, re-run with Viewing,
+    # was never recognised as already at target - it got reprocessed
+    # instead, with a warning claiming the compression wasn't JPEG yet.
+    # Matches _verify()'s compression_ok check below, the one comparison
+    # in this file that already guarded against this.
+    return target_compression.upper() in (detection.compression or "").upper()
 
 
 def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> VerificationResult:
@@ -820,15 +836,14 @@ def convert(
     result.profile_used = profile
 
     # ---- assemble the decision record (Phase 4/5 of the purpose-
-    # question rework) - profile_reason/honoured/consequential set now
-    # since all three are already fully known; nodata_message/applied
-    # filled in further down as each becomes known.
+    # question rework) - profile_reason/consequential set now since both
+    # are already fully known; nodata_message/applied filled in further
+    # down as each becomes known.
     # resolve_profile_reason() is the one place this text is produced,
     # in detector.py - see its docstring.
-    profile_reason, profile_honoured, profile_consequential = resolve_profile_reason(detection, chosen_profile)
+    profile_reason, profile_consequential = resolve_profile_reason(detection, chosen_profile)
     result.decisions = DecisionSummary(
-        profile_reason=profile_reason, profile_honoured=profile_honoured,
-        profile_consequential=profile_consequential,
+        profile_reason=profile_reason, profile_consequential=profile_consequential,
     )
 
     # ---- compare current state to target, decide whether to do anything ----
@@ -972,7 +987,19 @@ def convert(
             return result
         result.action = "error"
         result.translate_ok = False
-        result.message = f"Translate failed: {exc}"
+        # Not removed: unlike a cancellation (the user's own choice) or
+        # BuildOverviews failing after Translate already fully succeeded
+        # (see below), a file left behind by a genuine Translate failure
+        # might be incomplete, but deleting it outright on this module's
+        # own judgement risks discarding something the user could still
+        # inspect or recover from - silently losing data is worse than
+        # leaving an orphan they've been told about.
+        result.message = (
+            f"Translate failed: {exc}. If a file exists at {output_path}, "
+            "Translate did not finish writing it and it may be incomplete "
+            "or invalid - check it before using it, and delete it before "
+            "re-running this tool on the same output path."
+        )
         return result
 
     if out_ds is None:

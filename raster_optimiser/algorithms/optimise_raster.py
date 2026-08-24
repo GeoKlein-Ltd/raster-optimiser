@@ -693,6 +693,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         detect_seconds = time.perf_counter() - t_detect
         feedback.pushInfo(self.tr("Detection finished in {:.1f}s").format(detect_seconds))
 
+        # detect() has no cancelled action of its own to check (unlike
+        # convert()'s result.action == "cancelled") - make_progress_cb
+        # already returned False into it the moment isCanceled() went
+        # true, so checking the same flag here directly is what actually
+        # stops the run, matching how a cancelled Translate is handled
+        # below. Without this, a user cancelling during "Detecting
+        # raster type..." was never actually stopped - the run carried
+        # on into Translate regardless.
+        if feedback.isCanceled():
+            feedback.pushInfo(self.tr("Cancelled during detection."))
+            return {}
+
         if detection.refused:
             raise QgsProcessingException(detection.refusal_reason)
 
@@ -875,9 +887,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # can be genuinely honoured and still worth a warning - Analysis
         # requested on a JPEG source is applied exactly as asked, but
         # the file's history makes it worth flagging anyway. See
-        # resolve_profile_reason()'s docstring for the honoured/
-        # consequential distinction.
-        reason, honoured, consequential = resolve_profile_reason(detection, requested)
+        # resolve_profile_reason()'s docstring for why honoured isn't a
+        # separate returned value.
+        reason, consequential = resolve_profile_reason(detection, requested)
         if consequential:
             feedback.pushWarning(reason)
         else:
