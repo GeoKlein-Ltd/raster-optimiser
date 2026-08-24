@@ -61,7 +61,22 @@ class RasterOptimiserPlugin:
         # than this plugin needs at load time, and the callback only
         # runs long after QGIS's Python environment is fully up anyway.
         import processing
-        processing.execAlgorithmDialog(ALGORITHM_ID)
+        # NOT execAlgorithmDialog(): its own implementation (processing/
+        # tools/general.py) calls widget.exec(), then unconditionally
+        # widget.results(), then widget.close() - that results() call is
+        # what raised "wrapped C/C++ object of type AlgorithmWidget has
+        # been deleted" after a successful run, an intermittent QGIS-side
+        # widget-lifetime bug, not something in this plugin's own code.
+        # This plugin never used the return value anyway (the call below
+        # used to be a bare, unassigned processing.execAlgorithmDialog()
+        # call), so there's nothing lost by not reading results() at
+        # all: build the dialog and show it non-modally instead, the
+        # same way double-clicking an algorithm in the Processing
+        # Toolbox itself opens it, which sidesteps the crash entirely
+        # rather than working around it.
+        widget = processing.createAlgorithmDialog(ALGORITHM_ID)
+        if widget is not None:
+            widget.show()
 
     def unload(self):
         if self.action is not None:

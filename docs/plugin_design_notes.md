@@ -129,3 +129,112 @@ the worst single cell's fraction. This costs no extra I/O (it re-uses
 the array already read) and caught the real cluster cleanly (worst
 cell 0.37-1.2% depending on grid density, both well above the 0.1%
 per-cell threshold, versus 0.012% globally).
+
+---
+
+## Deferred: internal mask band for NoData-only-transparency files
+
+**Status:** not built. Captured 2026-08-22 for later, alongside the
+magenta-fill preview above.
+
+**The idea:** on an 8-bit RGB file whose only transparency is a NoData
+value (no alpha band), building an internal mask band from the collar
+would let lossy compression become genuinely safe: the mask marks the
+collar by position once, up front, the same way a real alpha band
+already does for files that have one, and the border stops depending
+on NoData surviving pixel-value shifts intact. This is the correct fix
+for the case `detector.py`'s `nodata_only_transparency` structural
+check currently forces to lossless instead (see `_finish_rgb_8bit()` -
+Phase 2 of the purpose-question rework made that case coerce-and-log
+rather than block, but a mask band would let it actually get the
+smaller file too, not just a clearer explanation of why it doesn't).
+
+**Why it's deferred, not built now:** the mask cannot simply be "every
+pixel equal to zero" - that's indistinguishable from the interior
+black-pixel-cluster problem the grid sampling in `core/detector.py`
+already exists to catch (deep shadow, dark water, wet tarmac are all
+genuinely NoData-valued pixels too). Building this mask correctly needs
+actual collar detection: tracing the empty border inward from the
+image's edges, so only pixels connected to the outside count as collar,
+not an interior region that merely happens to share the same value.
+That's a materially different (and more expensive) piece of image
+processing than anything currently in the detection pipeline, not a
+small addition to the existing sampling.
+
+**Update, 2026-08-22:** explicit `Reveal hidden pixels` on these files
+now actually clears NoData (`core/converter.py`'s
+`_resolve_nodata_handling()`), matching what
+`docs/raster_optimiser_ui_text.md` already documented - it was
+previously a hardcoded refusal regardless of NODATA_MODE. Automatic is
+unaffected and still stays conservative on this file type, since never
+clearing without being asked is the whole point of Automatic. This
+removes the first of the two blockers on offering lossy here when
+Reveal is chosen: NoData genuinely can be cleared now, on request. The
+remaining blocker is unchanged: the lossy `ProfileOption` for this file
+type isn't populated with real creation options/translate args (it's
+currently just absent, since the file is `profile_mode == "forced"`),
+and reconstructing one would need the resolution layer
+(`_resolve_profile()` in `algorithms/optimise_raster.py`, and
+`convert()`'s own profile lookup in `core/converter.py`) to read
+NODATA_MODE and override the structural forced-lossless decision
+post-hoc - detection itself still can't take NODATA_MODE as an input
+without crossing the "detection stays pure structural classification"
+boundary this document already protects for the visual-preview feature
+above.
+
+---
+
+## History-based rules versus nature-based rules
+
+**Status:** implemented, 2026-08-24 (`core/detector.py`'s
+`PROFILE_REASON_JPEG_SOURCE_ANALYSIS` and `resolve_profile_reason()`'s
+`consequential` return value). Captured here because it is the first
+rule of its kind the tool has, and future rules should be checked
+against the same distinction before being written.
+
+Detection reads what a file *is*. Every rule the tool had before this
+one maps that nature to what can safely be done with it: Float32 cannot
+be lossy, because height measurements have no "close enough" shade the
+way colours do. Five bands cannot be YCbCr, because YCbCr JPEG is
+defined for exactly three colour channels. Categorical pixel values
+cannot be averaged, because a code one integer off is a different
+category, not a similar one. All three are facts about the data itself,
+true regardless of where the file came from or what happened to it
+before it arrived.
+
+Requesting Analysis on a file whose source compression is already a
+JPEG variant is a different kind of rule. It doesn't map the data's
+nature to what can be done with it - lossless ZSTD applies to this file
+exactly as well as to any other. It maps the file's *history* - a prior
+lossy pass already changed some pixel values - to whether preserving
+those values losslessly now still means what the user thinks it means.
+Nothing about the file's current structure says so; only knowing what
+was previously done to it does. That's a genuinely new axis, which is
+why `resolve_profile_reason()` needed a second, separate `consequential`
+return value alongside `honoured`: this case is honoured (Analysis was
+requested and Analysis is exactly what ran) and consequential at the
+same time, a combination no purely nature-based rule ever produces.
+
+Two things are worth noting about how this surfaced. First, the source
+compression value itself was already available in detection
+(`DetectionResult.compression`, read cheaply from `IMAGE_STRUCTURE`
+metadata) well before this rule was written - having the fact on hand
+did not by itself produce the check, because nobody had yet asked
+whether a file's compression history, as opposed to its current
+structure, was something a rule should act on. Second, this case was
+masked for a while by the "already tiled and has pyramids" check, which
+used to be broad enough to catch a re-run of this same file and refuse
+it outright for an unrelated reason; Phase 3 of the purpose-question
+rework correctly narrowed that check to stop over-refusing, and doing
+so is what let a re-run of an already-optimised file reach this far
+into the pipeline at all. It only became visible once a measurement
+table happened to include a prior Viewing-profile output of this same
+tool run back through Analysis, and the resulting 4.4x size growth had
+nowhere left to hide behind a broader refusal.
+
+Any future rule proposed for this tool should be examined for which
+category it falls into before being written: a fact about what the file
+*is*, derivable from its current structure alone, or a fact about what
+was *previously done to it*, which detection cannot see just by reading
+the file's current state and which needs its own explicit check, the
+way this one now has.

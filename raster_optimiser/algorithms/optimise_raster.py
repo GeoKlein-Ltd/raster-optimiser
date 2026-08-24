@@ -21,29 +21,36 @@ refuse. Picking a genuinely different value from the SAME dropdown that
 the refusal is about doesn't fix that, no matter how it reads on paper
 - the user has already made their real choice by the time the modal
 reappears identically. Keep as-is is a fully legitimate, supported
-choice (unlike lossy-on-elevation, which is never legitimate, or
-reprocessing an already-optimised file, which is never useful without
-Force reprocess), so it belongs where every other legitimate choice
-this plugin doesn't second-guess lives: a prominent processAlgorithm()
-log message, not a gate. Automatic being the default is what protects a
-novice here - selecting Keep as-is at all is already the deliberate
-override, not something that then also needs blocking.
+choice, so it belongs where every other legitimate choice this plugin
+doesn't second-guess lives: a prominent processAlgorithm() log message,
+not a gate. Automatic being the default is what protects a novice here
+- selecting Keep as-is at all is already the deliberate override, not
+something that then also needs blocking.
 
 QGIS renders a checkParameterValues() failure as a modal QMessageBox
 with only an OK button (confirmed via processing/gui/algorithm_widget.py),
 not a dismissible inline banner - framework behaviour, not something
 this file can change. That rules out checkParameterValues() for
-anything a user might legitimately want to proceed past, which is
-exactly why only the two hard gates below remain there: lossy-on-
-elevation (never legitimate) and already-optimised-with-nothing-left-
-to-gain (never useful without Force reprocess) both have a real,
-different parameter to change, not just a different value in the same
-dropdown the block was about. "Already optimised" is compression-aware,
-not just tiling/overviews: a file that's tiled with overviews but still
-on a non-target codec (LZW, DEFLATE, uncompressed) has real file size to
-gain, so that case proceeds instead of blocking - see
-_already_optimised_at_target() and core/converter.py's matching check
-in convert().
+anything a user might legitimately want to proceed past, or that the
+tool can already handle correctly on its own. Per the "purpose-question
+rework"'s three-bucket rule (Phase 2): a check belongs in
+checkParameterValues() only when changing a parameter in THIS dialog
+fixes the exact problem being reported; everything else either coerces
+and logs (Bucket A - lossy/Viewing requested on a forced-lossless file,
+"Reveal hidden pixels" with nothing to reveal) or raises a
+QgsProcessingException in processAlgorithm() (Bucket C - classified
+rasters, no CRS, and the other detection.refused codes, none of which
+any dialog parameter can fix). Only one case still blocks here:
+already-optimised-with-nothing-left-to-gain (Bucket B), escapable via
+Force reprocess, the one parameter that actually changes the outcome
+being reported. It's compression-aware, not just tiling/overviews: a
+file that's tiled with overviews but still on a non-target codec (LZW,
+DEFLATE, uncompressed) has real file size to gain, so that case
+proceeds instead of blocking - see _already_optimised_at_target() and
+core/converter.py's matching check in convert(). Bucket A and Bucket C
+both live in the pure-GDAL core or at the top of processAlgorithm(), so
+they run on every entry route (GUI, processing.run(), batch, Processing
+models) - no parameter switches either off.
 
 Cross-version note (QGIS 3.x / PyQt5 vs QGIS 4.x / PyQt6): this file
 deliberately touches no raw Qt widget classes and no QVariant - only
@@ -72,7 +79,7 @@ from ..core.converter import (
     convert, output_exists_message, output_same_as_source_message,
     _same_file, _is_tiled, _settings_key,
 )
-from ..core.detector import detect, detect_metadata_only, RECOMMENDED_SETTINGS
+from ..core.detector import detect, detect_metadata_only, RECOMMENDED_SETTINGS, resolve_profile_reason
 from ..icon_utils import plugin_icon
 
 # No letters anywhere: "A"/"B" imply an order (A primary, B fallback)
@@ -89,17 +96,21 @@ from ..icon_utils import plugin_icon
 # detector.py/converter.py's profile identity strings are "lossy" and
 # "lossless" now too (see their RECOMMENDED_SETTINGS keys and
 # ProfileOption.profile) - self-describing everywhere, so there's no
-# mapping left for anyone to get wrong. PROFILE_LOSSLESS/PROFILE_LOSSY
-# below are only this wrapper's own dropdown-index constants. Same
-# reasoning applies to NODATA_AUTO/REVEAL/KEEP further down: this file
-# hardcodes the literal "auto"/"reveal"/"keep" strings at the one point
-# they cross into convert(), rather than importing converter.py's
-# NODATA_MODE_* constants under a second, index-shaped name here.
-PROFILE_LOSSLESS = 0
-PROFILE_LOSSY = 1
-_PROFILE_LOSSLESS_NAME = "Analysis: every pixel value preserved"
-_PROFILE_LOSSY_NAME = "Viewing: smallest possible file"
-PROFILE_OPTIONS = [_PROFILE_LOSSLESS_NAME, _PROFILE_LOSSY_NAME]
+# mapping left for anyone to get wrong. PURPOSE_ANALYSIS/PURPOSE_VIEWING
+# below are only this wrapper's own dropdown-index constants (renamed
+# from PROFILE_LOSSLESS/PROFILE_LOSSY when the PROFILE parameter itself
+# became PURPOSE - see the PURPOSE class attribute - since those old
+# names described the mechanism the dropdown used to ask about, not the
+# purpose it asks about now). Same reasoning applies to
+# NODATA_AUTO/REVEAL/KEEP further down: this file hardcodes the literal
+# "auto"/"reveal"/"keep" strings at the one point they cross into
+# convert(), rather than importing converter.py's NODATA_MODE_*
+# constants under a second, index-shaped name here.
+PURPOSE_ANALYSIS = 0
+PURPOSE_VIEWING = 1
+_PURPOSE_ANALYSIS_NAME = "Analysis: every pixel value preserved"
+_PURPOSE_VIEWING_NAME = "Viewing: smallest possible file"
+PURPOSE_OPTIONS = [_PURPOSE_ANALYSIS_NAME, _PURPOSE_VIEWING_NAME]
 
 # Index order matches NODATA_OPTIONS below exactly - see
 # _NODATA_MODE_STRINGS for the one place this crosses into convert()'s
@@ -129,14 +140,16 @@ _HARD_FAILURE_ACTIONS = (
 )
 
 
-def _resolved_profile_for_target(detection, profile_choice):
+def _resolved_profile_for_target(detection, purpose_choice):
     """The actual lossy/lossless identity that will be used, needed to
-    look up the target compression. Elevation (profile_mode == "forced")
-    always resolves via detection.forced_profile regardless of what
-    PROFILE is set to; everything else resolves from the dropdown."""
+    look up the target compression. Any forced case (profile_mode ==
+    "forced": elevation, CONTINUOUS, or RGB_8BIT's nodata_only_
+    transparency) always resolves via detection.forced_profile
+    regardless of what PURPOSE is set to; everything else resolves from
+    the dropdown."""
     if detection.profile_mode == "forced":
         return detection.forced_profile
-    return "lossless" if profile_choice == PROFILE_LOSSLESS else "lossy"
+    return "lossless" if purpose_choice == PURPOSE_ANALYSIS else "lossy"
 
 
 def _already_optimised_at_target(detection, resolved_profile):
@@ -162,7 +175,7 @@ def _already_optimised_at_target(detection, resolved_profile):
 class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
     INPUT = "INPUT"
-    PROFILE = "PROFILE"
+    PURPOSE = "PURPOSE"
     NODATA_MODE = "NODATA_MODE"
     FORCE_REPROCESS = "FORCE_REPROCESS"
     OVERWRITE = "OVERWRITE"
@@ -197,17 +210,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # displayName() (just the name). Default implementation falls
         # back to the first line of shortHelpString(), which isn't
         # useful as a tooltip on its own - this overrides it.
-        return self.tr("Makes slow, oversized rasters load and pan quickly in QGIS.")
+        return self.tr(
+            "Makes slow, oversized rasters load and pan quickly in "
+            "QGIS or any other GDAL-based software."
+        )
 
     def group(self):
-        # Empty on purpose: with only one algorithm, a same-named group
-        # ("Raster Optimiser" provider containing a "Raster Optimiser"
-        # group) is a redundant tree level - Toolbox showed
-        # Raster Optimiser -> Raster Optimiser -> Optimise raster.
-        # Returning "" collapses straight to
-        # Raster Optimiser -> Optimise raster. Doesn't touch id() /
-        # name(), so this can't affect anything that references the
-        # algorithm by ID (Model Designer, qgis_process, saved models).
+        # Empty on purpose: with only one algorithm, an extra group
+        # level is redundant either way - Toolbox collapses straight to
+        # {provider name} -> Optimise raster (see provider.py's name(),
+        # "GeoKlein" as of Phase 6 of the purpose-question rework - was
+        # "Raster Optimiser" when this was originally written, hence
+        # this staying empty rather than repeating that name a second
+        # time). Doesn't touch id() / name(), so this can't affect
+        # anything that references the algorithm by ID (Model Designer,
+        # qgis_process, saved models).
         return ""
 
     def groupId(self):
@@ -248,8 +265,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # blank line above/below and the lead-in wording for structure.
         return self.tr(
             "<p>What this does</p>"
-            "<p>Makes large rasters load and pan quickly in QGIS, and "
-            "reduces their file size.</p>"
+            "<p>Makes large rasters load and pan quickly in QGIS or "
+            "any other GDAL-based software, and reduces their file "
+            "size.</p>"
 
             "<p>Why your file is slow</p>"
             "<p>Most orthomosaics and elevation rasters come out of "
@@ -274,19 +292,26 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "vegetation indices, crown segmentation, classification, "
             "change detection. Elevation data always uses this, "
             "whatever you select.</p>"
-            "<p><i>Viewing</i>: produces a much smaller file, typically "
-            "15 to 30 times smaller, by discarding detail the eye "
-            "won't notice. Still a GeoTIFF either way, never a .jpg "
-            "file. Use it for basemaps, client copies, QField "
+            "<p><i>Viewing</i>: produces a much smaller file, by "
+            "discarding detail the eye won't notice. A typical drone "
+            "orthomosaic came out around 80% smaller. Still a GeoTIFF "
+            "either way, never a .jpg file. Use it for basemaps, "
+            "client copies, QField "
             "backdrops and site context.</p>"
             "<p>Both load and pan at the same speed. The choice only "
             "affects file size and whether pixel values survive "
             "unchanged.</p>"
-            "<p>Some data can't be compressed for viewing without "
-            "changing the numbers it holds. Elevation, 16-bit and "
-            "multispectral imagery are all in that group: where that "
-            "applies, the tool preserves the values instead, and "
-            "records what it did in the log and in the file itself.</p>"
+            "<p>Some files can't be compressed for viewing without "
+            "changing the numbers they hold, or without losing their "
+            "transparent collar. Elevation and 16-bit or multispectral "
+            "imagery are always in that group, whatever they contain. "
+            "An 8-bit RGB file can be too, if its collar is marked by "
+            "a NoData value rather than a real alpha band, since "
+            "compressing for viewing shifts pixel values slightly and "
+            "a NoData-marked collar doesn't survive that the way a "
+            "real alpha band does. Where any of this applies, the "
+            "tool preserves the values instead, and records what it "
+            "did in the log and in the file itself.</p>"
 
             "<p>What it won't process</p>"
             "<p>Some rasters can't be optimised safely with these "
@@ -323,19 +348,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<li>Tiling: storing the image as small squares "
             "instead of full-width rows.</li>"
             "</ul>"
-        )
 
-    def _lossy_on_elevation_message(self):
-        return self.tr(
-            "This is elevation data: a DSM, DTM or CHM.\n"
-            "\n"
-            "Lossy compression works by discarding detail the eye "
-            "won't notice. That's fine for photographs, but elevation "
-            "pixels are height measurements, not colours, so discarding "
-            "detail changes the actual heights.\n"
-            "\n"
-            "Choose '{}' instead."
-        ).format(_PROFILE_LOSSLESS_NAME)
+            "<hr>"
+            "<p>Made by GeoKlein Ltd, Edinburgh. Built on GDAL.</p>"
+            "<p>Report problems: tracker link to be added once the "
+            "repository is public.</p>"
+        )
 
     def _already_optimised_message(self):
         return self.tr(
@@ -348,8 +366,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "It would just produce a second large file.\n"
             "\n"
             "If you're reconverting deliberately, for example to switch "
-            "from lossless to lossy compression, tick '{}' under "
-            "Advanced parameters."
+            "it from Analysis to Viewing, tick '{}' under Advanced "
+            "parameters."
         ).format(FORCE_REPROCESS_LABEL)
 
     def checkParameterValues(self, parameters, context):
@@ -434,89 +452,39 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             # than reading a meaningful "not tiled" answer.
             return True, ""
 
-        # Fetched unconditionally now (used to only be read inside the
-        # "choice" branch below) - the lossy-on-elevation warning further
-        # down needs it for the "forced" profile_mode case too. PROFILE
-        # always has a genuine value (defaulted to lossless if untouched
-        # - see the PROFILE_LOSSLESS comment), so this is safe to read
-        # regardless of profile_mode.
-        profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
-        nodata_choice = self.parameterAsEnum(parameters, self.NODATA_MODE, context)
+        # PURPOSE always has a genuine value (defaulted to Analysis if
+        # untouched - see the PURPOSE_ANALYSIS comment), so this is safe
+        # to read unconditionally.
+        purpose_choice = self.parameterAsEnum(parameters, self.PURPOSE, context)
 
-        if detection.profile_mode == "choice":
-            # This replaces the earlier "no default, force a choice"
-            # design from an earlier round - superseded because the
-            # asymmetric harm runs the other way: an untouched dropdown
-            # giving a larger-than-optimal file is visible and
-            # recoverable; silently altering pixel values is not.
-            requested = "lossless" if profile_choice == PROFILE_LOSSLESS else "lossy"
-            opt = next((o for o in detection.profile_options if o.profile == requested), None)
-            if opt is not None and not opt.available:
-                return False, opt.reason_blocked or self.tr(
-                    "The {} option is not available for this file."
-                ).format(requested)
-
-        # Hard gate, not just a log note: choosing "Reveal hidden
-        # pixels" on a file with no NoData=0 condition at all is a pure
-        # no-op (elevation always lands here too - detect_metadata_only
-        # never creates a NoDataRisk for it), and nobody should walk
-        # away from a run thinking they've revealed hidden pixels when
-        # nothing happened. This is deliberately NOT the same check as
-        # the nodata_only_transparency structural block (NoData set, but
-        # clearing would reveal a border) - that stays a soft, logged
-        # non-gate, unaffected by this parameter, exactly as before.
-        if nodata_choice == NODATA_REVEAL and (detection.nodata_risk is None or not detection.nodata_risk.applies):
-            return False, self.tr(
-                "'{}' has no effect on this file - it doesn't have a "
-                "NoData=0 condition to reveal. Choose a different "
-                "option, or check Raster Information if you expected one."
-            ).format(_NODATA_REVEAL_NAME)
-
-        # NODATA_KEEP does NOT get a hard gate here, even when detection
-        # finds meaningful content behind NoData - tried twice, reverted
-        # twice (see this module's docstring). Keep as-is is a
-        # legitimate choice, and checkParameterValues() can only refuse,
-        # never accept-with-acknowledgement, so gating a legitimate
-        # choice here always reproduces the same unclosable modal loop
-        # regardless of how the message is worded. That finding is
-        # surfaced instead as a prominent processAlgorithm() log message
-        # - see _resolve_nodata_handling()'s NODATA_MODE_KEEP branch.
-
-        # Pre-flight risk warnings, unconditional now (the WARN_ENABLED
-        # parameter that used to gate these was removed in Phase 1 of
-        # the purpose-question rework - previously unticking it skipped
-        # this block entirely, logging the same findings in
-        # processAlgorithm() instead). NOTE: this still covers
-        # lossy-on-elevation as a hard block, and the module docstring
-        # above still describes it that way - Phase 2 of that rework
-        # moves this specific case out of checkParameterValues() into a
-        # non-blocking coerce-and-log, at which point this comment and
-        # the docstring both need updating together.
+        # Bucket A of the purpose-question rework (Phase 2): Viewing
+        # requested on a forced-lossless file (elevation, 16-bit/
+        # multispectral, or an RGB file with NoData-only transparency
+        # and no alpha band) no longer blocks here - it coerces to
+        # Analysis and logs why, in processAlgorithm()'s
+        # _resolve_profile(). Likewise "Reveal hidden pixels" on a file
+        # with no NoData=0 condition at all (elevation always lands
+        # here, and plenty of RGB files with no NoData=0 do too) no
+        # longer blocks - it's a no-op either way, so blocking it would
+        # fail files in batch that would otherwise process correctly.
+        # Both are now log-only, produced in core/converter.py's
+        # _resolve_nodata_handling() and _resolve_profile() respectively
+        # so every entry route (GUI, processing.run(), batch, Processing
+        # models, direct API) gets the identical message, not just this
+        # dialog. detection.profile_mode == "choice" (RGB_8BIT, the only
+        # bucket with a genuine two-option choice remaining) never has
+        # an unavailable option any more either - the one file-specific
+        # case that used to block it (nodata_only_transparency) is now
+        # "forced" instead, per detector.py's _finish_rgb_8bit().
+        #
+        # Only one case still blocks here: file is already optimised,
+        # below. It's the only one where changing a parameter in THIS
+        # dialog (Reprocess) fixes the exact problem being reported.
         force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
-        triggered = []
-
-        msg = self._lossy_on_elevation_message() if (
-            detection.profile_mode == "forced"
-            and detection.forced_profile == "lossless"
-            and profile_choice == PROFILE_LOSSY
-        ) else None
-        if msg:
-            triggered.append(msg)
-
-        # Cheap check only - block_size/raster_size/overview_count/
-        # compression all come from detect_metadata_only() above, no
-        # pixel sampling triggered. Compression-aware: a file that's
-        # tiled with overviews but still on a non-target codec (LZW,
-        # DEFLATE, uncompressed) has real size to gain, so this does
-        # NOT block it - see _already_optimised_at_target()'s
-        # docstring and core/converter.py's matching convert() logic.
         if not force_reprocess and _already_optimised_at_target(
-            detection, _resolved_profile_for_target(detection, profile_choice)
+            detection, _resolved_profile_for_target(detection, purpose_choice)
         ):
-            triggered.append(self._already_optimised_message())
-
-        if triggered:
-            return False, "\n\n".join(triggered)
+            return False, self._already_optimised_message()
 
         return True, ""
 
@@ -530,10 +498,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         self.addParameter(input_param)
 
-        profile_param = QgsProcessingParameterEnum(
-            self.PROFILE, self.tr("What will you use this file for"),
-            options=PROFILE_OPTIONS,
-            defaultValue=PROFILE_LOSSLESS,
+        purpose_param = QgsProcessingParameterEnum(
+            self.PURPOSE, self.tr("What will you use this file for"),
+            options=PURPOSE_OPTIONS,
+            defaultValue=PURPOSE_ANALYSIS,
         )
         # Mandatory with a real default now (Analysis, index 0) -
         # supersedes the earlier "optional, no default, force a
@@ -541,40 +509,49 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # asymmetric harm: an untouched dropdown giving a larger-than-
         # optimal file is visible and recoverable (rerun with Viewing);
         # one that silently alters pixel values is invisible and may
-        # never be found. Elevation still forces the Analysis (lossless)
-        # settings outright regardless of this value - see
+        # never be found. Every forced case (elevation, CONTINUOUS,
+        # RGB_8BIT's nodata_only_transparency) still forces the Analysis
+        # (lossless) settings outright regardless of this value - see
         # _resolve_profile - so this default only ever matters for
-        # imagery. Asks about purpose rather than mechanism (lossy /
-        # lossless): the workflow doc's own framing is "whether you can
-        # compress lossily depends entirely on what the file is for",
-        # and asking it that way is also what stops the tool choosing
-        # Analysis settings on a DSM reading like a contradiction of
-        # what was asked for - it's serving the same purpose, just via
-        # the only settings that purpose allows on that data.
-        profile_param.setHelp(self.tr(
+        # files where it's a genuine choice. Asks about purpose rather
+        # than mechanism (lossy/lossless): the workflow doc's own
+        # framing is "whether you can compress lossily depends entirely
+        # on what the file is for", and asking it that way is also what
+        # stops the tool choosing Analysis settings on a DSM reading
+        # like a contradiction of what was asked for - it's serving the
+        # same purpose, just via the only settings that purpose allows
+        # on that data.
+        purpose_param.setHelp(self.tr(
             "Analysis keeps every pixel value exactly as it is. Use "
             "it for anything you extract numbers from: vegetation "
             "indices, crown segmentation, classification, change "
             "detection.\n"
             "\n"
-            "Viewing produces a much smaller file, typically 15 to 30 "
-            "times smaller, by discarding detail the eye will not "
-            "notice. Use it for basemaps, client copies, QField "
-            "backdrops and site context.\n"
+            "Viewing produces a much smaller file, by discarding "
+            "detail the eye will not notice. A typical drone "
+            "orthomosaic came out around 80% smaller. Use it for "
+            "basemaps, client copies, QField backdrops and site "
+            "context.\n"
             "\n"
             "Both load and pan at the same speed. Both are always "
             "written as GeoTIFF, never a .jpg file.\n"
             "\n"
-            "Some data cannot be compressed for viewing without "
-            "changing the numbers it holds. Elevation, 16-bit and "
-            "multispectral imagery are all in that group. Where that "
-            "applies the tool preserves the values instead, and "
-            "records what it did in the log and in the file itself.\n"
+            "Some files cannot be compressed for viewing without "
+            "changing the numbers they hold, or without losing their "
+            "transparent collar. Elevation and 16-bit or multispectral "
+            "imagery are always in that group, whatever they contain. "
+            "An 8-bit RGB file can be too, if its collar is marked by "
+            "a NoData value rather than a real alpha band, since "
+            "compressing for viewing shifts pixel values slightly and "
+            "a NoData-marked collar doesn't survive that the way a "
+            "real alpha band does. Where any of this applies, the "
+            "tool preserves the values instead, and records what it "
+            "did in the log and in the file itself.\n"
             "\n"
             "If you are not sure, choose Analysis. It costs disk "
             "space and nothing else."
         ))
-        self.addParameter(profile_param)
+        self.addParameter(purpose_param)
 
         output_param = QgsProcessingParameterRasterDestination(
             self.OUTPUT, self.tr("Optimised raster"),
@@ -601,7 +578,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # Automatic by default - see this module's docstring for why
         # that's no longer the rejected design it once was. Meaningless
         # on elevation and on RGB files without a NoData=0 condition,
-        # same as PROFILE is meaningless on elevation - always visible
+        # same as PURPOSE is meaningless on elevation - always visible
         # anyway, since Processing parameter widgets are declared in
         # initAlgorithm() before any input is chosen and can't react to
         # it. checkParameterValues() refuses 'Reveal hidden pixels'
@@ -656,8 +633,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "there.\n"
             "\n"
             "Tick this to convert an already-optimal file anyway, for "
-            "example to switch it from lossless to lossy compression "
-            "to save disk space."
+            "example to switch it from Analysis to Viewing to save "
+            "disk space."
         ))
         self.addParameter(force_reprocess_param)
 
@@ -692,10 +669,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             raise QgsProcessingException(self.tr("Could not load the input raster."))
         source_path = input_layer.source()
 
-        # PROFILE has a real default now (lossless), so parameterAsEnum()
+        # PURPOSE has a real default now (Analysis), so parameterAsEnum()
         # always resolves to a genuine value - no more need to read the
-        # raw dict to detect "not set" (see the PROFILE_LOSSLESS comment).
-        profile_choice = self.parameterAsEnum(parameters, self.PROFILE, context)
+        # raw dict to detect "not set" (see the PURPOSE_ANALYSIS comment).
+        purpose_choice = self.parameterAsEnum(parameters, self.PURPOSE, context)
         nodata_choice = self.parameterAsEnum(parameters, self.NODATA_MODE, context)
         nodata_mode = _NODATA_MODE_STRINGS[nodata_choice]
         force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
@@ -749,11 +726,24 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # reprocess still bypasses it here too: an informed, deliberate
         # choice, not worth re-flagging.
         if not force_reprocess:
-            resolved_profile = _resolved_profile_for_target(detection, profile_choice)
+            resolved_profile = _resolved_profile_for_target(detection, purpose_choice)
             if _already_optimised_at_target(detection, resolved_profile):
                 feedback.pushWarning(self._already_optimised_message())
 
-        chosen_profile = self._resolve_profile(detection, profile_choice, feedback)
+        # Called for its immediate feedback (pushWarning on a coercion,
+        # pushInfo otherwise) - see its own docstring. Its return value
+        # is NOT what gets passed to convert() below: that method
+        # already resolves the pre-coerced "lossless" for a forced
+        # file, which would make convert()'s own resolve_profile_reason()
+        # see requested == actual and wrongly conclude the file's
+        # constraint and the request happened to already agree. convert()
+        # needs the RAW, uncoerced request to tell "honoured" from "the
+        # file's nature required otherwise" apart correctly - it's
+        # already built to ignore this value entirely for a forced file's
+        # actual conversion (detection.forced_profile always wins there),
+        # so passing the raw request through is safe either way.
+        self._resolve_profile(detection, purpose_choice, feedback)
+        requested_profile = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
 
         def log_cb(phase, elapsed_seconds):
             if phase == "translate":
@@ -764,7 +754,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
         feedback.setProgressText(self.tr("Translating (tiling, compressing)..."))
         result = convert(
-            source_path, detection=detection, chosen_profile=chosen_profile,
+            source_path, detection=detection, chosen_profile=requested_profile,
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
@@ -801,7 +791,16 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         if result.size_note:
             feedback.pushInfo(result.size_note)
         if result.nodata_message:
-            if result.nodata_message_emphasis:
+            if result.nodata_message_severity == "warning":
+                # Bucket A of the purpose-question rework (Phase 2):
+                # "Reveal hidden pixels" requested on elevation is a
+                # coercion, not a finding, so it gets the same
+                # feedback.pushWarning() treatment as every other
+                # Bucket A message (see _resolve_profile() above) rather
+                # than the bold-but-still-pushInfo emphasis below, which
+                # is reserved for NoData findings specifically.
+                feedback.pushWarning(result.nodata_message)
+            elif result.nodata_message_severity == "emphasis":
                 # The plugin's most educational finding (real content
                 # found behind NoData, whether Automatic cleared it or
                 # Keep as-is left it), so it gets the strongest available
@@ -822,37 +821,90 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushFormattedMessage(html, text)
             else:
                 feedback.pushInfo(result.nodata_message)
+
+        # Phase 4 of the purpose-question rework: re-emit the
+        # consequential decisions as the last thing before completion,
+        # since detection's findings scroll away behind Translate/
+        # BuildOverviews' own progress output otherwise. Only decisions
+        # worth repeating - a plain file with nothing surprising gets
+        # just the location line, not a restatement of the routine
+        # "used as asked" case, which would be noise on every run.
+        # feedback.pushWarning() (not pushInfo) so it carries colour,
+        # matching every other Bucket A message. Same text
+        # result.decisions already carries into the file's own
+        # GEOKLEIN_* metadata (Phase 5) - not reworded here.
+        #
+        # A line is also dropped if it would immediately repeat its own
+        # original: the NoData dispatch just above is always the last
+        # thing pushed before this point, so the NoData line would
+        # otherwise sit right under the message it's restating, with
+        # nothing buried in between for the summary to resurface - that
+        # defeats the point of a summary. The profile-decision line
+        # doesn't have this problem: it was pushed back in
+        # _resolve_profile(), before Translate/BuildOverviews' own
+        # progress output, so real content genuinely separates it from
+        # here.
+        last_pushed_message = result.nodata_message
+        summary_lines = ["Summary"]
+        dec = result.decisions
+        if dec is not None:
+            if dec.profile_consequential:
+                summary_lines.append(dec.profile_reason)
+            if (
+                dec.nodata_consequential and dec.nodata_message
+                and dec.nodata_message != last_pushed_message
+            ):
+                summary_lines.append(dec.nodata_message)
+        summary_lines.append(self.tr(
+            "These decisions are also recorded in the file, under "
+            "Layer Properties > Information > More information."
+        ))
+        feedback.pushWarning("\n".join(summary_lines))
+
         return {self.OUTPUT: result.output_path}
 
-    def _resolve_profile(self, detection, profile_choice, feedback):
-        # PROFILE always has a genuine value now (defaulted to lossless
-        # if untouched - see the PROFILE_LOSSLESS comment), so this is an
-        # unconditional mapping onto detector.py's "lossy"/"lossless"
-        # identity, not a None-checked one. That's still correct for the
-        # elevation override warning below: the default (index 0) maps
-        # to "lossless", which is also what elevation always forces, so
-        # an untouched dropdown never triggers it - only an explicit
-        # choice of the lossy option (index 1, which nothing defaults
-        # to) can produce a mismatch worth warning about.
-        requested = "lossy" if profile_choice == PROFILE_LOSSY else "lossless"
+    def _resolve_profile(self, detection, purpose_choice, feedback):
+        # PURPOSE always has a genuine value now (defaulted to Analysis
+        # if untouched - see the PURPOSE_ANALYSIS comment), so this is
+        # an unconditional mapping onto detector.py's "lossy"/"lossless"
+        # identity, not a None-checked one.
+        requested = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
+
+        # profile_mode == "choice": a genuine judgement call, never
+        # guessed. Defensive only below - every ProfileOption
+        # detector.py currently produces for "choice" mode is
+        # available=True (RGB_8BIT is the only remaining "choice"
+        # bucket, and its one file-specific block moved to "forced" -
+        # see _finish_rgb_8bit()'s nodata_only_transparency branch), so
+        # this should be unreachable in practice.
+        if detection.profile_mode == "choice":
+            opt = next((o for o in detection.profile_options if o.profile == requested), None)
+            if opt is not None and not opt.available:
+                raise QgsProcessingException(opt.reason_blocked or self.tr(
+                    "The {} option is not available for this file."
+                ).format(requested))
+
+        # resolve_profile_reason() (detector.py) is the single source of
+        # this text for every case: honoured or not, forced or choice -
+        # the same string GEOKLEIN_4_DECISION carries into the output
+        # file's metadata and the end-of-run summary repeats. Nothing
+        # here regenerates or rewords it; this is only place it's first
+        # turned into user-visible feedback for the GUI path. Bucket A
+        # of the purpose-question rework: coerce, never block, so an
+        # unhonoured request is a warning, not an exception.
+        #
+        # consequential (not honoured) drives the severity: a request
+        # can be genuinely honoured and still worth a warning - Analysis
+        # requested on a JPEG source is applied exactly as asked, but
+        # the file's history makes it worth flagging anyway. See
+        # resolve_profile_reason()'s docstring for the honoured/
+        # consequential distinction.
+        reason, honoured, consequential = resolve_profile_reason(detection, requested)
+        if consequential:
+            feedback.pushWarning(reason)
+        else:
+            feedback.pushInfo(reason)
 
         if detection.profile_mode == "forced":
-            forced = detection.forced_profile
-            if requested != forced:
-                # Same message checkParameterValues()'s pre-flight check
-                # would have shown, and the only trigger for either is
-                # this exact mismatch - see _lossy_on_elevation_message().
-                feedback.pushWarning(self._lossy_on_elevation_message())
-            else:
-                feedback.pushInfo(self.tr(
-                    "Elevation data detected - using {} compression."
-                ).format(forced))
-            return forced
-
-        # profile_mode == "choice": a genuine judgement call, never guessed.
-        opt = next((o for o in detection.profile_options if o.profile == requested), None)
-        if opt is not None and not opt.available:
-            raise QgsProcessingException(opt.reason_blocked or self.tr(
-                "The {} option is not available for this file."
-            ).format(requested))
+            return detection.forced_profile
         return requested

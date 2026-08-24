@@ -154,7 +154,20 @@ RECOMMENDED_SETTINGS = {
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "2",
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
-        "overview_config": {"RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD"},
+        # PREDICTOR_OVERVIEW matches the base image's PREDICTOR above,
+        # kept explicit as documented intent rather than relying on
+        # GDAL's own behaviour: measured directly (isolated GDAL test,
+        # base predictor with vs without this set) that GDAL 3.13.2's
+        # BuildOverviews() already inherits the base image's predictor
+        # for internal overviews on its own - this line currently
+        # changes nothing (0.00% size difference, confirmed on real
+        # elevation and RGB test files). It stays anyway, in case that
+        # inheritance behaviour is ever removed or changes in a future
+        # GDAL version - explicit here means the correct value doesn't
+        # depend on undocumented default behaviour continuing to hold.
+        "overview_config": {
+            "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD", "PREDICTOR_OVERVIEW": "2",
+        },
     },
     "lossless_float": {
         "creation_options": {
@@ -162,7 +175,11 @@ RECOMMENDED_SETTINGS = {
             "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "3",
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
-        "overview_config": {"RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD"},
+        # PREDICTOR_OVERVIEW=3: same "documented intent, currently a
+        # no-op" reasoning as lossless_integer's above.
+        "overview_config": {
+            "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD", "PREDICTOR_OVERVIEW": "3",
+        },
     },
 }
 
@@ -208,6 +225,23 @@ class NoDataRisk:
 
 @dataclass
 class DetectionResult:
+    """Classification output for one file. `refused` MUST be checked
+    before reading any other field.
+
+    Several refusal codes (NO_CRS chief among them) return early, before
+    fields like band_count/dtype/block_size/raster_size are ever set -
+    they stay at their dataclass defaults (usually None) on a refused
+    result. There is no ordering within this class that guarantees
+    those fields are populated; the only reliable signal is `refused`
+    itself. A caller that reads e.g. `block_size[0]` without checking
+    `refused` first will crash on a None subscript for exactly the
+    refusal codes where that field was never reached. This isn't
+    hypothetical: it's why checkParameterValues() in the QGIS wrapper
+    keeps an early `if detection.refused: return True, ""` even though
+    it no longer acts on the refusal itself - see that function's
+    comment for the concrete crash it guards against.
+    """
+
     path: str
     ok: bool = False
     refused: bool = False
@@ -233,6 +267,19 @@ class DetectionResult:
 
     profile_mode: Optional[str] = None  # "forced" | "choice"
     forced_profile: Optional[str] = None  # "lossy" or "lossless"
+    # Plain-English explanation of why forced_profile was substituted for
+    # whatever was actually requested, set once here (never regenerated
+    # by a caller) so the QGIS wrapper's pushWarning() during the run,
+    # the eventual end-of-run summary, and the eventual output-file
+    # metadata (Phases 4/5 of the purpose-question rework) all read the
+    # identical sentence rather than three independently-worded ones.
+    # Only meaningful when profile_mode == "forced"; None otherwise.
+    # Set per file, not per content type: FLOAT32_CONTINUOUS and
+    # CONTINUOUS force every file in the bucket identically, but
+    # RGB_8BIT can also force a specific file (nodata_only_transparency,
+    # no alpha band) while other RGB_8BIT files stay "choice" - the
+    # reason text differs accordingly, not just by content_type.
+    forced_reason: Optional[str] = None
     profile_options: list = field(default_factory=list)
 
     nodata_risk: Optional[NoDataRisk] = None
@@ -254,6 +301,158 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
     result.refusal_code = code
     result.refusal_reason = message
     return result
+
+
+# Plain-English explanations for the cases where the requested profile
+# WAS honoured - the counterpart to forced_reason, which only ever
+# covers the case where it wasn't. Fixed constants, not per-file text:
+# unlike forced_reason (which needs per-file specifics - band count,
+# dtype, "no alpha band") none of these depend on anything about the
+# individual file, only on which profile ended up used (and, for the
+# JPEG one, the source compression detection already read). Defined
+# once here and selected (never reworded) by resolve_profile_reason()
+# below, so GEOKLEIN_4_DECISION and the end-of-run summary read
+# identical text to what a mismatch would have produced via
+# forced_reason - one mechanism covering every case.
+PROFILE_REASON_ANALYSIS_HONOURED = "Every pixel value was preserved, as asked."
+PROFILE_REASON_VIEWING_HONOURED_RGB = "Lossy compression suits this data, so it was used as asked."
+
+# Distinct from PROFILE_REASON_ANALYSIS_HONOURED: this is also a
+# genuinely-honoured Analysis request (nothing was overridden), but a
+# history-based fact about the file makes it worth flagging anyway - a
+# category of rule this tool didn't have before this case (see
+# docs/plugin_design_notes.md). Surfaced via consequential=True below,
+# not honoured=False: the mechanism did match what was asked for.
+PROFILE_REASON_JPEG_SOURCE_ANALYSIS = (
+    "This file was already compressed for viewing, so some pixel "
+    "values were changed before it reached this tool. Preserving them "
+    "now keeps those changed values rather than recovering the "
+    "originals, and the file will be substantially larger for no gain "
+    "in accuracy. For measurement work, run this tool on the original "
+    "file instead."
+)
+
+
+def _is_jpeg_compression(compression: Optional[str]) -> bool:
+    """True if the source file's IMAGE_STRUCTURE COMPRESSION tag names a
+    JPEG variant. Not a plain "== JPEG" check: GDAL reports "YCbCr JPEG"
+    (not "JPEG") for the common RGB case where PHOTOMETRIC=YCBCR - which
+    is exactly the combination this tool's own "lossy"/Viewing profile
+    writes (see RECOMMENDED_SETTINGS["lossy"] above), so an exact match
+    would silently miss the tool's own prior output, the precise case
+    PROFILE_REASON_JPEG_SOURCE_ANALYSIS exists to catch. Confirmed
+    directly against a real Viewing-profile output file.
+    """
+    return compression is not None and "JPEG" in compression
+
+
+def resolve_profile_reason(detection: DetectionResult, requested: Optional[str]) -> tuple:
+    """Returns (reason: str, honoured: bool, consequential: bool)
+    explaining what profile was used and why - covering every case a
+    run can produce: forced and matched, forced and overridden, and
+    choice (RGB_8BIT only, always honoured now that Phase 2 of the
+    purpose-question rework removed the one file-specific block that
+    used to sit in "choice" mode).
+
+    honoured=True means the user got the profile they asked for.
+    honoured=False means the file's nature required otherwise - not
+    "the user was overridden", a fact about the data, not an event done
+    to someone. On a forced file where the request happens to already
+    match what's forced (e.g. Analysis chosen on elevation, which was
+    always going to be lossless regardless), this still reports
+    honoured=True with the generic "as asked" wording: the file having
+    no other option doesn't change that this specific request was met.
+
+    consequential is a separate axis from honoured, the same way
+    core/converter.py's NoData handling already distinguishes what
+    happened from whether it's worth surfacing prominently
+    (nodata_cleared vs. nodata_consequential). A mismatch is always
+    consequential (honoured=False implies consequential=True). But a
+    genuine match can be consequential too: requesting Analysis on a
+    file whose source compression is already some JPEG variant (see
+    _is_jpeg_compression) is honoured exactly as asked - lossless ZSTD
+    is applied, nothing overridden - and still
+    worth a warning, because the pixel values being preserved were
+    already changed by that prior JPEG pass. Routine matches (anything
+    else) are honoured=True, consequential=False.
+
+    requested may be None (a caller that never expressed a preference,
+    e.g. the CLI's --profile is optional) - never a mismatch on its
+    own, since nothing was denied.
+    """
+    if detection.profile_mode == "forced":
+        actual = detection.forced_profile
+        if requested is not None and requested != actual:
+            return detection.forced_reason, False, True
+        if actual == "lossless":
+            if requested == "lossless" and _is_jpeg_compression(detection.compression):
+                return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True, True
+            return PROFILE_REASON_ANALYSIS_HONOURED, True, False
+        return PROFILE_REASON_VIEWING_HONOURED_RGB, True, False
+
+    # profile_mode == "choice" (RGB_8BIT only): never blocked or
+    # overridden any more, so always honoured.
+    if requested == "lossy":
+        return PROFILE_REASON_VIEWING_HONOURED_RGB, True, False
+    if _is_jpeg_compression(detection.compression):
+        return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True, True
+    return PROFILE_REASON_ANALYSIS_HONOURED, True, False
+
+
+def content_label(detection: DetectionResult) -> str:
+    """The short "what this file is" phrase, shared by describe_detection()
+    (the full GEOKLEIN_2_DETECTED sentence) and TIFFTAG_IMAGEDESCRIPTION's
+    one-line summary in core/converter.py's _write_decision_metadata() -
+    factored out so the two don't describe the same file two different
+    ways.
+    """
+    if detection.content_type == "FLOAT32_CONTINUOUS":
+        return "Float32 elevation (DSM, DTM or CHM)"
+    if detection.content_type == "RGB_8BIT":
+        return "8-bit RGB imagery"
+    return f"{detection.dtype} imagery"
+
+
+def describe_detection(detection: DetectionResult) -> str:
+    """Plain-English one-liner describing what was detected before
+    conversion ran - GEOKLEIN_2_DETECTED (Phase 5 of the purpose-
+    question rework). Built once here from DetectionResult fields
+    already known before convert() is ever called, so nothing
+    downstream needs to regenerate this text - see
+    core/converter.py's _write_decision_metadata().
+
+    Leads with "Source file was" rather than a bare comma list: this is
+    read on the OUTPUT file (GEOKLEIN_2_DETECTED describes the file
+    before conversion, but is only ever seen embedded in the file
+    after), so "tiled, without pyramids" on its own reads as a claim
+    about the file in front of the reader, when it's actually a
+    statement about the source. An explicit subject removes that
+    ambiguity.
+
+    Does not import _is_tiled from converter.py (that would be a
+    reverse dependency - converter.py imports FROM this module, never
+    the other way) - the tiled/stripped check is inlined instead, the
+    same one-line comparison _is_tiled itself is.
+    """
+    content = content_label(detection)
+
+    if detection.content_type == "RGB_8BIT" and detection.has_alpha:
+        # Matches how a real alpha band is described elsewhere: 3
+        # colour bands, alpha called out separately rather than folded
+        # into "4 bands".
+        bands = "3 bands plus alpha"
+    else:
+        n = detection.band_count
+        bands = f"{n} band" if n == 1 else f"{n} bands"
+
+    is_tiled = (
+        detection.block_size[0] < detection.raster_size[0]
+        and detection.block_size[1] < detection.raster_size[1]
+    )
+    layout = "tiled" if is_tiled else "stripped"
+    pyramids = "with pyramids" if detection.has_overviews else "without pyramids"
+
+    return f"Source file was {content}, {bands}, {layout}, {pyramids}."
 
 
 # ---------------------------------------------------------------------------
@@ -420,10 +619,21 @@ def _transparency_source(band: "gdal.Band", nodata_value, alpha_present: bool) -
 
 
 def _has_georeferencing(ds: "gdal.Dataset") -> bool:
+    # Both conditions required, not either: a real geotransform (pixel
+    # size and origin) and a defined SRS are independent facts about a
+    # file, and a file can have one without the other. Confirmed as a
+    # real gap in GUI testing - a file with its WKT stripped but a real
+    # geotransform still left (matching what removing a CRS from an
+    # existing file actually looks like) previously read as "has
+    # georeferencing" here, purely because the geotransform alone was
+    # enough to pass. Requiring both means neither a real geotransform
+    # with no SRS, nor a defined SRS with no real geotransform (an
+    # identity transform - a file with a CRS tag but never actually
+    # located in it), passes on its own.
     srs = ds.GetSpatialRef()
     gt = ds.GetGeoTransform()
     identity_gt = gt == (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    return not (srs is None and identity_gt)
+    return srs is not None and not identity_gt
 
 
 # ---------------------------------------------------------------------------
@@ -497,28 +707,27 @@ def _finish_rgb_8bit(result: DetectionResult, band1: "gdal.Band", has_alpha: boo
     result.has_alpha = has_alpha
     result.alpha_band_index = alpha_index
     result.content_type = "RGB_8BIT"
-    result.profile_mode = "choice"
 
     nodata_value = band1.GetNoDataValue()
     transparency_source = _transparency_source(band1, nodata_value, has_alpha)
     result.transparency_source = transparency_source
 
     nodata_risk = NoDataRisk()
-    lossy_blocked_reason = None
+    nodata_only_transparency = False
 
     if nodata_value == 0:
         nodata_risk.applies = True
         nodata_risk.nodata_value = nodata_value
         if transparency_source == "nodata_only":
-            lossy_blocked_reason = (
+            nodata_only_transparency = True
+            nodata_risk.assessment = "nodata_only_transparency"
+            nodata_risk.message = (
                 "This file uses NoData as its only transparency and has no "
                 "alpha band. Clearing it would leave a black border. "
                 "Building a proper footprint mask isn't in v1 - see "
                 "'If nodata is the only transparency' in the workflow doc "
                 "for the manual route."
             )
-            nodata_risk.assessment = "nodata_only_transparency"
-            nodata_risk.message = lossy_blocked_reason
         else:
             # Black-pixel cluster risk needs a pixel read - can't resolve
             # from metadata alone. Never blocks the lossy profile either
@@ -550,12 +759,49 @@ def _finish_rgb_8bit(result: DetectionResult, band1: "gdal.Band", has_alpha: boo
     if has_alpha:
         translate_extra_lossy = ["-b", "1", "-b", "2", "-b", "3", "-mask", str(alpha_index)]
 
+    if nodata_only_transparency:
+        # File-specific forced-lossless, unlike elevation/CONTINUOUS
+        # (whole content types, forced unconditionally): this is
+        # otherwise a genuine RGB_8BIT choice file, forced here only
+        # because THIS file has no alpha band and marks its collar via
+        # NoData instead of position. Lossy compression shifts pixel
+        # values slightly, so a value-based collar marker doesn't
+        # survive that intact (a position-based alpha marker does,
+        # which is why files WITH real alpha never reach this branch).
+        # See docs/plugin_design_notes.md's deferred internal-mask-band
+        # item for the actual fix that would let this get lossy too.
+        result.profile_mode = "forced"
+        result.forced_profile = "lossless"
+        result.forced_reason = (
+            "Written for analysis instead. This file marks its "
+            "transparent collar with a NoData value and has no alpha "
+            "band. Compressing for viewing shifts pixel values "
+            "slightly, so a collar marked by value rather than by "
+            "position stops being reliable, and the border would "
+            "render as solid black. The pixel values were preserved "
+            "instead. The file still loads and pans at full speed - "
+            "Viewing would only have made it smaller, not faster.\n"
+            "\n"
+            "To get the smaller file, re-export with an alpha band "
+            "and run this again."
+        )
+        result.profile_options = [
+            ProfileOption(
+                profile="lossless",
+                available=True,
+                recommended_settings=RECOMMENDED_SETTINGS["lossless_integer"],
+                translate_extra_args=[],
+            )
+        ]
+        result.ok = True
+        return result
+
+    result.profile_mode = "choice"
     lossy_option = ProfileOption(
         profile="lossy",
-        available=lossy_blocked_reason is None,
-        reason_blocked=lossy_blocked_reason,
-        recommended_settings=RECOMMENDED_SETTINGS["lossy"] if lossy_blocked_reason is None else None,
-        translate_extra_args=translate_extra_lossy if lossy_blocked_reason is None else None,
+        available=True,
+        recommended_settings=RECOMMENDED_SETTINGS["lossy"],
+        translate_extra_args=translate_extra_lossy,
     )
     lossless_option = ProfileOption(
         profile="lossless",
@@ -611,6 +857,16 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         result.content_type = "FLOAT32_CONTINUOUS"
         result.profile_mode = "forced"
         result.forced_profile = "lossless"
+        result.forced_reason = (
+            "Written for analysis instead. This is elevation data, a "
+            "DSM, DTM or CHM. Compressing for viewing works by "
+            "discarding detail the eye will not notice, but these "
+            "pixels are height measurements rather than colours, so "
+            "discarding detail would change the actual heights. "
+            "Lossless ZSTD was used instead. The file still loads and "
+            "pans at full speed - Viewing would only have made it "
+            "smaller, not faster."
+        )
         settings = RECOMMENDED_SETTINGS["lossless_float"]
         result.profile_options = [
             ProfileOption(
@@ -680,18 +936,34 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
 
     result.content_type = "CONTINUOUS"
     result.needs_pixel_sampling = True
-    result.profile_mode = "choice"
-    settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
+    # Forced, not choice: every file that reaches here is content-type-
+    # wide forced to lossless, same as elevation (FLOAT32_CONTINUOUS)
+    # above - lossy is never available for this bucket regardless of
+    # this specific file's other properties, so "choice" with lossy
+    # permanently unavailable was a vestigial state once
+    # checkParameterValues() stopped hard-blocking on it (Bucket A of
+    # the purpose-question rework). needs_pixel_sampling above is
+    # independent of this - the file can still turn out to be refused
+    # as CLASSIFIED once pixel-sampled; that's unaffected by profile_mode.
+    result.profile_mode = "forced"
+    result.forced_profile = "lossless"
     # Leads with what the lossy option is FOR, not the codec name - "JPEG"
     # first reads as "this plugin might output a .jpg file", which it
     # never does (always GeoTIFF, whichever profile is used).
-    lossy_blocked_reason = (
-        "The lossy option compresses colour photographs, so it needs "
-        "exactly three 8-bit colour bands. This file doesn't fit that, "
-        "so only lossless is offered."
+    result.forced_reason = (
+        "Written for analysis instead. Compressing for viewing works "
+        "on colour photographs, so it needs exactly three 8-bit colour "
+        f"bands. This file has {band_count} bands at {dtype}, so the "
+        "pixel values were preserved instead. The file still loads and "
+        "pans at full speed - Viewing would only have made it smaller, "
+        "not faster.\n"
+        "\n"
+        "If a small visual copy is genuinely wanted, export an 8-bit "
+        "RGB composite of the bands you want to see, then run this "
+        "tool on that file with Viewing."
     )
+    settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
     result.profile_options = [
-        ProfileOption(profile="lossy", available=False, reason_blocked=lossy_blocked_reason),
         ProfileOption(
             profile="lossless",
             available=True,

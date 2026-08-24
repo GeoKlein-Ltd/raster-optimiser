@@ -27,7 +27,9 @@ Needs a GDAL Python environment (see core/detector.py's docstring).
 from __future__ import annotations
 
 import argparse
+import configparser
 import dataclasses
+import datetime
 import json
 import os
 import sys
@@ -38,9 +40,15 @@ from typing import Callable, Optional
 from osgeo import gdal
 
 try:
-    from .detector import detect, DetectionResult, RECOMMENDED_SETTINGS
+    from .detector import (
+        detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
+        describe_detection, content_label,
+    )
 except ImportError:  # running as a plain script, not as part of the core package
-    from detector import detect, DetectionResult, RECOMMENDED_SETTINGS
+    from detector import (
+        detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
+        describe_detection, content_label,
+    )
 
 gdal.UseExceptions()
 
@@ -61,6 +69,46 @@ class VerificationResult:
     compression_ok: bool = False
     passed: bool = False
     issues: list = field(default_factory=list)
+
+
+@dataclass
+class AppliedSettings:
+    """What was actually passed to Translate/BuildOverviews, in a form
+    that doesn't require knowing GDAL's creation-option key names
+    (COMPRESS, ZSTD_LEVEL vs JPEG_QUALITY, PREDICTOR) to read. Built
+    from the same creation_options/overview_config dicts convert()
+    already constructs for the GDAL calls themselves - not read back
+    from VerificationResult, which stays an independent check of the
+    output file so a mismatch between intended and actually-written
+    settings stays detectable rather than getting silently papered over
+    by this record agreeing with itself.
+    """
+    compression: str  # "ZSTD" | "JPEG"
+    compression_detail: Optional[str] = None  # "level 9" | "quality 90 with YCbCr"
+    predictor: Optional[str] = None  # "2" | "3" | None (JPEG has none)
+    tiled: bool = True
+    block_size: tuple = (512, 512)
+    alpha_reattached: bool = False  # True only when the lossy profile dropped and remasked a real alpha band
+    resampling: str = "AVERAGE"  # overview resampling method - a real decision, not recoverable from the file afterwards, unlike whether overviews exist at all
+
+
+@dataclass
+class DecisionSummary:
+    """Every plain-English decision explanation a run has to offer,
+    assembled once inside convert() so the end-of-run summary and the
+    output file's embedded metadata read identical text rather than
+    each formatting their own. profile_reason/nodata_message describe
+    facts, not display policy - profile_honoured/nodata_consequential
+    are also facts (what happened), and it's up to whichever caller
+    reads this (the log summary vs. the file metadata) to decide which
+    facts are worth including under its own rule.
+    """
+    profile_reason: str
+    profile_honoured: bool
+    profile_consequential: bool = False  # a genuine match can still be worth flagging - see resolve_profile_reason()'s docstring (e.g. Analysis requested on a JPEG source)
+    nodata_message: Optional[str] = None  # same object as ConversionResult.nodata_message, not duplicated text
+    nodata_consequential: bool = False  # derived from nodata_message_severity != "routine"
+    applied: Optional[AppliedSettings] = None  # None until creation_options are resolved; stays None for already_optimised (nothing written)
 
 
 @dataclass
@@ -86,8 +134,9 @@ class ConversionResult:
     nodata_mode_requested: str = "keep"  # echoes the request: "auto" | "reveal" | "keep"
     nodata_cleared: bool = False  # what actually happened
     nodata_message: Optional[str] = None  # human explanation of what happened and why
-    nodata_message_emphasis: bool = False  # True only for Automatic's meaningful-content finding
+    nodata_message_severity: str = "routine"  # "routine" | "emphasis" | "warning" - see _resolve_nodata_handling
     warnings: list = field(default_factory=list)
+    decisions: Optional[DecisionSummary] = None  # see DecisionSummary docstring - read by the end-of-run summary and output-file metadata
 
 
 def _settings_key(detection: "DetectionResult", profile: str) -> str:
@@ -104,7 +153,7 @@ def _settings_key(detection: "DetectionResult", profile: str) -> str:
 
 # NoData mode identity strings - self-describing everywhere, same reason
 # the lossy/lossless profile identity is a string rather than a bridged
-# index (see algorithms/optimise_raster.py's PROFILE_LOSSLESS comment):
+# index (see algorithms/optimise_raster.py's PURPOSE_ANALYSIS comment):
 # a QGIS dropdown index meaning something different from a same-numbered
 # constant in this file is exactly the kind of mapping a future edit can
 # get backwards without it showing up anywhere except the output.
@@ -173,10 +222,29 @@ _AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE = (
 )
 
 
+_NODATA_REVEAL_NO_EFFECT_ELEVATION_MESSAGE = (
+    "Hidden pixels: left as they are. Reveal applies to 8-bit imagery, "
+    "where every value from 0 to 255 is a legitimate colour and a "
+    "NoData value of 0 can hide real pixels. This is elevation data, "
+    "where NoData marks genuinely empty ground using a value no real "
+    "height could take, such as -9999. Clearing it would turn the "
+    "collar into real height values."
+)
+
+_NODATA_REVEAL_NO_EFFECT_GENERIC_MESSAGE = (
+    "Hidden pixels: nothing to reveal. This file has no NoData value "
+    "of 0, so nothing was being hidden behind one. The output is the "
+    "same as it would have been with any other setting."
+)
+
+
 def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     """Decide whether to append -a_nodata none, and what to tell the
     caller about it. Returns (should_clear: bool, message: Optional[str],
-    emphasis: bool).
+    severity: str), severity one of "routine" (plain pushInfo),
+    "emphasis" (bold pushFormattedMessage - a consequential NoData
+    finding), or "warning" (feedback.pushWarning() - a Bucket A
+    coercion, see algorithms/optimise_raster.py's module docstring).
 
     Profile-independent by design - this used to be baked separately
     into each ProfileOption's translate_extra_args in detector.py (lossy
@@ -201,38 +269,48 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
         # No NoData=0 condition on this file at all (elevation always
         # lands here, since detect_metadata_only never even creates a
         # NoDataRisk for FLOAT32_CONTINUOUS - and plenty of RGB files
-        # have no NoData=0 either). The QGIS wrapper's checkParameterValues
-        # refuses NODATA_MODE_REVEAL on such a file outright before
-        # execution starts (so nobody thinks they've revealed something
-        # they haven't) - this is the defensive fallback for any caller
-        # that skips that check (direct API use, the CLI). Only worth a
-        # log line if the caller actually asked to reveal; Automatic and
-        # Keep both stay quiet, since there's nothing to report either way.
+        # have no NoData=0 either). Neither case blocks execution any
+        # more (Bucket A of the purpose-question rework, Phase 2) - this
+        # is the ONLY place either message is produced now, run on every
+        # entry route since every caller goes through convert(). Only
+        # worth a log line if the caller actually asked to reveal;
+        # Automatic and Keep both stay quiet, since there's nothing to
+        # report either way.
         if mode == NODATA_MODE_REVEAL:
-            return False, (
-                "NoData handling: revealing hidden pixels has no effect "
-                "on this file - no NoData=0 condition was detected."
-            ), False
-        return False, None, False
+            if detection.content_type == "FLOAT32_CONTINUOUS":
+                return False, _NODATA_REVEAL_NO_EFFECT_ELEVATION_MESSAGE, "warning"
+            return False, _NODATA_REVEAL_NO_EFFECT_GENERIC_MESSAGE, "routine"
+        return False, None, "routine"
 
     if not nodata_risk.clear_possible:
-        # nodata_only_transparency: clearing would reveal a border - this
-        # is a structural block, not a judgement call, and it cannot be
-        # overridden by the caller. This case is also already reflected
-        # in whichever profile options are blocked for the same reason
-        # where relevant.
+        # nodata_only_transparency: Automatic stays conservative and
+        # never clears here - that IS Automatic's purpose, unaffected
+        # by this change. An explicit Reveal is a different thing: a
+        # deliberate choice to accept the collar becoming solid black,
+        # so it's honoured rather than refused. This was structurally
+        # impossible before this change (clear_possible was read as an
+        # unconditional block, regardless of mode) even though
+        # raster_optimiser_ui_text.md already documented Reveal as
+        # always clearing NoData and warning about exactly this border
+        # effect - this file type is the one that sentence describes.
+        # Profile availability is untouched by this: lossy still isn't
+        # offered on these files (see docs/plugin_design_notes.md's
+        # internal-mask-band deferred item for why, and for what's left
+        # before it could be).
         if mode == NODATA_MODE_REVEAL:
-            return False, (
-                "NoData handling: revealing hidden pixels was requested "
-                "but not possible on this file - " + (nodata_risk.message or (
-                    "NoData is the only transparency here; clearing it "
-                    "would reveal a border."
-                ))
-            ), False
-        return False, None, False
+            return True, (
+                "Hidden pixels: cleared, as requested. This file marked "
+                "its transparent collar with a NoData value of 0 and "
+                "has no alpha band, so clearing it removes the "
+                "collar's transparency as well as any interior holes. "
+                "The border may now render as solid black. Every pixel "
+                "value is unchanged. To keep the collar transparent, "
+                "run again with Automatic or Keep as-is."
+            ), "warning"
+        return False, None, "routine"
 
     if mode == NODATA_MODE_REVEAL:
-        return True, "NoData handling: cleared, as requested.", False
+        return True, "NoData handling: cleared, as requested.", "routine"
 
     if mode == NODATA_MODE_KEEP:
         if nodata_risk.assessment == "meaningful":
@@ -241,18 +319,18 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
             # algorithms/optimise_raster.py's module docstring for why
             # gating it there produced an unclosable modal loop twice).
             # Surfaced here instead, with the same pushFormattedMessage
-            # emphasis as Automatic's "cleared" finding (emphasis=True
+            # emphasis as Automatic's "cleared" finding ("emphasis"
             # below) - the finding is exactly as consequential either
             # way, only the outcome (kept vs cleared) differs.
-            return False, _keep_meaningful_message(nodata_risk), True
-        return False, "NoData handling: kept, as requested.", False
+            return False, _keep_meaningful_message(nodata_risk), "emphasis"
+        return False, "NoData handling: kept, as requested.", "routine"
 
     # mode == NODATA_MODE_AUTO
     if nodata_risk.assessment == "meaningful":
-        return True, _auto_cleared_message(nodata_risk), True
+        return True, _auto_cleared_message(nodata_risk), "emphasis"
     if nodata_risk.assessment == "insufficient_sample":
-        return False, _AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE, False
-    return False, _AUTO_KEPT_COLLAR_ONLY_MESSAGE, False
+        return False, _AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE, "routine"
+    return False, _AUTO_KEPT_COLLAR_ONLY_MESSAGE, "routine"
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -364,17 +442,145 @@ def output_exists_message(output_path: str) -> str:
     )
 
 
+def _build_applied_settings(creation_options: dict, overview_config: dict) -> AppliedSettings:
+    """Turns the creation_options/overview_config dicts actually passed
+    to Translate/BuildOverviews into an AppliedSettings record - see
+    that dataclass's docstring for why this reads the dicts, not the
+    output file. COMPRESS is always either "ZSTD" (lossless, both
+    dtypes) or "JPEG" (lossy) per RECOMMENDED_SETTINGS, so the two are
+    handled explicitly rather than generically - a third compression
+    would need this updated anyway, same as RECOMMENDED_SETTINGS itself
+    would. Everything here is known before Translate even runs, unlike
+    whether BuildOverviews will actually succeed - deliberately: this
+    record only ever states settings that were decided, never an
+    outcome that might not happen.
+    """
+    compress = creation_options["COMPRESS"]
+    if compress == "ZSTD":
+        detail = f"level {creation_options['ZSTD_LEVEL']}"
+    elif compress == "JPEG":
+        quality = creation_options.get("JPEG_QUALITY")
+        photometric = creation_options.get("PHOTOMETRIC")
+        detail = f"quality {quality}" + (" with YCbCr" if photometric == "YCBCR" else "")
+    else:
+        detail = None
+    return AppliedSettings(
+        compression=compress,
+        compression_detail=detail,
+        predictor=creation_options.get("PREDICTOR"),
+        tiled=creation_options.get("TILED") == "YES",
+        block_size=(int(creation_options["BLOCKXSIZE"]), int(creation_options["BLOCKYSIZE"])),
+        resampling=overview_config.get("RESAMPLING", "AVERAGE"),
+    )
+
+
+def _read_plugin_version() -> str:
+    """Reads the plugin version from metadata.txt - the same file QGIS's
+    Plugin Manager reads it from - rather than hardcoding it here, per
+    Phase 5 of the purpose-question rework. metadata.txt lives at the
+    plugin package root, one level up from this file's core/ directory;
+    no QGIS import needed to read it, it's a plain INI file.
+    """
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    metadata_path = os.path.join(package_root, "metadata.txt")
+    parser = configparser.ConfigParser()
+    parser.read(metadata_path, encoding="utf-8")
+    return parser.get("general", "version", fallback="unknown")
+
+
+def _format_applied_settings(applied: "AppliedSettings") -> str:
+    """GEOKLEIN_5_APPLIED's text, built from the structured record
+    rather than re-deriving anything from GDAL creation-option key
+    names a second time. "Lossless" is prefixed for ZSTD (used for both
+    the lossless-integer and lossless-float settings, so the word is
+    needed to disambiguate) but not for JPEG, which is unambiguously
+    lossy in this codebase - matches Phase 5's own worked examples.
+    """
+    if applied.compression == "ZSTD":
+        parts = [f"Lossless ZSTD {applied.compression_detail}"]
+    else:
+        parts = [f"{applied.compression} {applied.compression_detail}"]
+    if applied.predictor:
+        parts.append(f"predictor {applied.predictor}")
+    if applied.alpha_reattached:
+        parts.append("alpha reattached as mask")
+    parts.append(f"tiled {applied.block_size[0]}x{applied.block_size[1]}")
+    parts.append(f"pyramids resampled with {applied.resampling}")
+    return ", ".join(parts)
+
+
+def _write_decision_metadata(
+    out_ds: "gdal.Dataset", detection: "DetectionResult", requested_profile: Optional[str],
+    profile_used: str, decisions: "DecisionSummary",
+) -> None:
+    """Writes the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
+    onto the output dataset - Phase 5 of the purpose-question rework.
+    Called on out_ds straight after gdal.Translate() returns it, before
+    BuildOverviews - metadata belongs in the TIFF header at the front of
+    the file, settled before hundreds of megabytes of pyramid data are
+    appended behind it, not rewritten afterwards.
+
+    Strips any inherited GEOKLEIN_* keys first: Translate (like
+    CreateCopy) inherits source metadata, so re-running this tool on a
+    file it already produced would otherwise leave a stale record
+    sitting next to the fresh one - overwrite, never append.
+    """
+    for key in out_ds.GetMetadata():
+        if key.startswith("GEOKLEIN_"):
+            out_ds.SetMetadataItem(key, None)
+
+    version = _read_plugin_version()
+    today = datetime.date.today()
+    date_str = f"{today.day} {today.strftime('%B')} {today.year}"
+
+    requested_label = "Viewing" if (requested_profile or profile_used) == "lossy" else "Analysis"
+
+    items = {
+        "GEOKLEIN_1_TOOL": f"GeoKlein Raster Optimiser {version}, {date_str}",
+        "GEOKLEIN_2_DETECTED": describe_detection(detection),
+        "GEOKLEIN_3_REQUESTED": requested_label,
+        "GEOKLEIN_4_DECISION": decisions.profile_reason,
+        "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
+    }
+    if decisions.nodata_message:
+        items["GEOKLEIN_6_HIDDEN_PIXELS"] = decisions.nodata_message
+
+    for key, value in items.items():
+        out_ds.SetMetadataItem(key, value)
+
+    # Deliberately NOT the full GEOKLEIN_2_DETECTED/GEOKLEIN_4_DECISION
+    # text - this tag exists for software that ignores GDAL's own
+    # metadata domain (ArcGIS, ExifTool, Photoshop) and just needs a
+    # short line, not the same paragraph repeated a second time in
+    # Layer Properties. One sentence: tool and version, what the file
+    # is, what compression was applied.
+    compression_label = decisions.applied.compression
+    if compression_label == "ZSTD":
+        compression_label = f"Lossless {compression_label}"
+    out_ds.SetMetadataItem(
+        "TIFFTAG_IMAGEDESCRIPTION",
+        f"Optimised by GeoKlein Raster Optimiser {version}. "
+        f"{content_label(detection)}, written as {compression_label}.",
+    )
+
+
 def _format_bytes(n: int) -> str:
+    # Binary units (1024-based), labelled accordingly (KiB/MiB/GiB, not
+    # KB/MB/GB) - the math here was always base-1024, but the labels
+    # used to read as the decimal (1000-based) SI units, which don't
+    # match what's actually displayed. Confirmed in GUI testing: a
+    # measured -79.4% change matches binary-unit arithmetic, not
+    # decimal, so the labels were wrong, not the numbers.
     size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
             return f"{size:.0f}{unit}" if unit == "B" else f"{size:.2f}{unit}"
         size /= 1024
-    return f"{size:.2f}TB"  # unreachable in practice, keeps the loop total
+    return f"{size:.2f}TiB"  # unreachable in practice, keeps the loop total
 
 
 # Shown after a successful conversion whenever the output ends up larger
-# than the source. Only reachable with the lossless profile - lossy
+# than the source. Only reachable with the Analysis profile - Viewing
 # compression is dramatically smaller than nearly any source, so this
 # fires almost exclusively there. A source that arrives already
 # compressed (DEFLATE is Metashape/Terra's typical default) can be close
@@ -384,19 +590,26 @@ def _format_bytes(n: int) -> str:
 # failure: this plugin trades file size for pan/zoom speed on the base
 # image, and pyramids are an unavoidable part of buying that speed.
 _SIZE_INCREASE_EXPLANATION = (
-    "Output is larger than source - expected with Lossless if the "
+    "Output is larger than source - expected with Analysis if the "
     "source was already compressed, since pyramids add back roughly a "
-    "third. Not a failure: the gain here is speed, not size (use Lossy "
-    "instead if size matters more)."
+    "third. Not a failure: the gain here is speed, not size (choose "
+    "Viewing instead if size matters more)."
 )
 
 
 def _size_summary(source_bytes: int, output_bytes: int) -> str:
+    # Percentage rounded to a whole number, not one decimal place: the
+    # sizes above it are shown to 2 decimal places (GiB/MiB precision),
+    # which isn't enough significant figures to reproduce a 1-decimal
+    # percentage - a reader checking 1.66GiB to 1.76GiB by hand gets
+    # +6.0%, not the +5.8% a naively-rounded pair could show. Rounding
+    # the percentage instead keeps it consistent with the precision the
+    # sizes actually carry, rather than implying false precision.
     pct = ((output_bytes - source_bytes) / source_bytes * 100) if source_bytes else 0.0
     sign = "+" if pct >= 0 else ""
     return (
         f"Source: {_format_bytes(source_bytes)}  Output: {_format_bytes(output_bytes)}  "
-        f"Change: {sign}{pct:.1f}%"
+        f"Change: {sign}{pct:.0f}%"
     )
 
 
@@ -524,6 +737,18 @@ def convert(
 
     result.profile_used = profile
 
+    # ---- assemble the decision record (Phase 4/5 of the purpose-
+    # question rework) - profile_reason/honoured/consequential set now
+    # since all three are already fully known; nodata_message/applied
+    # filled in further down as each becomes known.
+    # resolve_profile_reason() is the one place this text is produced,
+    # in detector.py - see its docstring.
+    profile_reason, profile_honoured, profile_consequential = resolve_profile_reason(detection, chosen_profile)
+    result.decisions = DecisionSummary(
+        profile_reason=profile_reason, profile_honoured=profile_honoured,
+        profile_consequential=profile_consequential,
+    )
+
     # ---- compare current state to target, decide whether to do anything ----
     # Settings are resolved here (rather than just below, where they used
     # to be) because deciding whether there's anything left to gain needs
@@ -574,12 +799,22 @@ def convert(
         # above, per the user's explicit "force reprocess stays for the
         # first case only" instruction.
         result.primary_reason = "compression"
-        result.warnings.append(
-            "Already tiled with overviews, so pan/zoom speed was already "
-            f"fine. Reprocessing anyway because the current compression "
-            f"({detection.compression or 'none'}) isn't {target_compression} "
-            "yet - expect a smaller file, not a faster one."
-        )
+        # Suppressed specifically for the JPEG-source-plus-Analysis case
+        # (result.decisions.profile_consequential): this message promises
+        # "expect a smaller file", which is false there - recompressing
+        # already-JPEG-degraded pixels as lossless ZSTD typically grows
+        # the file substantially (measured 4.4x on a real file) rather
+        # than shrinking it. The profile_reason warning pushed elsewhere
+        # already explains what's actually happening; this one would
+        # only contradict it.
+        if not result.decisions.profile_consequential:
+            result.warnings.append(
+                "Already tiled with overviews, so pan and zoom speed was "
+                f"already fine. Reprocessing anyway because the current "
+                f"compression ({detection.compression or 'none'}) is not "
+                f"{target_compression} yet. Expect a smaller file, not a "
+                "faster one."
+            )
     else:
         result.primary_reason = "tiling" if not is_tiled else "overviews"
 
@@ -609,13 +844,26 @@ def convert(
         co_args += ["-co", f"{k}={v}"]
     full_args = co_args + list(profile_opt.translate_extra_args or [])
 
+    # Built from creation_options/overview_config themselves (the same
+    # dicts turned into co_args above and used by BuildOverviews
+    # below), not read back from the output file - see AppliedSettings'
+    # docstring for why that separation matters. Nothing here states an
+    # outcome that hasn't happened yet: resampling method is a decision
+    # already made, not a claim about whether BuildOverviews (Step 4,
+    # below) will succeed - whether overviews actually exist is left to
+    # the file itself to show, not restated here.
+    result.decisions.applied = _build_applied_settings(creation_options, overview_config)
+    result.decisions.applied.alpha_reattached = bool(profile == "lossy" and detection.has_alpha)
+
     # ---- resolve NoData handling (profile-independent - see
     # _resolve_nodata_handling and convert()'s own docstring) ----
-    should_clear_nodata, nodata_message, nodata_emphasis = _resolve_nodata_handling(detection, nodata_mode)
+    should_clear_nodata, nodata_message, nodata_severity = _resolve_nodata_handling(detection, nodata_mode)
     result.nodata_mode_requested = nodata_mode
     result.nodata_cleared = should_clear_nodata
     result.nodata_message = nodata_message
-    result.nodata_message_emphasis = nodata_emphasis
+    result.nodata_message_severity = nodata_severity
+    result.decisions.nodata_message = nodata_message
+    result.decisions.nodata_consequential = nodata_severity != "routine"
     if should_clear_nodata:
         full_args += ["-a_nodata", "none"]
 
@@ -652,6 +900,11 @@ def convert(
         result.message = "Translate failed (no output produced)."
         return result
 
+    # Phase 5 of the purpose-question rework: metadata written here,
+    # on the still-open Translate handle, before it's closed and
+    # reopened for BuildOverviews below - see _write_decision_metadata()'s
+    # docstring for why this has to happen before pyramids, not after.
+    _write_decision_metadata(out_ds, detection, chosen_profile, profile, result.decisions)
     out_ds = None  # flush/close before reopening for BuildOverviews
     result.translate_ok = True
     result.output_path = output_path
@@ -698,12 +951,21 @@ def convert(
             # Translate already succeeded and the file is on disk. Keep it -
             # re-running Translate on a large file is expensive, and
             # overviews can be retried on this exact output directly. Report
-            # honestly rather than silently calling this success.
+            # honestly rather than silently calling this success. The QGIS
+            # wrapper still raises on this action (see _HARD_FAILURE_ACTIONS
+            # in algorithms/optimise_raster.py - the run genuinely didn't
+            # finish what it promised), but that exception carries this
+            # message verbatim, so whoever sees it - GUI dialog, log,
+            # qgis_process stderr, direct API/CLI use - is told a usable
+            # file already exists and exactly how to finish it, not just
+            # that something failed.
             result.action = "converted_incomplete"
             result.message = (
                 f"Translate succeeded but building overviews failed: {exc}. "
-                f"The output at {output_path} exists but is NOT optimised yet "
-                "- retry overviews on it directly, no need to re-convert."
+                f"The output at {output_path} exists, tiled and compressed, "
+                "but has no pyramids yet. Add them without re-converting: "
+                "in QGIS, Raster > Miscellaneous > Build Overviews on this "
+                "file, or run this tool again on it."
             )
             return result
     finally:

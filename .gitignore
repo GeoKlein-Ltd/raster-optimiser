@@ -19,6 +19,13 @@ testdata/
 # are shipped with the plugin
 *.svg
 
+# never commit built plugin packages - these are release artifacts, not
+# source, and plugins.qgis.org forbids zipped files in the source
+# repository; an accidental commit would need history rewriting to undo,
+# not just a follow-up commit
+*.zip
+*.7z
+
 # python junk
 __pycache__/
 *.pyc
