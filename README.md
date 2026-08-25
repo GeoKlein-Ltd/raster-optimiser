@@ -22,4 +22,4 @@ Full license text: [`LICENSE`](LICENSE).
 ## Contact
 
 - Email: mail@geoklein.com
-- Issues: <!-- TODO: fill in once this repository has a public remote -->
+- Issues: https://github.com/GeoKlein-Ltd/raster-optimiser/issues

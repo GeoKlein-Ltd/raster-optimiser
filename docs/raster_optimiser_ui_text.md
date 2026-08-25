@@ -70,7 +70,7 @@ Your source file is never modified. The tool always writes a new file. (No longe
 
 Made by GeoKlein Ltd, Edinburgh. Built on GDAL.
 
-Report problems: tracker link to be added once the repository is public.
+Report problems: https://github.com/GeoKlein-Ltd/raster-optimiser/issues
 
 ---
 
@@ -342,7 +342,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 
 | Key | Content |
 |---|---|
-| `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {plugins.qgis.org URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is a placeholder (`https://plugins.qgis.org/plugins/raster_optimiser/`) until the listing exists, marked as such in the text itself. |
+| `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is the GitHub repo (`https://github.com/GeoKlein-Ltd/raster-optimiser`), standing in for the plugins.qgis.org listing until that exists, marked as such in the text itself. |
 | `GEOKLEIN_2_DETECTED` | What was detected before conversion ran - content type, band count, tiled/stripped, pyramids or not. Leads with an explicit subject ("Source file was...") rather than a bare comma list: this key is only ever read on the OUTPUT file, so "tiled, without pyramids" on its own would read as a claim about the file in front of the reader, not the source it was made from. See `describe_detection()` in `core/detector.py`. |
 | `GEOKLEIN_3_REQUESTED` | `{Analysis or Viewing}. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
@@ -352,7 +352,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 
 Two full worked examples, both taken from a real run against the current code (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding):
 
-> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 0.1.0, a QGIS plugin, 24 August 2026. https://plugins.qgis.org/plugins/raster_optimiser/ (placeholder until the plugins.qgis.org listing exists)
+> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 0.1.0, a QGIS plugin, 24 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder until the plugins.qgis.org listing exists)
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, tiled, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
 > GEOKLEIN_4_DECISION = Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.

@@ -328,8 +328,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
             "<hr>"
             "<p>Made by GeoKlein Ltd, Edinburgh. Built on GDAL.</p>"
-            "<p>Report problems: tracker link to be added once the "
-            "repository is public.</p>"
+            "<p>Report problems: "
+            "https://github.com/GeoKlein-Ltd/raster-optimiser/issues</p>"
         )
 
     def _already_optimised_message(self):
