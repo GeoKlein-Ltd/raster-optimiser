@@ -43,11 +43,11 @@ This tool adds both, and compresses the file sensibly on the way through.
 
 *Analysis*: keeps every pixel value exactly as it is. Use it for anything you extract numbers from: vegetation indices, crown segmentation, classification, change detection.
 
-*Viewing*: produces a much smaller file, by discarding detail the eye won't notice. A typical drone orthomosaic came out around 80% smaller. Still a GeoTIFF either way, never a .jpg file. Use it for basemaps, client copies, QField backdrops and site context.
+*Viewing*: produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Still a GeoTIFF either way, never a .jpg file. Use it for basemaps, client copies, QField backdrops and site context.
 
 Both load and pan at the same speed. The choice only affects file size and whether pixel values survive unchanged.
 
-Some files can't be compressed for viewing without changing the numbers they hold, or without losing their transparent collar. Elevation and 16-bit or multispectral imagery are always in that group, whatever they contain. An 8-bit RGB file can be too, if its collar is marked by a NoData value rather than a real alpha band, since compressing for viewing shifts pixel values slightly and a NoData-marked collar doesn't survive that the way a real alpha band does. Where any of this applies, the tool preserves the values instead, and records what it did in the log and in the file itself.
+Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and some 8-bit RGB files can too, depending on how their transparency is stored. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
 
 **What it won't process**
 
@@ -63,7 +63,7 @@ Your source file is never modified. The tool always writes a new file. (No longe
 - **NoData**: a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could ever be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 is simply black.
 - **Alpha band**: an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
 - **Collar**: the transparent border around a survey area, where the image doesn't fill the rectangular file.
-- **Pyramids / overviews**: pre-built smaller copies of the image at successive zoom levels.
+- **Pyramids, also called overviews**: pre-built smaller copies of the image at successive zoom levels.
 - **Tiling**: storing the image as small squares instead of full-width rows.
 
 **(closing block, separated by a horizontal rule)**
@@ -98,13 +98,13 @@ Options:
 Help:
 > Analysis keeps every pixel value exactly as it is. Use it for anything you extract numbers from: vegetation indices, crown segmentation, classification, change detection.
 >
-> Viewing produces a much smaller file, by discarding detail the eye will not notice. A typical drone orthomosaic came out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context.
+> Viewing produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context.
 >
 > Both load and pan at the same speed. Both are always written as GeoTIFF, never a .jpg file.
 >
-> Some files cannot be compressed for viewing without changing the numbers they hold, or without losing their transparent collar. Elevation and 16-bit or multispectral imagery are always in that group, whatever they contain. An 8-bit RGB file can be too, if its collar is marked by a NoData value rather than a real alpha band, since compressing for viewing shifts pixel values slightly and a NoData-marked collar doesn't survive that the way a real alpha band does. Where any of this applies, the tool preserves the values instead, and records what it did in the log and in the file itself.
+> Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and some 8-bit RGB files can too, depending on how their transparency is stored. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
 >
-> If you are not sure, choose Analysis. It costs disk space and nothing else.
+> If you're not sure, choose Analysis. It costs disk space and nothing else.
 
 ---
 
@@ -181,7 +181,7 @@ NoData never blocked in the first place, however consequential the finding: `che
 
 Blocks execution. Escapable via Reprocess. Compression-aware: only fires when the file is tiled, has pyramids, AND is already using the target compression for the profile that would be used (ZSTD for Analysis, YCbCr JPEG for Viewing). A file that's tiled with pyramids but still on a less efficient compression (LZW, DEFLATE, uncompressed) does NOT hit this, see the log entry below instead.
 
-> This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS. It's also already using the target compression, so reprocessing wouldn't shrink it either.
+> This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS or any other GDAL-based software. It's also already using the target compression, so reprocessing wouldn't shrink it either.
 >
 > Converting it again won't make it any faster or smaller. It would just produce a second large file.
 >
@@ -197,7 +197,7 @@ Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (s
 
 `detection.forced_reason` when `content_type == "FLOAT32_CONTINUOUS"` and Viewing was requested but Analysis was used.
 
-> Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye will not notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. Lossless ZSTD was used instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 
 ---
 
@@ -247,7 +247,13 @@ Routine, always logged after a successful conversion. Units are binary (1024-bas
 
 Routine, logged only when the output ends up bigger than the source - almost always with Analysis, since a source that arrived already compressed can be close enough to ZSTD's size that pyramids (which add roughly a third back on top of the base image) push the total past the original. Not a failure: this tool trades file size for pan/zoom speed on the base image, and pyramids are an unavoidable part of buying that speed.
 
-> Output is larger than source - expected with Analysis if the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size (choose Viewing instead if size matters more).
+The Viewing suggestion is appended only when Viewing is genuinely available for this file (`detection.profile_mode == "choice"`). This growth is most likely on a file that's forced to Analysis outright (elevation, 16-bit/multispectral, or an RGB file with no alpha band) - on those files, suggesting Viewing would be advice the user cannot act on, and `forced_reason` has usually just finished explaining that the tool will not do it anyway.
+
+> Output is larger than source. Expected when the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size.
+
+With Viewing available, a second sentence is appended:
+
+> Output is larger than source. Expected when the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size. A file written for viewing would be smaller, if size matters more than preserving every pixel value.
 
 ---
 
@@ -338,30 +344,30 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 |---|---|
 | `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {plugins.qgis.org URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is a placeholder (`https://plugins.qgis.org/plugins/raster_optimiser/`) until the listing exists, marked as such in the text itself. |
 | `GEOKLEIN_2_DETECTED` | What was detected before conversion ran - content type, band count, tiled/stripped, pyramids or not. Leads with an explicit subject ("Source file was...") rather than a bare comma list: this key is only ever read on the OUTPUT file, so "tiled, without pyramids" on its own would read as a claim about the file in front of the reader, not the source it was made from. See `describe_detection()` in `core/detector.py`. |
-| `GEOKLEIN_3_REQUESTED` | `{Analysis or Viewing}, chosen from Analysis (every pixel value preserved) or Viewing (smallest possible file)` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. |
+| `GEOKLEIN_3_REQUESTED` | `{Analysis or Viewing}. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
 | `GEOKLEIN_5_APPLIED` | The compression, predictor, tiling and overview resampling actually applied - see `_format_applied_settings()`. States decisions made before Translate ran, never an outcome that might not happen: it does not say whether pyramids exist, since that's directly observable from the file itself; it names the resampling method used to build them instead, which is a real decision and isn't recoverable from the file afterwards. |
 | `GEOKLEIN_6_HIDDEN_PIXELS` | The current NoData-handling message. Present whenever `_resolve_nodata_handling()` reached a conclusion worth recording - not only when real content was found, but also the routine "nothing hidden" and "kept as requested" outcomes. A routine finding is still a result: the key shows that the check ran and what it concluded, which is different information from the file simply not having a problem, and a missing key in a file written by an older version can't be told apart from a check that ran and found nothing - recording the routine case too keeps files self-describing across versions on their own, without needing to know which version wrote them. Absent only when Automatic or Keep as-is was chosen and there was nothing to assess or act on: either the file has no NoData=0 condition at all, or NoData marks only the collar with no alpha band (clearing isn't possible without also affecting the collar) and nothing was asked that would surface that fact. |
-| `GEOKLEIN_7_REPRODUCE` | The `gdal_translate` and `gdaladdo` commands that reproduce this file without the plugin - see `_format_reproduce_commands()`. Built from `full_args` (the exact list passed to `gdal.Translate()`) and `overview_config`/`overview_levels` (the exact values passed to `BuildOverviews()`), never a separately hand-written copy of the settings, so it cannot state anything other than what this run actually did. Source and destination are the placeholders `input.tif`/`output.tif`, not the real paths: the real source path embeds the local folder structure and Windows username, and the real output path is frequently a temp directory gone by the time anyone reads the metadata back - neither is reproducible information, and whoever reproduces this substitutes their own paths anyway. Ends with a line pointing at the equivalent QGIS menu items (Raster > Conversion > Translate, Raster > Miscellaneous > Build Overviews) and this workflow doc, for anyone who'd rather not use the command line at all. |
+| `GEOKLEIN_7_REPRODUCE` | The `gdal_translate` and `gdaladdo` commands that reproduce this file without the plugin - see `_format_reproduce_commands()`. Built from `full_args` (the exact list passed to `gdal.Translate()`) and `overview_config`/`overview_levels` (the exact values passed to `BuildOverviews()`), never a separately hand-written copy of the settings, so it cannot state anything other than what this run actually did. Source and destination are the placeholders `input.tif`/`output.tif`, not the real paths: the real source path embeds the local folder structure and Windows username, and the real output path is frequently a temp directory gone by the time anyone reads the metadata back - neither is reproducible information, and whoever reproduces this substitutes their own paths anyway. The two commands are numbered ("1. gdal\_translate...", "2. gdaladdo...") rather than separated by a bare newline alone: QGIS's Layer Properties panel doesn't reliably render the line break between them, which used to run both commands together into one unrunnable line with no visible boundary - the number still reads as two commands even collapsed onto one line. Ends with a line pointing at the equivalent QGIS menu items (Raster > Conversion > Translate, Raster > Miscellaneous > Build Overviews) and this workflow doc, for anyone who'd rather not use the command line at all. |
 
 Two full worked examples, both taken from a real run against the current code (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding):
 
 > GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 0.1.0, a QGIS plugin, 24 August 2026. https://plugins.qgis.org/plugins/raster_optimiser/ (placeholder until the plugins.qgis.org listing exists)
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, tiled, without pyramids.
-> GEOKLEIN_3_REQUESTED = Viewing, chosen from Analysis (every pixel value preserved) or Viewing (smallest possible file)
-> GEOKLEIN_4_DECISION = Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye will not notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. Lossless ZSTD was used instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
+> GEOKLEIN_4_DECISION = Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 > GEOKLEIN_5_APPLIED = Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
-> GEOKLEIN_7_REPRODUCE = gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=ZSTD -co ZSTD_LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS "input.tif" "output.tif"
-> gdaladdo --config COMPRESS_OVERVIEW ZSTD --config PREDICTOR_OVERVIEW 3 -r average "output.tif" 2 4
+> GEOKLEIN_7_REPRODUCE = 1. gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=ZSTD -co ZSTD_LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS "input.tif" "output.tif"
+> 2. gdaladdo --config COMPRESS_OVERVIEW ZSTD --config PREDICTOR_OVERVIEW 3 -r average "output.tif" 2 4
 > Same operations in QGIS: Raster > Conversion > Translate, and Raster > Miscellaneous > Build Overviews. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
 
 > GEOKLEIN_2_DETECTED = Source file was 8-bit RGB imagery, 3 bands plus alpha, tiled, without pyramids.
-> GEOKLEIN_3_REQUESTED = Viewing, chosen from Analysis (every pixel value preserved) or Viewing (smallest possible file)
+> GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
 > GEOKLEIN_4_DECISION = Lossy compression suits this data, so it was used as asked.
 > GEOKLEIN_5_APPLIED = JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
-> GEOKLEIN_7_REPRODUCE = gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=JPEG -co JPEG_QUALITY=90 -co PHOTOMETRIC=YCBCR -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"
-> gdaladdo --config COMPRESS_OVERVIEW JPEG --config PHOTOMETRIC_OVERVIEW YCBCR --config INTERLEAVE_OVERVIEW PIXEL -r average "output.tif" 2 4
+> GEOKLEIN_7_REPRODUCE = 1. gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=JPEG -co JPEG_QUALITY=90 -co PHOTOMETRIC=YCBCR -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"
+> 2. gdaladdo --config COMPRESS_OVERVIEW JPEG --config PHOTOMETRIC_OVERVIEW YCBCR --config INTERLEAVE_OVERVIEW PIXEL -r average "output.tif" 2 4
 > Same operations in QGIS: Raster > Conversion > Translate, and Raster > Miscellaneous > Build Overviews. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
 
 Also set, the standard TIFF tag other tools (ArcGIS, ExifTool, Photoshop) read where GDAL's own metadata domain is ignored. Deliberately NOT the full `GEOKLEIN_2_DETECTED`/`GEOKLEIN_4_DECISION` text concatenated - that produced the same paragraph appearing twice in Layer Properties. One short sentence instead: tool and version, what the file is (`content_label()`, the same short phrase `GEOKLEIN_2_DETECTED`'s longer sentence is built from), and what compression was applied:

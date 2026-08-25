@@ -344,14 +344,22 @@ def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list
     API - BuildOverviews itself requires an explicit level list and
     raises on None. Halve repeatedly until the overview's larger
     dimension drops under min_dim, matching the doc's "down to thumbnail
-    size" description.
+    size" description - which means the factor that FIRST takes it under
+    min_dim is included, not stopped short of it: appending only while
+    the current candidate is still above the threshold (the previous
+    form of this loop) stops one level early, verified directly against
+    real gdaladdo's own no-levels default on the same test dimensions
+    (45184x27264): that produces 8 levels ending at 177x107, one more
+    than the 7 ending at 353x213 the previous version of this loop gave.
     """
     levels = []
     factor = 2
-    while max(xsize // factor, ysize // factor) > min_dim:
+    while True:
         levels.append(factor)
+        if max(xsize // factor, ysize // factor) <= min_dim:
+            break
         factor *= 2
-    return levels or [2]
+    return levels
 
 
 class _ProgressTracker:
@@ -536,6 +544,15 @@ def _format_reproduce_commands(full_args: list, overview_config: dict, overview_
     metadata back - neither is reproducible information, and whoever
     reproduces this will substitute their own paths anyway. The flags
     are the part nobody could reconstruct unaided.
+
+    The two commands are numbered ("1. gdal_translate...", "2.
+    gdaladdo...") rather than separated by a bare newline alone: QGIS's
+    Layer Properties panel doesn't reliably render the \\n between them,
+    which used to run both commands together into one unrunnable line
+    with no visible boundary. The number survives that collapse - "...
+    "output.tif" 2. gdaladdo ..." still reads as two commands even on
+    one line - so the fix doesn't depend on whatever the panel decides
+    to do with whitespace.
     """
     translate_cmd = "gdal_translate " + " ".join(full_args) + ' "input.tif" "output.tif"'
 
@@ -549,7 +566,7 @@ def _format_reproduce_commands(full_args: list, overview_config: dict, overview_
     addo_cmd = " ".join(addo_parts)
 
     return (
-        f"{translate_cmd}\n{addo_cmd}\n"
+        f"1. {translate_cmd}\n2. {addo_cmd}\n"
         "Same operations in QGIS: Raster > Conversion > Translate, and "
         "Raster > Miscellaneous > Build Overviews. Full manual workflow: "
         "docs/GeoKlein_raster_optimisation_workflow.md."
@@ -590,10 +607,13 @@ def _write_decision_metadata(
     # Names both options and what each does, chosen one first, so a
     # later reader (client, auditor) knows what the alternative would
     # have done without this doc open - a bare "Viewing" on its own
-    # didn't say that.
+    # didn't say that. Two sentences, not one "X, chosen from ... or
+    # X" clause: whichever name is chosen would otherwise appear twice
+    # in the same breath (once naming the choice, once in the "or"
+    # list), which read as a stutter rather than a record.
     requested_label = (
-        f"{requested_name}, chosen from Analysis (every pixel value "
-        "preserved) or Viewing (smallest possible file)"
+        f"{requested_name}. The options were Analysis (every pixel "
+        "value preserved) and Viewing (smallest possible file)."
     )
 
     items = {
@@ -656,10 +676,21 @@ def _format_bytes(n: int) -> str:
 # failure: this plugin trades file size for pan/zoom speed on the base
 # image, and pyramids are an unavoidable part of buying that speed.
 _SIZE_INCREASE_EXPLANATION = (
-    "Output is larger than source - expected with Analysis if the "
-    "source was already compressed, since pyramids add back roughly a "
-    "third. Not a failure: the gain here is speed, not size (choose "
-    "Viewing instead if size matters more)."
+    "Output is larger than source. Expected when the source was already "
+    "compressed, since pyramids add back roughly a third. Not a failure: "
+    "the gain here is speed, not size."
+)
+
+# Appended to _SIZE_INCREASE_EXPLANATION only when Viewing is genuinely
+# available for this file (detection.profile_mode == "choice") - this
+# size growth is most likely on a file already forced to Analysis
+# (elevation, 16-bit/multispectral, or an RGB file with no alpha band),
+# where suggesting Viewing would be advice the user cannot act on, and
+# which forced_reason has often just finished explaining the tool will
+# not do anyway.
+_SIZE_INCREASE_VIEWING_SUGGESTION = (
+    "A file written for viewing would be smaller, if size matters more "
+    "than preserving every pixel value."
 )
 
 
@@ -1100,7 +1131,10 @@ def convert(
     result.output_bytes = os.path.getsize(output_path)
     result.size_summary = _size_summary(result.source_bytes, result.output_bytes)
     if result.output_bytes > result.source_bytes:
-        result.size_note = _SIZE_INCREASE_EXPLANATION
+        size_note = _SIZE_INCREASE_EXPLANATION
+        if detection.profile_mode == "choice":
+            size_note += " " + _SIZE_INCREASE_VIEWING_SUGGESTION
+        result.size_note = size_note
 
     if verification.passed:
         result.ok = True

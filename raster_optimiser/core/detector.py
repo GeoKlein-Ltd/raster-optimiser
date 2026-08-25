@@ -890,12 +890,12 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         result.forced_reason = (
             "Written for analysis instead. This is elevation data, a "
             "DSM, DTM or CHM. Compressing for viewing works by "
-            "discarding detail the eye will not notice, but these "
+            "discarding detail the eye won't notice, but these "
             "pixels are height measurements rather than colours, so "
             "discarding detail would change the actual heights. "
-            "Lossless ZSTD was used instead. The file still loads and "
-            "pans at full speed - Viewing would only have made it "
-            "smaller, not faster."
+            "The pixel values were preserved instead. The file still "
+            "loads and pans at full speed - Viewing would only have "
+            "made it smaller, not faster."
         )
         settings = RECOMMENDED_SETTINGS["lossless_float"]
         result.profile_options = [
