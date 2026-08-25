@@ -261,3 +261,87 @@ next significant design change to this codebase should be followed by
 the same kind of pass (read every docstring and comment in the changed
 files against what the code now does) rather than assuming comments
 updated themselves alongside the behaviour they describe.
+
+---
+
+## BOUNDCRS is not preserved through conversion - confirmed as a GDAL
+## limitation, not this tool's behaviour
+
+**Status:** investigated, 2026-08-25. Not fixed, because no fix was found to
+apply, and because the current (unpreserved) behaviour is not clearly worse
+than the alternative - see the reasoning below.
+
+A source file whose CRS is a `BOUNDCRS` - a base projected CRS (here,
+`EPSG:27700`, OSGB36 / British National Grid) wrapped in an explicit
+`ABRIDGEDTRANSFORMATION` to WGS 84 via seven-parameter (Helmert) datum-shift
+values - comes out of this tool as a plain `PROJCRS` for the same base EPSG
+code, with the wrapper and its datum-shift parameters gone. Geometrically
+this is invisible: the geotransform (origin, pixel size) is byte-identical
+between source and output to eighteen decimal places, and so are all four
+corner coordinates. What changes is which transformation a later consumer
+uses to relate that geometry to WGS 84 for reprojection or a basemap
+underlay - with the `BOUNDCRS` present, GDAL/QGIS use the embedded
+seven-parameter transformation; without it, they fall back to whatever PROJ
+selects as the best available OSGB36-to-WGS84 operation on its own (for
+Great Britain, that is ordinarily the OSTN15 grid shift, a spatially-varying
+correction rather than a single fixed offset). The two disagree by up to
+about 2cm on the file this was measured against, an 0.5m-GSD ortho (roughly
+12mm at the pixel-corner level once resampled), varying by location rather
+than in one fixed direction - a signature consistent with a grid-based
+correction (OSTN15) diverging slightly, non-uniformly, from a fixed Helmert
+transform, rather than with anything reprojecting incorrectly. Below the
+image's own pixel resolution, and invisible at any normal working zoom;
+it only shows up as a hairline offset with both files open together and
+zoomed in past the point the imagery itself resolves.
+
+**Is this plugin's creation options doing it?** No. Reproduced with a bare
+CLI `gdal_translate` carrying zero `-co` flags at all - run outside this
+plugin, outside Python, against `testdata/MSTIFF.tif` (a real file already in
+this repo whose CRS is a genuine `BOUNDCRS`, confirmed by opening it
+directly) - and the wrapper was dropped identically to a run using this
+plugin's exact `lossless_integer` creation options. Both produce the same
+plain `PROJCRS`. The drop happens with or without a single one of this
+tool's settings involved.
+
+**Can the wrapper be preserved at all?** Not with anything tried. Beyond the
+default write, tested `-co GEOTIFF_VERSION=1.1` (the newer, WKT-capable
+GeoTIFF mode) and `-co GEOTIFF_KEYS_FLAVOR=ESRI_PE` (the flavour real-world
+software most often uses to embed a full WKT text blob when the classic
+numeric GeoTIFF keys can't represent a CRS) - both on the real `BOUNDCRS`
+file and reproduced independently by constructing a synthetic OSGB36/BNG
+`BOUNDCRS` via `osr.SpatialReference.SetTOWGS84()` and writing it fresh.
+Neither preserved the wrapper; in fact the synthetic file didn't survive as
+a `BOUNDCRS` even on its own *first* write via GDAL's `Create()`/
+`SetSpatialRef()`, before any Translate was involved at all. That means
+whatever software produced the real ortho this was first noticed on wrote
+its GeoTIFF through a path this GDAL version's own writer doesn't
+reproduce - as far as testing here shows, `BOUNDCRS` support in GDAL's GTiff
+writer is a genuine current upstream limitation, not a setting this tool
+declined to use.
+
+**Should it be preserved, if a way is ever found?** Not by default, and not
+reflexively. Two reasons, not one:
+
+- It is not established that keeping the file's own embedded transformation
+  would be *more* correct. A fixed seven-parameter Helmert transform is
+  itself one specific choice among several possible OSGB36-to-WGS84
+  operations, generally less accurate across Great Britain than the
+  OSTN15 grid shift that PROJ selects by default once no `BOUNDCRS` locks
+  the choice - and the spatially-varying nature of the ~2cm measured
+  difference is itself evidence that OSTN15 (not a cruder fallback) is what
+  PROJ is actually using in the current, wrapper-free case. Restoring the
+  wrapper could just as easily make output *less* accurate as more, file by
+  file, depending on how good that file's own embedded parameters happen to
+  be.
+- Even if a real, working way to preserve it were found, `GEOTIFF_VERSION=1.1`
+  is a newer specification with less universal support than classic
+  GeoTIFF - a real compatibility cost against other GDAL-based consumers
+  this tool explicitly targets (QField in particular), for a correctness
+  gain that isn't itself confirmed. That trade needs to be made on purpose,
+  with both sides measured, not adopted as an incidental side effect of
+  fixing something else.
+
+Recorded here specifically so a future change that happens to preserve this
+(a GDAL upgrade, a creation-option change made for an unrelated reason) gets
+noticed and evaluated deliberately, rather than silently starting to embed a
+fixed datum-shift transform nobody decided to keep.

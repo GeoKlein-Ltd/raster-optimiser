@@ -3,10 +3,11 @@ a toolbar button + Raster-menu entry as one-click entry points into the
 same algorithm dialog the Processing Toolbox already opens.
 
 Still no custom dialog (see docs/plugin_design_notes.md): the QAction's
-only job is to build and show this plugin's algorithm dialog non-modally
-(see _run()'s own comment for why not processing.execAlgorithmDialog()),
-so there's exactly one parameter UI to maintain - the Toolbox entry and
-this action just open it two different ways.
+only job is to open this plugin's algorithm dialog modally, the same way
+QGIS's own Processing Toolbox opens it (see _run()'s own comment for why
+modality here is load-bearing, not incidental), so there's exactly one
+parameter UI to maintain - the Toolbox entry and this action just open
+it two different ways.
 
 QAction cross-version note: PyQt6 moved QAction from QtWidgets to QtGui
 upstream, a common Qt5->Qt6 migration trap. qgis.PyQt.QtWidgets.QAction
@@ -62,22 +63,34 @@ class RasterOptimiserPlugin:
         # than this plugin needs at load time, and the callback only
         # runs long after QGIS's Python environment is fully up anyway.
         import processing
-        # NOT execAlgorithmDialog(): its own implementation (processing/
-        # tools/general.py) calls widget.exec(), then unconditionally
-        # widget.results(), then widget.close() - that results() call is
-        # what raised "wrapped C/C++ object of type AlgorithmWidget has
-        # been deleted" after a successful run, an intermittent QGIS-side
-        # widget-lifetime bug, not something in this plugin's own code.
-        # This plugin never used the return value anyway (the call below
-        # used to be a bare, unassigned processing.execAlgorithmDialog()
-        # call), so there's nothing lost by not reading results() at
-        # all: build the dialog and show it non-modally instead, the
-        # same way double-clicking an algorithm in the Processing
-        # Toolbox itself opens it, which sidesteps the crash entirely
-        # rather than working around it.
+        # Modal exec(), matching exactly what QGIS's own Processing
+        # Toolbox does to open this same dialog (processing/
+        # ProcessingPlugin.py's executeAlgorithm(): widget.exec(),
+        # nothing done to widget afterward) - not execAlgorithmDialog(),
+        # and not a non-modal show() either.
+        #
+        # The original RuntimeError ("wrapped C/C++ object of type
+        # AlgorithmWidget has been deleted") came specifically from
+        # execAlgorithmDialog()'s own trailing widget.results() call,
+        # made after widget.exec() already returned, on a widget whose
+        # C++ object had - an intermittent QGIS-side widget-lifetime bug
+        # - already been deleted by then. Modality was never the
+        # problem. Replacing this with createAlgorithmDialog() plus a
+        # non-modal show() removed both the crash-causing calls AND the
+        # modality together, and it was specifically removing modality
+        # that broke Run from the toolbar/menu: show() returns
+        # immediately, so the local `widget` reference here goes out of
+        # scope - and becomes eligible for garbage collection - while
+        # the dialog is still open and waiting for the user to click
+        # Run. Modal exec() blocks on this line until the dialog closes,
+        # so the reference stays alive for the dialog's entire
+        # interaction, same as QGIS's own Toolbox code above. Keep this
+        # modal, and never add a widget.results()/widget.close() call
+        # after exec() returns - that combination is exactly what
+        # crashed before.
         widget = processing.createAlgorithmDialog(ALGORITHM_ID)
         if widget is not None:
-            widget.show()
+            widget.exec()
 
     def unload(self):
         if self.action is not None:

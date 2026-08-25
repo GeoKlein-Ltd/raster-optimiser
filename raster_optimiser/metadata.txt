@@ -1,6 +1,12 @@
 [general]
 name=GeoKlein Raster Optimiser
 qgisMinimumVersion=3.34
+# Do not remove: with no qgisMaximumVersion set, QGIS infers <major>.99 from
+# qgisMinimumVersion, so 3.34 alone becomes an effective cap of "3.34 - 3.99"
+# and QGIS 4.2 reports this plugin as incompatible. Confirmed on a clean 4.2
+# profile install. Raise this only when a real incompatibility with a newer
+# QGIS major version is found, not preemptively.
+qgisMaximumVersion=4.99
 description=Detects slow, unoptimised orthomosaics and elevation rasters and converts them to fast-panning, correctly-compressed GeoTIFFs.
 version=0.1.0
 author=GeoKlein
