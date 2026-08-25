@@ -228,6 +228,25 @@ any other.
 
 ---
 
+## Before a release
+
+What must be true before `raster_optimiser.*.zip` gets uploaded to
+plugins.qgis.org. Nothing here is enforced by the build - check it by hand
+before every submission. (Folded in from `pre_submission_checklist.md` on
+2026-08-25, once most of its items were done: the repo is public and the
+placeholder URLs are filled in.)
+
+- [ ] The `GEOKLEIN_1_TOOL` URL in `core/converter.py` has been changed from
+  the GitHub repo to the real plugins.qgis.org listing URL, once one exists,
+  and the placeholder note in its text removed. Every file produced before
+  that change carries the stand-in link in its own embedded metadata - this
+  can only be fixed going forward, not in files already handed to a client.
+- [ ] A changelog entry has been added to `metadata.txt` for this release.
+- [ ] The zip has been rebuilt (`python tools/build_zip.py`) after either of
+  the above.
+
+---
+
 ## Keeping this current
 
 Add a question whenever a defect is found that none of the existing questions

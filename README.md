@@ -39,7 +39,7 @@ pass, and preserving them now keeps those changed values rather than recovering
 the originals. The plugin warns when it detects this. For measurement work, run
 it on the original file.
 
-## License
+## Licence
 
 The source code is licensed under the GPL. The GeoKlein name and the cheetah
 logo are not covered by that licence and remain the property of GeoKlein. If
