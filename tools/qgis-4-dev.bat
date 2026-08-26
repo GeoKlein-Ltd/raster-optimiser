@@ -5,7 +5,7 @@ rem QGIS_PLUGINPATH is set for this process only.
 rem
 rem Points at .qgis_dev, not the repo root: QGIS scans every subdirectory
 rem of QGIS_PLUGINPATH for a metadata.txt, so pointing at the repo root
-rem makes .claude/docs/testdata/tools all show up as "Invalid plugins" in
+rem makes every subdirectory in the repo root show up as "Invalid plugins" in
 rem Plugin Manager. .qgis_dev contains only an NTFS junction named
 rem raster_optimiser pointing at the actual package folder.
 rem
