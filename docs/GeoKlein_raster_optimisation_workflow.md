@@ -10,7 +10,7 @@ Photogrammetry software gives you a technically correct file that is practically
 
 The default export is built for archival correctness, not for someone panning around a map canvas. Nothing is wrong with the file. It just has no structure that lets software read part of it without reading all of it.
 
-This workflow adds that structure. It takes about five minutes per file, all through Processing Toolbox dialogs, and turns a sluggish ortho into one that pans instantly.
+This workflow adds that structure. It takes about five minutes per file, through a mix of Processing Toolbox dialogs and one OSGeo4W Shell command, and turns a sluggish ortho into one that pans instantly.
 
 **Two things to be clear about before starting.**
 
@@ -43,6 +43,14 @@ Common options:
 
 A GeoTIFF with JPEG compression inside is still a GeoTIFF. It keeps its coordinates, its projection, all of it. It is not the same thing as a `.jpg` file, which has no georeferencing at all.
 
+### What a Cloud Optimized GeoTIFF (COG) is
+
+A COG is a GeoTIFF with one extra guarantee: its internal bytes are laid out so a reader can fetch just the header, then just the tiles or overview it actually needs, without downloading or reading the whole file first. Two things make that true - pyramids stored internally, never as a separate `.ovr`, and the file's index data (its IFDs) placed before the pixel data they describe, not after.
+
+It is a valid GeoTIFF everywhere a plain one is. Nothing that reads GeoTIFF stops working on a COG. The "cloud" in the name describes what it additionally enables (fetching parts of a file over a network without reading the whole thing), not a requirement to use one - it is exactly as useful sat on a local disk, which is the only place this workflow ever writes one.
+
+This workflow now produces COGs specifically, not plain GeoTIFFs, wherever it builds pyramids - see Step 3.
+
 ### Pyramids (overviews)
 
 The single most important concept here.
@@ -62,7 +70,7 @@ Pyramids can be stored two ways:
 - **Internal**: written inside the TIFF. One self-contained file. Modifies the source, cannot be undone.
 - **External**: written to a sidecar file called `yourfile.tif.ovr`. Source untouched. But if the `.ovr` gets separated from the `.tif`, it stops working entirely. There is no search path. It has to sit in the same folder with the same base name.
 
-Use External on someone else's original. Use Internal on files you produce.
+Use External when you want to add pyramids to someone else's original file without touching it. Use Internal on files you produce - and a COG (see above) requires Internal specifically; there is no such thing as a COG with external pyramids.
 
 ### Tiling and block size
 
@@ -275,32 +283,42 @@ If you do have a multispectral sensor and real NIR, the output is normally a mul
 
 ---
 
-## Step 3: Translate (Convert Format)
+## Step 3: Translate (build the COG)
 
-**Raster > Conversion > Translate (Convert Format)**, then expand Advanced Parameters.
+**This is not a Processing Toolbox step any more. Use the OSGeo4W Shell.**
+
+**Raster > Conversion > Translate (Convert Format)** cannot produce a Cloud Optimized GeoTIFF, checked directly against both QGIS 3.44 LTR and 4.2's actual Translate algorithm: the dialog picks its output driver purely from your output file's extension, and `.tif`/`.tiff` always resolves to plain GTiff in both versions - there is no format selector to override that. Typing `-of COG` into Additional command-line parameters does not work around it either: the dialog has already built its own `-of GTiff` into the command by that point, and `gdal_translate` refuses a duplicate `-of` argument outright and writes nothing at all (`ERROR 1: Duplicate argument -of`, confirmed directly). There is no clean way to get COG output through this dialog in either version.
+
+Use `gdal_translate` from the OSGeo4W Shell instead. One command now builds the base image, compression, and pyramids together - there is no separate Build Overviews step after this one.
 
 ### Creation options
 
-These control how the output file is physically built. Enter them as name/value rows in the table.
+Enter these as `-co NAME=VALUE` on the command line - COG's own option names, not the ones a plain GeoTIFF Translate would use.
 
 | Option | Lossy | Lossless | Does what |
 |---|---|---|---|
-| TILED | YES | YES | Store as squares, not strips |
-| BLOCKXSIZE | 512 | 512 | Tile width |
-| BLOCKYSIZE | 512 | 512 | Tile height |
-| COMPRESS | JPEG | ZSTD | Which compressor |
-| JPEG_QUALITY | 90 | – | 1 to 100. Below 75 shows blocking, above 95 wastes space |
-| PHOTOMETRIC | YCBCR | – | Half-resolution colour storage |
-| ZSTD_LEVEL | – | 9 | 1 to 22. Higher is smaller and slower to write |
+| BLOCKSIZE | 512 | 512 | Tile size. COG tiles are always square - there is no separate width/height option |
+| COMPRESS | JPEG | ZSTD | Which compressor for the base image |
+| QUALITY | 90 | – | 1 to 100. Below 75 shows blocking, above 95 wastes space |
+| LEVEL | – | 9 | 1 to 22. Higher is smaller and slower to write |
 | PREDICTOR | – | 2 | Differencing. 2 for integers, 3 for floats |
 | BIGTIFF | YES | YES | Allows files over 4 GB |
 | NUM_THREADS | ALL_CPUS | ALL_CPUS | Use all cores. Affects build time only |
+| OVERVIEW_RESAMPLING | AVERAGE | AVERAGE | Resampling method for the pyramids built into this same file |
+| OVERVIEW_COMPRESS | JPEG | ZSTD | Compress the pyramids the same way as the base image |
+| OVERVIEW_QUALITY | 90 | – | Matches QUALITY - without it, pyramids default to a lower quality than the base image |
+| OVERVIEW_PREDICTOR | – | 2 or 3 | Matches PREDICTOR |
+| OVERVIEW_COUNT | see below | see below | How many pyramid levels to build |
 
-Save each set as a named profile using the dropdown at the top of the creation options widget. You never type this again.
+Two options a plain GeoTIFF recipe would have here are gone, not renamed: **TILED**, because a COG is always tiled - there is no option for it, and setting one is rejected outright. **PHOTOMETRIC**, because COG converts a 3-band Byte image to YCbCr on its own whenever COMPRESS is JPEG - confirmed directly, no option requested or accepted, so there is nothing to set.
+
+**OVERVIEW_COUNT.** There is no explicit level list under COG, only a count. Work it out the same way the old "leave overview levels blank" default did: halve the image's larger dimension repeatedly until it drops under 256 pixels, and count how many halvings that took. A 21727-pixel-wide image: 10863, 5431, 2715, 1357, 678, 339, 169 - the seventh halving is the first to drop under 256, so OVERVIEW_COUNT is 7.
+
+Leaving OVERVIEW_COUNT unset lets the driver choose its own default instead, which is not the same rule and stops earlier: it is tied to block size (it stops once a level would fit inside a single 512-pixel tile) rather than to a fixed 256-pixel thumbnail target, so an unset COUNT on that same image builds one pyramid level fewer than working it out by hand does. Not wrong, just shallower - decide whether that matters for how far out you expect to zoom.
 
 ### Additional command-line parameters
 
-This is the one field that needs typing, because these change the data rather than the file structure and the dialog has no fields for them.
+These change the data rather than the file structure, same as before.
 
 | Situation | Enter |
 |---|---|
@@ -308,57 +326,57 @@ This is the one field that needs typing, because these change the data rather th
 | Lossy, alpha band present, no nodata declared | `-b 1 -b 2 -b 3 -mask 4` |
 | Lossy, no alpha band, nodata=0 | `-a_nodata none`, but build an alpha first, see Step 1 |
 | Lossy, three bands, nothing to fix | leave blank |
-| Lossy, 16-bit source | add `-scale` and set Output data type to Byte |
+| Lossy, 16-bit source | add `-scale` and set Output data type to Byte (`-ot Byte`) |
 | Lossless | leave blank, always |
 
 **What `-b 1 -b 2 -b 3` does.** Selects which bands to copy into the output, in order. Band 1, band 2, band 3. Band 4 is not on the list, so it is excluded. This is what gets you down to the three bands YCbCr demands.
 
-**What `-mask 4` does.** Takes band 4, the one you just excluded, and reattaches it as a mask band instead. Your transparency survives, but it no longer counts as a band. Without this you would get a black rectangle around the survey area.
+**What `-mask 4` does.** Takes band 4, the one you just excluded, and reattaches it as a mask band instead. Your transparency survives, but it no longer counts as a band. Without this you would get a black rectangle around the survey area. Under COG this mask is always stored internally - confirmed directly, there is no external-mask equivalent of the `.msk` problem below for a COG output.
 
 **What `-a_nodata none` does.** Clears the declared nodata value. The `-a_` prefix means "assign", and these options only rewrite metadata without touching a single pixel.
 
 Use it on any 8-bit RGB ortho carrying nodata=0, which is most of them. Every value from 0 to 255 is a legitimate colour, so the sentinel collides with real black pixels and punches holes through shadows, dark water and anything genuinely black. Confirm with the toggle test in Step 1 first, mainly to check that something else is handling the survey boundary before you remove it.
 
-Do this **before** building pyramids, not after. Average resampling combines each 2x2 block, so four dark pixels reading 1, 0, 1, 0 average to 0, which is the nodata value. That block becomes a hole in the overview even though three of the four source pixels were valid. Repeat down each level and near-black regions erode progressively. Clear the nodata first and the problem never arises.
+Nodata is cleared as part of this same command now, not as a separate pass before a separate pyramid-building step - so there is no "do this before building pyramids" ordering to get wrong any more. Average resampling combining four dark pixels reading 1, 0, 1, 0 into 0 is still exactly why a NoData=0 value would manufacture holes in the pyramids if it survived into this command - it just can't, because clearing it and building the pyramids happen in the same `gdal_translate` call.
 
 **The lossless profile keeps all four bands deliberately.** ZSTD does not care about band count, so there is no reason to convert. A real alpha band is also easier to handle in R and lidR than a GDAL mask, which some readers ignore entirely.
 
+### Full command
+
+Lossy, alpha band present, nodata=0:
+
+```
+gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=7 -b 1 -b 2 -b 3 -mask 4 -a_nodata none input.tif output.tif
+```
+
+Lossless:
+
+```
+gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=2 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=2 -co OVERVIEW_COUNT=7 input.tif output.tif
+```
+
+(PREDICTOR 3 in place of 2 for Float32 elevation, per Background above.)
+
 ---
 
-## Step 4: Build Overviews (Pyramids)
+## Step 4: Verify
 
-**Raster > Miscellaneous > Build Overviews (Pyramids)**
-
-Run this on the file you just produced.
-
-| Field | Set to | Why |
-|---|---|---|
-| Input layer | Your new file | |
-| Overview levels | Leave blank | GDAL picks a sensible series down to thumbnail size |
-| Resampling method | **Average** | Averages each 2x2 block. Nearest picks one pixel and discards three, which causes speckle and shimmer zoomed out |
-| Overview format | **Internal** for your own files, **External** for someone else's original | Internal modifies the file and cannot be undone. External writes a `.ovr` sidecar |
-| Remove existing overviews | Only if rebuilding | |
-
-### Additional command-line parameters
-
-| Profile | Enter |
-|---|---|
-| Lossy | `--config COMPRESS_OVERVIEW JPEG --config PHOTOMETRIC_OVERVIEW YCBCR --config INTERLEAVE_OVERVIEW PIXEL` |
-| Lossless | `--config COMPRESS_OVERVIEW ZSTD` |
-
-These tell GDAL to compress the pyramids the same way as the base image. Without them the overviews are written uncompressed, which adds roughly a third of the *uncompressed* file size back on. On a 470 megapixel ortho that is around 600 MB of sidecar for no reason.
-
-`--config` sets a GDAL runtime setting rather than a file creation option, which is why the syntax is different from the table in Step 3.
-
-`INTERLEAVE_OVERVIEW PIXEL` matches how bands are woven together in the pyramids to how they are in the base image. Mismatched interleaving loses most of the compression benefit.
-
-### Verify
-
-Run Raster Information on the output. You want:
+No action in this step, only checking what Step 3 produced - there is nothing left to build. Run Raster Information on the output, or `gdalinfo` from the OSGeo4W Shell. Quick look, not the real check:
 
 - `Block=512x512`
 - An `Overviews:` line under each band listing several sizes
 - `COMPRESSION=YCbCr JPEG` or `COMPRESSION=ZSTD` in Image Structure Metadata
+- `LAYOUT=COG` also in Image Structure Metadata
+
+That last tag is worth glancing at, but do not stop there: it reflects how the file was *created*, not how its bytes ended up laid out, and it is possible for a file to report `LAYOUT=COG` while genuinely failing COG's own structural requirement - confirmed directly this way once, from a metadata write made after the file's structure had already been finalised (see `docs/plugin_design_notes.md`). The tag alone would have said that file was fine. It was not.
+
+The real check is the validator GDAL ships with:
+
+```
+python -m osgeo_utils.samples.validate_cloud_optimized_geotiff output.tif
+```
+
+It prints `is a valid cloud optimized GeoTIFF` (exit code 0) or lists the specific structural errors found. Trust this over the tag.
 
 Then remove the layer from the project and add it back. Refreshing does not pick up structural changes.
 
@@ -366,9 +384,11 @@ Then remove the layer from the project and add it back. Refreshing does not pick
 
 ## Reference: other data types
 
+All of this is written via `-of COG` now, as in Step 3 - the compression and predictor choices below are unchanged from a plain GeoTIFF recipe, only the driver and option names differ.
+
 | Data | Compression | Predictor | Notes |
 |---|---|---|---|
-| RGB 8-bit, display | JPEG quality 90 + YCBCR | – | Lossy |
+| RGB 8-bit, display | JPEG quality 90 | – | Lossy. COG converts to YCbCr on its own, no option needed |
 | RGB 8-bit, analysis | ZSTD level 9 | 2 | Lossless |
 | RGB 16-bit, display | Convert to Byte first, then JPEG | – | `-ot Byte -scale` |
 | RGB 16-bit, analysis | ZSTD level 9 | 2 | Keep 16-bit |
@@ -419,11 +439,13 @@ Losing 5 cm off the boundary of a 250 metre site is nothing.
 
 ### A `.msk` file appeared next to the output
 
-The mask was written externally instead of inside the TIFF. Add `--config GDAL_TIFF_INTERNAL_MASK YES` to the Translate extra parameters and run again. Recent GDAL usually handles this on its own.
+**This cannot happen following Step 3 above.** Confirmed directly: even deliberately forcing `GDAL_TIFF_INTERNAL_MASK NO` against a COG output made no difference at all - no external file was written, no matter what. COG has no external-mask code path to fall into.
+
+It can still happen if you build a mask through some other, non-COG recipe - a plain GTiff `gdal_translate` without `-of COG`, an older workflow, a different tool entirely. In that case: the mask was written externally instead of inside the TIFF. Add `--config GDAL_TIFF_INTERNAL_MASK YES` to that command and run again. Recent GDAL usually handles this on its own even there.
 
 ### Pyramids seem to have stopped working
 
-If you used External format, check the `.ovr` is still sitting next to the `.tif` with the exact same base name. There is no search path and no way to point at a different location. Move it and the pyramids are simply not used.
+Only relevant if you built pyramids as External for someone else's original (see Background) - a COG's own pyramids are always internal and have no separate file to lose track of. For an External `.ovr`: check it is still sitting next to the `.tif` with the exact same base name. There is no search path and no way to point at a different location. Move it and the pyramids are simply not used.
 
 ### It got faster but you are not sure why
 
@@ -439,4 +461,4 @@ Unticking does not close the dataset. Check for `yourfile.tif.aux.xml` in the fo
 
 **Keep the original whenever you use the lossy profile.** You made a lossy copy. Do not delete the source, and do not hand a client a JPEG-compressed file as their only version.
 
-**Batch it.** Right-click any algorithm in the toolbox and choose Execute as Batch Process. Drop in a folder of orthos, apply the same profile to all of them, then run overviews as a second batch. That is a whole flying season's post-processing in two dialogs.
+**Batch it.** Step 3 is a single `gdal_translate` command now, not a Processing Toolbox algorithm, so batch it the way you would any other shell command: a small loop over a folder of orthos in the OSGeo4W Shell, same flags each time, one line changed per file (the input and output paths). That is a whole flying season's post-processing in one pass, not two.

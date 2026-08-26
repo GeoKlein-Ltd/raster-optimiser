@@ -345,3 +345,64 @@ Recorded here specifically so a future change that happens to preserve this
 (a GDAL upgrade, a creation-option change made for an unrelated reason) gets
 noticed and evaluated deliberately, rather than silently starting to embed a
 fixed datum-shift transform nobody decided to keep.
+
+---
+
+## v1 always writes Cloud Optimized GeoTIFFs
+
+**Status:** implemented, 2026-08-26. The output is always a COG now - no
+parameter, no tick box. A COG is a valid tiled GeoTIFF with overviews plus a
+specific header byte layout (IFDs before pixel data), so it is strictly
+better than what this tool produced before, with no trade-off to expose in
+the dialog.
+
+**Writing metadata onto a COG handle after Translate silently breaks it, and
+a cheap check would not have caught it.** The `GEOKLEIN_*` decision-chain
+metadata used to be written with `SetMetadataItem()` calls on the dataset
+handle Translate returned, after Translate had already finished writing the
+file - safe under classic GTiff, where metadata can sit anywhere in the one
+IFD. Under COG it is not safe: tested directly, calling `SetMetadataItem()`
+on an already-created COG dataset and closing it forces GDAL to grow the IFD
+to fit the new tag data, and the enlarged IFD gets appended to the end of the
+file rather than rewritten in place. That moves the main IFD past the pixel
+data it's supposed to precede, which is exactly the ordering a COG's validity
+depends on - and the file still carries `LAYOUT=COG` in its own metadata,
+because that tag reflects how the file was *created*, not how it now
+happens to be laid out. A cheap tag read would have reported this file as a
+valid COG. Only running the real validator
+(`osgeo_utils.samples.validate_cloud_optimized_geotiff.validate()`) caught
+it, with a concrete offset mismatch: the main IFD reported at byte 42540
+while an overview's IFD sat at byte 1430, ahead of it.
+
+This is why the fix has two parts, not one: `GEOKLEIN_*` metadata (and
+`TIFFTAG_IMAGEDESCRIPTION`) is now passed as `-mo KEY=VALUE` arguments
+*into* the same `gdal.Translate()` call that creates the file
+(`core/converter.py`'s `_build_decision_metadata()`/`_metadata_mo_args()`),
+never written afterwards - and `_verify()` runs the full validator on every
+output, not a `LAYOUT` tag read, specifically because a tag read is exactly
+the check this bug would have passed. The cheap tag read is still the right
+tool elsewhere: `already_optimised_at_target()`'s fourth condition (see
+below) only needs a fast, mostly-reliable signal for whether to skip a
+*source* file entirely, not the last word on whether a *freshly-written*
+file is actually correct - those are different jobs with different
+correctness requirements, which is why they use different checks on purpose
+rather than one being a shortcut for the other.
+
+**Every file this tool produced before this change will be reprocessed, not
+skipped, and that is correct.** `already_optimised_at_target()` gained a
+fourth condition alongside tiled/overviews/target-compression: the source
+must itself report `LAYOUT=COG`. Confirmed directly against real pre-COG
+outputs from earlier in this same rework (`Ortho_school_v1_nick_optimised.tif`,
+`dsm_nick_optimised.tif`) - both are tiled, have overviews, and are already on
+their target compression, yet both fail COG validation outright (wrong
+overview/main-image block ordering), the same structural defect a plain
+`LAYOUT` tag read cannot see either. Without the fourth condition, this
+tool's own earlier output would wrongly read as "already optimised" forever
+and never actually become a real COG. The user-facing consequence is a new,
+distinct message rather than silence or a misleading one: a file that is
+tiled, overviewed, and already correctly compressed but not yet a valid COG
+now reports "not a valid Cloud Optimized GeoTIFF yet - reprocessing to add
+that structure" rather than either being skipped or hitting the
+compression-mismatch message (which would falsely claim the compression
+itself is wrong). See `docs/raster_optimiser_ui_text.md`'s "Already tiled,
+overviews and compression right, but not a valid COG" for the exact text.

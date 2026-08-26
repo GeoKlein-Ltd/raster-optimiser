@@ -3,9 +3,12 @@
 Pure GDAL/Python, no QGIS imports. Takes an already-classified
 DetectionResult (see core/detector.py) for a file that was NOT refused,
 and does the actual work from
-docs/GeoKlein_raster_optimisation_workflow.md Steps 3-4: Translate
-(convert format) then Build Overviews (pyramids), with the profile's
-resolved creation options and extra command-line parameters.
+docs/GeoKlein_raster_optimisation_workflow.md Steps 3-4, now merged into
+one: v1 always writes a Cloud Optimized GeoTIFF (see
+docs/plugin_design_notes.md), and the COG driver builds tiling,
+compression AND pyramids inside a single Translate call rather than a
+separate Translate-then-BuildOverviews pair - there is no second GDAL
+call left to make.
 
 Detection stays pure content-type/profile classification and never
 judges "is this file already good enough" - that's this module's job:
@@ -33,12 +36,22 @@ import dataclasses
 import datetime
 import json
 import os
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from osgeo import gdal
+# Ships alongside the GDAL Python bindings themselves (confirmed present
+# in this environment's GDAL 3.13.2/OSGeo4W install; not separately
+# checked against every QGIS version/OS this plugin targets) - the
+# official reference implementation for COG structural validation, used
+# by _verify() below rather than re-implementing a byte-order check by
+# hand. Imported unconditionally, same as gdal itself: if this is ever
+# missing, that's an environment problem worth failing loudly on, not
+# one to silently work around.
+from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _validate_cog
 
 try:
     from .detector import (
@@ -68,17 +81,18 @@ class VerificationResult:
     block_size_ok: bool = False
     overviews_ok: bool = False
     compression_ok: bool = False
+    cog_valid: bool = False
     passed: bool = False
     issues: list = field(default_factory=list)
 
 
 @dataclass
 class AppliedSettings:
-    """What was actually passed to Translate/BuildOverviews, in a form
-    that doesn't require knowing GDAL's creation-option key names
-    (COMPRESS, ZSTD_LEVEL vs JPEG_QUALITY, PREDICTOR) to read. Built
-    from the same creation_options/overview_config dicts convert()
-    already constructs for the GDAL calls themselves - not read back
+    """What was actually passed to Translate, in a form that doesn't
+    require knowing GDAL's creation-option key names (COMPRESS, LEVEL
+    vs QUALITY, PREDICTOR) to read. Built from the same
+    creation_options/overview_config dicts convert() already constructs
+    for the GDAL call itself - not read back
     from VerificationResult, which stays an independent check of the
     output file so a mismatch between intended and actually-written
     settings stays detectable rather than getting silently papered over
@@ -119,17 +133,19 @@ class DecisionSummary:
 class ConversionResult:
     source_path: str
     ok: bool = False
-    # already_optimised | converted | converted_incomplete | converted_unverified
-    # | blocked | refused_upstream | cancelled | error
+    # already_optimised | converted | converted_unverified | blocked
+    # | refused_upstream | cancelled | error
+    # (converted_incomplete no longer occurs: that was Translate
+    # succeeding while a separate BuildOverviews call then failed, and
+    # the COG driver builds pyramids inside the one Translate call, so
+    # there's no longer a separate step left to fail independently)
     action: str = "unknown"
     message: str = ""
     output_path: Optional[str] = None
     profile_used: Optional[str] = None
-    primary_reason: Optional[str] = None  # "tiling" | "overviews" | None
+    primary_reason: Optional[str] = None  # "tiling" | "overviews" | "compression" | "cog_structure" | None
     translate_ok: Optional[bool] = None
-    overviews_ok: Optional[bool] = None
     translate_seconds: Optional[float] = None
-    overview_seconds: Optional[float] = None
     verification: Optional[VerificationResult] = None
     source_bytes: Optional[int] = None
     output_bytes: Optional[int] = None
@@ -341,9 +357,19 @@ def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list
     """Replicate gdaladdo's "leave blank" default level series.
 
     That behaviour lives in the gdaladdo CLI utility, not the core GDAL
-    API - BuildOverviews itself requires an explicit level list and
-    raises on None. Halve repeatedly until the overview's larger
-    dimension drops under min_dim, matching the doc's "down to thumbnail
+    API. Only the length of this list is used now - convert() passes it
+    as the COG driver's OVERVIEW_COUNT creation option, which takes a
+    plain count rather than an explicit factor list - but the count has
+    to come from somewhere real: COG's own OVERVIEW_COUNT default,
+    tested directly, stops one or more levels shallower than this
+    function does (its cutoff tracks BLOCKSIZE, not this codebase's own
+    min_dim), so leaving it unset would silently shrink the pyramid
+    depth this tool has always produced. Keeping this function as the
+    source of truth for the level *count* still ties it to the
+    dimensions/gdaladdo-parity reasoning below, even though the
+    explicit factor list itself is no longer passed anywhere. Halve
+    repeatedly until the overview's larger dimension drops under
+    min_dim, matching the doc's "down to thumbnail
     size" description - which means the factor that FIRST takes it under
     min_dim is included, not stopped short of it: appending only while
     the current candidate is still above the threshold (the previous
@@ -364,13 +390,12 @@ def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list
 
 class _ProgressTracker:
     """Wraps a caller-supplied GDAL progress callback so a caught
-    exception from Translate/BuildOverviews can be told apart: a
-    deliberate user cancellation (the wrapped callback returned falsy -
-    GDAL's own cancellation convention) versus a genuine GDAL failure.
-    Only the former should delete the partial output; the latter must
-    keep it, per this module's existing honest-failure-reporting
-    behaviour (converted_incomplete keeps a Translate-only file on disk
-    rather than silently discarding it).
+    exception from Translate can be told apart: a deliberate user
+    cancellation (the wrapped callback returned falsy - GDAL's own
+    cancellation convention) versus a genuine GDAL failure. Only the
+    former should delete the partial output; the latter must keep it,
+    per this module's existing honest-failure-reporting behaviour (see
+    the Translate except block below).
     """
 
     def __init__(self, user_cb, user_cb_data):
@@ -454,35 +479,165 @@ def output_exists_message(output_path: str) -> str:
     )
 
 
+def _estimate_output_ceiling_bytes(
+    detection: "DetectionResult", profile: str, source_bytes: int,
+) -> int:
+    """An estimate of the output's own size, for _check_free_space()
+    below - real reasoning behind each profile's number, not the
+    source file's on-disk size (see that function's docstring for why
+    the source was the wrong basis).
+
+    The two profiles need different reasoning, because they fail
+    differently:
+
+    Lossy always writes JPEG at quality 90 on RGB imagery, and this
+    codebase already has a real, measured figure for what that does in
+    practice - shortHelpString()/README's "What to expect" report a
+    typical drone orthomosaic coming out around 80% smaller than
+    source (roughly a fifth). This uses half that shrinkage (50%
+    smaller, not 80%) rather than the full documented figure: it's a
+    typical result from real testing, not a guaranteed worst case, and
+    halving it builds in margin against less-compressible content
+    without pretending to a precision this can't actually have before
+    Translate runs.
+
+    That 50% assumption only holds when there's real compression left
+    to gain, which fails for a source that's already JPEG-compressed -
+    most commonly this tool's own prior Viewing/lossy output, re-run
+    for any reason (a different NoData mode, force_reprocess, and so
+    on). Measured directly, twice, on two different real files:
+    re-encoding already-JPEG-degraded pixels as JPEG again does not
+    shrink further - it grows slightly (350.21MiB source -> 350.35MiB
+    output; 367,221,417 -> 367,363,465 bytes on a second file), both
+    +0.04%. Using the 50%-smaller assumption there would UNDER-estimate
+    the real output by about 2x - worse than the old source-based
+    over-estimate, since it could let a run start that then fails
+    partway through on disk space rather than being refused up front.
+
+    So an already-JPEG source uses the full source size PLUS a 5%
+    margin, not the 50% discount. 5% is not itself a measurement - only
+    +0.04% growth was ever observed, on two files - but using exactly
+    that measured figure as the margin would mean trusting two data
+    points to bound a real effect (JPEG re-encode growth) that plausibly
+    varies with content and quantisation. 5% is comfortably above what
+    was actually seen while still being a small, stated correction
+    rather than a second large discount undoing the point of measuring
+    this case separately at all.
+
+    Lossless has no equivalent "typically X% smaller" figure to lean
+    on - ZSTD's ratio is far more content-dependent, and this codebase
+    has already measured the opposite failure: an already-JPEG-
+    degraded source recompressed as lossless ZSTD came out 4.4x the
+    SOURCE FILE's size (see _SIZE_INCREASE_EXPLANATION below). So
+    lossless uses a real, provable ceiling instead of a guess: no
+    codec this tool uses can write more base-image pixel data than the
+    raster's own uncompressed size, raster_size x band count x
+    bytes-per-sample - that 4.4x figure stays comfortably under this
+    ceiling, since it's 4.4x an already-heavily-compressed source, not
+    4.4x the raw pixel data.
+    """
+    if profile == "lossy":
+        if "JPEG" in (detection.compression or "").upper():
+            return int(source_bytes * 1.05)
+        return int(source_bytes * 0.5)
+    bytes_per_sample = gdal.GetDataTypeSize(gdal.GetDataTypeByName(detection.dtype)) // 8
+    xsize, ysize = detection.raster_size
+    return xsize * ysize * detection.band_count * bytes_per_sample
+
+
+def _check_free_space(output_path: str, estimated_output_bytes: int, factor: float = 1.3) -> Optional[str]:
+    """Pre-flight guard for the COG driver's own working-space
+    requirement - measured directly (watched a 516MB elevation file
+    convert): the driver writes a temporary "<output>.tif.ovr.tmp" file
+    alongside the destination while it builds overviews and reorganises
+    the file into COG's IFDs-before-data layout, peaking at roughly a
+    third of the final output size before being folded in and removed.
+    Checked against the DESTINATION volume specifically, not the OS
+    temp directory - that temp file was confirmed written next to the
+    output, not in system temp.
+
+    estimated_output_bytes should be _estimate_output_ceiling_bytes()'s
+    result, not the source file's size - see that function's docstring
+    for why the source is the wrong basis. Erring toward
+    over-estimating the requirement is still the safer failure mode
+    here even with a real ceiling rather than a guess: a false "not
+    enough space" refusal costs a re-run, an out-of-space failure
+    partway through a multi-hundred-megabyte conversion costs the time
+    already spent and leaves a partial file behind. Whether GDAL's own
+    out-of-space failure text is clear enough to drop this check
+    entirely hasn't been tested - doing so deliberately would mean
+    filling a real disk, which wasn't done here - so this stays as the
+    proactive guard until that's been seen.
+
+    Returns None if there's enough room (or the check itself couldn't
+    run - see below), or a ready-to-show message naming the volume and
+    the shortfall if not.
+    """
+    directory = os.path.dirname(os.path.abspath(output_path)) or "."
+    needed = int(estimated_output_bytes * factor)
+    try:
+        free = shutil.disk_usage(directory).free
+    except OSError:
+        # Can't check (e.g. a destination directory that doesn't exist
+        # yet) - don't block on a check that couldn't run. GDAL's own
+        # failure during Translate remains the fallback if space
+        # genuinely runs out.
+        return None
+    if free >= needed:
+        return None
+    drive = os.path.splitdrive(os.path.abspath(directory))[0] or directory
+    shortfall = needed - free
+    return (
+        f"Not enough free space on {drive} to convert this file safely. "
+        "Cloud Optimized GeoTIFF creation needs working space on top of "
+        f"the output while it builds pyramids and reorganises the file - "
+        f"estimated at roughly {_format_bytes(needed)} here (1.3x an "
+        f"estimated {_format_bytes(estimated_output_bytes)} output). "
+        f"{drive} has {_format_bytes(free)} free, which is "
+        f"{_format_bytes(shortfall)} short. Free up space or choose a "
+        "different output location, then run again."
+    )
+
+
 def _build_applied_settings(creation_options: dict, overview_config: dict) -> AppliedSettings:
     """Turns the creation_options/overview_config dicts actually passed
-    to Translate/BuildOverviews into an AppliedSettings record - see
-    that dataclass's docstring for why this reads the dicts, not the
-    output file. COMPRESS is always either "ZSTD" (lossless, both
-    dtypes) or "JPEG" (lossy) per RECOMMENDED_SETTINGS, so the two are
-    handled explicitly rather than generically - a third compression
-    would need this updated anyway, same as RECOMMENDED_SETTINGS itself
-    would. Everything here is known before Translate even runs, unlike
-    whether BuildOverviews will actually succeed - deliberately: this
+    to Translate into an AppliedSettings record - see that dataclass's
+    docstring for why this reads the dicts, not the output file.
+    COMPRESS is always either "ZSTD" (lossless, both dtypes) or "JPEG"
+    (lossy) per RECOMMENDED_SETTINGS, so the two are handled explicitly
+    rather than generically - a third compression would need this
+    updated anyway, same as RECOMMENDED_SETTINGS itself would.
+    Everything here is known before Translate even runs, unlike whether
+    the file will actually verify afterwards - deliberately: this
     record only ever states settings that were decided, never an
     outcome that might not happen.
     """
     compress = creation_options["COMPRESS"]
     if compress == "ZSTD":
-        detail = f"level {creation_options['ZSTD_LEVEL']}"
+        detail = f"level {creation_options['LEVEL']}"
     elif compress == "JPEG":
-        quality = creation_options.get("JPEG_QUALITY")
-        photometric = creation_options.get("PHOTOMETRIC")
-        detail = f"quality {quality}" + (" with YCbCr" if photometric == "YCBCR" else "")
+        # No PHOTOMETRIC to read back - COG doesn't accept that option
+        # at all (see RECOMMENDED_SETTINGS's comment). "with YCbCr" is
+        # unconditional here rather than reading a creation option,
+        # because it's unconditionally true: lossy is only ever offered
+        # for RGB_8BIT content in this codebase, and a 3-band Byte
+        # image with COMPRESS=JPEG comes out YCbCr-encoded on the COG
+        # driver's own initiative, confirmed directly against the
+        # driver (SOURCE_COLOR_SPACE=YCbCr in the output with no
+        # colourspace option requested).
+        quality = creation_options.get("QUALITY")
+        detail = f"quality {quality} with YCbCr"
     else:
         detail = None
     return AppliedSettings(
         compression=compress,
         compression_detail=detail,
         predictor=creation_options.get("PREDICTOR"),
-        tiled=creation_options.get("TILED") == "YES",
-        block_size=(int(creation_options["BLOCKXSIZE"]), int(creation_options["BLOCKYSIZE"])),
-        resampling=overview_config.get("RESAMPLING", "AVERAGE"),
+        # Unconditional, not read from a TILED option - COG has none;
+        # a Cloud Optimized GeoTIFF is tiled by definition.
+        tiled=True,
+        block_size=(int(creation_options["BLOCKSIZE"]), int(creation_options["BLOCKSIZE"])),
+        resampling=overview_config.get("OVERVIEW_RESAMPLING", "AVERAGE"),
     )
 
 
@@ -517,8 +672,15 @@ def _format_applied_settings(applied: "AppliedSettings") -> str:
     """GEOKLEIN_5_APPLIED's text, built from the structured record
     rather than re-deriving anything from GDAL creation-option key
     names a second time.
+
+    Leads with "Cloud Optimized GeoTIFF" rather than folding it into
+    "tiled" - v1 always writes a COG (see
+    docs/plugin_design_notes.md), and a reader with this file's
+    metadata open but not the plugin's docs shouldn't have to infer COG
+    compliance from tiling plus pyramids plus compression on their own.
     """
-    parts = [f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
+    parts = ["Cloud Optimized GeoTIFF (COG)",
+             f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
     if applied.predictor:
         parts.append(f"predictor {applied.predictor}")
     if applied.alpha_reattached:
@@ -528,14 +690,19 @@ def _format_applied_settings(applied: "AppliedSettings") -> str:
     return ", ".join(parts)
 
 
-def _format_reproduce_commands(full_args: list, overview_config: dict, overview_levels: list) -> str:
-    """GEOKLEIN_7_REPRODUCE's text: the actual gdal_translate and gdaladdo
-    invocations for this run, built from full_args (exactly what was
-    passed to gdal.Translate - the same co_args this module built plus
-    whatever translate_extra_args/-a_nodata applied) and overview_config/
-    overview_levels (exactly what BuildOverviews used below) - not a
-    hand-written second copy of the settings, so this can't drift from
-    what the run actually did.
+def _format_reproduce_commands(full_args: list) -> str:
+    """GEOKLEIN_7_REPRODUCE's text: the actual gdal_translate invocation
+    for this run, built from full_args (exactly what was passed to
+    gdal.Translate - the same co_args this module built, including
+    -of COG and OVERVIEW_COUNT, plus whatever translate_extra_args/
+    -a_nodata applied) - not a hand-written second copy of the
+    settings, so this can't drift from what the run actually did.
+
+    One command now, not two: v1 always writes a Cloud Optimized
+    GeoTIFF (see docs/plugin_design_notes.md), and the COG driver
+    builds pyramids inside the same Translate call rather than a
+    separate BuildOverviews step - there is no gdaladdo invocation left
+    to reproduce.
 
     "input.tif"/"output.tif" stand in for the real paths deliberately:
     the real source path embeds the local folder structure and the
@@ -544,61 +711,64 @@ def _format_reproduce_commands(full_args: list, overview_config: dict, overview_
     metadata back - neither is reproducible information, and whoever
     reproduces this will substitute their own paths anyway. The flags
     are the part nobody could reconstruct unaided.
-
-    The two commands are numbered ("1. gdal_translate...", "2.
-    gdaladdo...") rather than separated by a bare newline alone: QGIS's
-    Layer Properties panel doesn't reliably render the \\n between them,
-    which used to run both commands together into one unrunnable line
-    with no visible boundary. The number survives that collapse - "...
-    "output.tif" 2. gdaladdo ..." still reads as two commands even on
-    one line - so the fix doesn't depend on whatever the panel decides
-    to do with whitespace.
     """
     translate_cmd = "gdal_translate " + " ".join(full_args) + ' "input.tif" "output.tif"'
 
-    addo_parts = ["gdaladdo"]
-    for key, value in overview_config.items():
-        if key != "RESAMPLING":
-            addo_parts += ["--config", key, value]
-    resampling = overview_config.get("RESAMPLING", "AVERAGE").lower()
-    levels = " ".join(str(level) for level in overview_levels)
-    addo_parts += ["-r", resampling, '"output.tif"', levels]
-    addo_cmd = " ".join(addo_parts)
-
     return (
-        f"1. {translate_cmd}\n2. {addo_cmd}\n"
-        "Same operations in QGIS: Raster > Conversion > Translate, and "
-        "Raster > Miscellaneous > Build Overviews. Full manual workflow: "
+        f"{translate_cmd}\n"
+        "Same operation in QGIS: Raster > Conversion > Translate, with "
+        "the output format set to COG. Full manual workflow: "
         "docs/GeoKlein_raster_optimisation_workflow.md."
     )
 
 
-def _write_decision_metadata(
-    out_ds: "gdal.Dataset", detection: "DetectionResult", requested_profile: Optional[str],
-    profile_used: str, decisions: "DecisionSummary",
-    full_args: list, overview_config: dict, overview_levels: list,
-) -> None:
-    """Writes the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
-    onto the output dataset - Phase 5 of the purpose-question rework.
-    Called on out_ds straight after gdal.Translate() returns it, before
-    BuildOverviews - metadata belongs in the TIFF header at the front of
-    the file, settled before hundreds of megabytes of pyramid data are
-    appended behind it, not rewritten afterwards.
+def _build_decision_metadata(
+    detection: "DetectionResult", requested_profile: Optional[str],
+    profile_used: str, decisions: "DecisionSummary", full_args: list,
+) -> dict:
+    """Builds the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
+    as a plain {key: value} dict - Phase 5 of the purpose-question
+    rework. Everything it draws on (detection, decisions.profile_reason/
+    nodata_message/applied, full_args) is known before Translate ever
+    runs, which is deliberate: these values now become -mo KEY=VALUE
+    arguments passed INTO the same Translate call that creates the
+    file, not SetMetadataItem() calls made on it afterwards.
 
-    full_args/overview_config/overview_levels are passed in (rather than
-    re-derived here) purely for GEOKLEIN_7_REPRODUCE - see
-    _format_reproduce_commands()'s docstring for why reusing the exact
-    values convert() already built matters.
+    That "afterwards" approach is what this function replaced, and it
+    is not just a style choice: tested directly against the COG driver,
+    calling SetMetadataItem() on an already-created COG dataset and
+    closing it moves the main IFD to the end of the file to fit the
+    grown tag data, which breaks the "IFDs before data" byte ordering a
+    COG's entire point rests on - confirmed with the official
+    validate_cloud_optimized_geotiff.py, which passed a file built this
+    way (-mo at Translate time) and failed the same content written via
+    the old post-Translate SetMetadataItem() approach. See
+    docs/plugin_design_notes.md.
 
-    Strips any inherited GEOKLEIN_* keys first: Translate (like
-    CreateCopy) inherits source metadata, so re-running this tool on a
-    file it already produced would otherwise leave a stale record
-    sitting next to the fresh one - overwrite, never append.
+    full_args is passed in (rather than re-derived here) purely for
+    GEOKLEIN_7_REPRODUCE - see _format_reproduce_commands()'s docstring
+    for why reusing the exact value convert() already built matters,
+    and why it's full_args (before the -mo flags this function's own
+    output becomes) rather than the final Translate args: the printed
+    reproduce command documents the conversion, not this tool's own
+    self-description, so it doesn't re-include the metadata that
+    describes it.
+
+    GEOKLEIN_6_HIDDEN_PIXELS is always present, as an empty string when
+    there's no message this run, rather than omitted - confirmed
+    directly that "-mo KEY=" (empty) actually removes an inherited
+    value with that key, not just blanks it, which is what makes this
+    safe against the case the old strip-any-GEOKLEIN_-key loop existed
+    for: Translate inherits source metadata, so re-running this tool on
+    a file it already produced (with a message that run, none this
+    run) would otherwise leave a stale record sitting next to the fresh
+    one. This only covers the seven keys this tool has ever written,
+    not a generic scan of the source's own metadata for any other key
+    starting with GEOKLEIN_ - deliberately: there has never been an
+    eighth key or a differently-named one, and scanning for one would
+    cost a second gdal.Open() of the source for a case that has never
+    happened.
     """
-    for key in out_ds.GetMetadata():
-        if key.startswith("GEOKLEIN_"):
-            out_ds.SetMetadataItem(key, None)
-
     version = _read_plugin_version()
     today = datetime.date.today()
     date_str = f"{today.day} {today.strftime('%B')} {today.year}"
@@ -626,28 +796,33 @@ def _write_decision_metadata(
         "GEOKLEIN_3_REQUESTED": requested_label,
         "GEOKLEIN_4_DECISION": decisions.profile_reason,
         "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
+        "GEOKLEIN_6_HIDDEN_PIXELS": decisions.nodata_message or "",
+        "GEOKLEIN_7_REPRODUCE": _format_reproduce_commands(full_args),
+        # Deliberately NOT the full GEOKLEIN_2_DETECTED/GEOKLEIN_4_DECISION
+        # text - this tag exists for software that ignores GDAL's own
+        # metadata domain (ArcGIS, ExifTool, Photoshop) and just needs a
+        # short line, not the same paragraph repeated a second time in
+        # Layer Properties. One sentence: tool and version, what the
+        # file is, what compression was applied.
+        "TIFFTAG_IMAGEDESCRIPTION": (
+            f"Optimised by GeoKlein Raster Optimiser {version}. "
+            f"{content_label(detection)}, written as "
+            f"{_compression_display_label(decisions.applied.compression)}."
+        ),
     }
-    if decisions.nodata_message:
-        items["GEOKLEIN_6_HIDDEN_PIXELS"] = decisions.nodata_message
-    items["GEOKLEIN_7_REPRODUCE"] = _format_reproduce_commands(
-        full_args, overview_config, overview_levels
-    )
+    return items
 
+
+def _metadata_mo_args(items: dict) -> list:
+    """Turns a {key: value} dict into ["-mo", "KEY=VALUE", ...] tokens
+    for gdal.Translate's options list - see _build_decision_metadata()'s
+    docstring for why these are passed at Translate time rather than
+    SetMetadataItem() calls made afterwards.
+    """
+    args = []
     for key, value in items.items():
-        out_ds.SetMetadataItem(key, value)
-
-    # Deliberately NOT the full GEOKLEIN_2_DETECTED/GEOKLEIN_4_DECISION
-    # text - this tag exists for software that ignores GDAL's own
-    # metadata domain (ArcGIS, ExifTool, Photoshop) and just needs a
-    # short line, not the same paragraph repeated a second time in
-    # Layer Properties. One sentence: tool and version, what the file
-    # is, what compression was applied.
-    out_ds.SetMetadataItem(
-        "TIFFTAG_IMAGEDESCRIPTION",
-        f"Optimised by GeoKlein Raster Optimiser {version}. "
-        f"{content_label(detection)}, written as "
-        f"{_compression_display_label(decisions.applied.compression)}.",
-    )
+        args += ["-mo", f"{key}={value}"]
+    return args
 
 
 def _format_bytes(n: int) -> str:
@@ -718,11 +893,30 @@ def _is_tiled(block_size: tuple, raster_size: tuple) -> bool:
 
 
 def already_optimised_at_target(detection: "DetectionResult", resolved_profile: str) -> bool:
-    """True only when there's genuinely nothing left to gain: tiled,
-    with overviews, AND already compressed with the target codec for the
-    profile that would be used. A file that's tiled with overviews but
-    still on LZW/DEFLATE/uncompressed does NOT count as "already
-    optimised" here.
+    """True only when there's genuinely nothing left to gain: already a
+    valid Cloud Optimized GeoTIFF, tiled, with overviews, AND already
+    compressed with the target codec for the profile that would be
+    used. A file that's tiled with overviews but still on LZW/DEFLATE/
+    uncompressed does NOT count as "already optimised" here - and
+    neither, now, does a file that happens to be tiled/overviewed/
+    correctly-compressed without actually being a COG.
+
+    That last case is not hypothetical: every file this tool produced
+    before it switched to always writing COGs fails COG validation
+    (confirmed directly with the official validator against this
+    tool's own pre-COG test outputs - see docs/plugin_design_notes.md)
+    despite passing the other three checks below. Without the LAYOUT
+    check, re-running this tool on its own older output would wrongly
+    report "already optimised" and never actually turn it into a real
+    COG. The check reads DetectionResult.layout - populated from the
+    same already-open metadata read as compression, in detect(), not a
+    second file open here - deliberately cheap, since this runs inside
+    the QGIS wrapper's checkParameterValues() pre-flight block, where
+    speed matters. That's also why this checks the metadata tag alone
+    rather than running the full validator: a cheap, mostly-reliable
+    signal is the right trade here, not the same thoroughness
+    convert()'s own _verify() needs once a file is actually about to
+    be skipped.
 
     Public (no leading underscore) and imported by the QGIS wrapper's
     checkParameterValues() pre-flight block - this used to be a second,
@@ -730,6 +924,8 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
     with its own comment saying so. One function now, so the pre-flight
     block and convert()'s own decision below cannot drift apart.
     """
+    if detection.layout != "COG":
+        return False
     if not (
         _is_tiled(detection.block_size, detection.raster_size)
         and detection.overview_count > 0
@@ -750,6 +946,26 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
 
 
 def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> VerificationResult:
+    """Confirms the output is actually what it claims to be - including,
+    now, that it's a genuinely valid Cloud Optimized GeoTIFF, not just a
+    file that happens to be tiled/overviewed/correctly-compressed
+    without being one.
+
+    That last distinction is not academic: the -mo-after-Translate bug
+    caught earlier in this same rework (see docs/plugin_design_notes.md)
+    produced a file with LAYOUT=COG sitting right there in its own
+    metadata, tiled, overviewed, and correctly compressed - passing
+    every check this function had before this change - while the main
+    IFD had actually been moved past the pixel data by a later metadata
+    write, making it genuinely invalid. A LAYOUT tag read alone would
+    have passed that file. Only running the real validator - the same
+    one a client's own GIS software or a plugins.qgis.org reviewer
+    might run - catches it, which is why this runs the full check here
+    rather than the cheap tag read already_optimised_at_target() uses
+    (that function has a different job: a fast, mostly-reliable signal
+    for whether to skip a source file entirely, not the last word on
+    whether a freshly-written file is actually correct).
+    """
     vr = VerificationResult(ran=True, expected_compression=expected_compress,
                              expected_block_size=expected_block)
     ds = gdal.Open(output_path, gdal.GA_ReadOnly)
@@ -758,11 +974,21 @@ def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> 
     vr.overview_count = band1.GetOverviewCount()
     md = ds.GetMetadata("IMAGE_STRUCTURE")
     vr.compression = md.get("COMPRESSION")
+    # full_check=True (byte-level tile/strip leader/trailer checks, not
+    # just structural offsets) - the validator's own docs call this
+    # possibly slow on remote files, but this is always a local path
+    # straight after Translate wrote it, and measured directly on a
+    # real 433MB output, full_check added under 5ms over the cheaper
+    # default. Passed the still-open dataset handle rather than
+    # output_path a second time - validate() accepts either, and this
+    # avoids reopening a file already open two lines up.
+    cog_warnings, cog_errors, _cog_details = _validate_cog(ds, full_check=True)
     ds = None
 
     vr.block_size_ok = vr.block_size == expected_block
     vr.overviews_ok = vr.overview_count > 0
     vr.compression_ok = expected_compress.upper() in (vr.compression or "").upper()
+    vr.cog_valid = not cog_errors
 
     if not vr.block_size_ok:
         vr.issues.append(f"block size {vr.block_size} != expected {expected_block}")
@@ -772,7 +998,13 @@ def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> 
         vr.issues.append(
             f"compression tag '{vr.compression}' does not contain expected '{expected_compress}'"
         )
-    vr.passed = vr.block_size_ok and vr.overviews_ok and vr.compression_ok
+    if not vr.cog_valid:
+        vr.issues.append("not a valid Cloud Optimized GeoTIFF: " + "; ".join(cog_errors))
+    # cog_warnings (e.g. advisory notes the validator doesn't treat as
+    # invalidating) deliberately don't affect vr.passed - only actual
+    # errors do, matching how block/overview/compression checks above
+    # only ever report hard mismatches, not advisories.
+    vr.passed = vr.block_size_ok and vr.overviews_ok and vr.compression_ok and vr.cog_valid
     return vr
 
 
@@ -790,23 +1022,23 @@ def convert(
     force_reprocess: bool = False,
     translate_progress_cb=None,
     translate_progress_cb_data=None,
-    overview_progress_cb=None,
-    overview_progress_cb_data=None,
     log_cb: Optional[Callable[[str], None]] = None,
 ) -> ConversionResult:
     """Convert one file per the resolved detection/profile, or report why not.
 
-    translate_progress_cb / overview_progress_cb, if given, are passed
-    through to gdal.Translate and BuildOverviews respectively - GDAL's own
-    callback(complete, message, cb_data) convention, one call per phase so
-    a caller can scale/label each phase independently (e.g. a single
-    combined progress bar: Translate 0-70%, overviews 70-100%). Returning
-    a falsy value from either cancels that GDAL operation - its built-in
-    cancellation mechanism - and this module then deletes whatever partial
-    output exists before returning action="cancelled", so a cancelled run
-    never leaves a file on disk that looks like a finished result. Nothing
-    here imports QGIS; a caller with a progress dialog plugs in here
-    without this module changing.
+    translate_progress_cb, if given, is passed through to gdal.Translate -
+    GDAL's own callback(complete, message, cb_data) convention. There used
+    to be a second, separate overview_progress_cb for a following
+    BuildOverviews call; the COG driver builds pyramids inside the same
+    Translate call, so this one callback's 0-100 already covers the whole
+    operation - confirmed directly (GDAL's own progress meter sweeps
+    continuously through both phases in one call, not two). Returning a
+    falsy value cancels the operation - GDAL's own built-in cancellation
+    mechanism - and this module then deletes whatever partial output
+    exists before returning action="cancelled", so a cancelled run never
+    leaves a file on disk that looks like a finished result. Nothing here
+    imports QGIS; a caller with a progress dialog plugs in here without
+    this module changing.
 
     nodata_mode (default NODATA_MODE_AUTO) - one of NODATA_MODE_AUTO /
     NODATA_MODE_REVEAL / NODATA_MODE_KEEP; see _resolve_nodata_handling
@@ -822,14 +1054,15 @@ def convert(
     own explicit override rather than being folded into force (which is
     about the destination path, a different concern).
 
-    log_cb, if given, is called as log_cb(phase, elapsed_seconds) once per
-    completed phase - phase is "translate" or "overviews" (detection is
-    timed by the caller, not here - this module never calls detect()).
-    Kept separate from the GDAL progress callbacks since those fire many
-    times per phase; this fires once, when there's an actual number to
-    report, and structured rather than pre-formatted so a caller can
-    drive its own UI (e.g. QGIS feedback.setProgressText()) off the phase
-    name without parsing a string.
+    log_cb, if given, is called once as log_cb("translate", elapsed_seconds)
+    when the single Translate call finishes (detection is timed by the
+    caller, not here - this module never calls detect()). Used to be
+    called a second time for a separate "overviews" phase; there is only
+    one phase now. Kept separate from the GDAL progress callback since
+    that fires many times per phase; this fires once, when there's an
+    actual number to report, and structured rather than pre-formatted so
+    a caller can drive its own UI (e.g. QGIS feedback.setProgressText())
+    off the phase name without parsing a string.
     """
     result = ConversionResult(source_path=path)
 
@@ -889,23 +1122,29 @@ def convert(
 
     # Computed once here, from the source's own dimensions - Translate
     # never resizes in any profile this tool uses, no -outsize is ever
-    # passed - and reused for both GEOKLEIN_7_REPRODUCE below and the
-    # real BuildOverviews() call in Step 4, so the reproduce command
-    # can never name a different level list than what was actually
-    # built.
+    # passed. Only its length is used, as the COG driver's
+    # OVERVIEW_COUNT creation option below - see
+    # _default_overview_levels()'s docstring for why COG's own default
+    # can't be trusted to match this tool's existing pyramid depth.
     overview_levels = _default_overview_levels(detection.raster_size[0], detection.raster_size[1])
 
     is_tiled = _is_tiled(detection.block_size, detection.raster_size)
     has_overviews = detection.overview_count > 0
     already_optimised = is_tiled and has_overviews
-    # Delegates to already_optimised_at_target() rather than repeating
-    # the compression-match logic inline - the same function
-    # algorithms/optimise_raster.py's checkParameterValues() calls for
-    # its pre-flight echo of this same decision, so the two can't drift
-    # apart.
-    at_target_compression = already_optimised_at_target(detection, profile)
+    # compression_at_target/is_cog are broken out separately from
+    # already_optimised_at_target() below (rather than only calling that
+    # function) purely so the elif branch can tell WHY a tiled,
+    # overviewed file still needs reprocessing - already_optimised_at_target()
+    # only ever returns one bit, correct for its own job (the full
+    # skip-or-not decision, shared with algorithms/optimise_raster.py's
+    # checkParameterValues() pre-flight, which is why the full decision
+    # still goes through that one function rather than being
+    # recombined here).
+    compression_at_target = target_compression.upper() in (detection.compression or "").upper()
+    is_cog = detection.layout == "COG"
+    fully_optimised = already_optimised_at_target(detection, profile)
 
-    if already_optimised and at_target_compression:
+    if already_optimised and fully_optimised:
         if not force_reprocess:
             result.ok = True
             result.action = "already_optimised"
@@ -924,7 +1163,7 @@ def convert(
             "Already tiled, with overviews, and at the target compression, "
             "but reprocessing anyway - Force reprocess is ticked."
         )
-    elif already_optimised:
+    elif already_optimised and not compression_at_target:
         # Tiled with overviews, so pan/zoom speed is already fine, but the
         # current compression isn't the target one (LZW, DEFLATE, or
         # uncompressed rather than ZSTD/JPEG) - there's a real file-size
@@ -949,6 +1188,31 @@ def convert(
                 f"{target_compression} yet. Expect a smaller file, not a "
                 "faster one."
             )
+    elif already_optimised and not is_cog:
+        # already_optimised and compression_at_target both true here
+        # (the not-compression_at_target case above already claimed
+        # every already_optimised file that doesn't qualify for that
+        # reason), so this is specifically a file every earlier version
+        # of this tool produced, since v1 is the first to always write
+        # a genuine COG (confirmed
+        # directly: every pre-COG output this tool has ever produced
+        # fails COG validation despite passing the other three checks -
+        # see docs/plugin_design_notes.md). Unlike the compression case
+        # above, this doesn't promise a smaller file or faster pan/zoom
+        # - both should stay about the same, since nothing about the
+        # pixel data changes, only the file's internal byte layout - so
+        # it gets its own message rather than reusing the compression
+        # one, and isn't suppressed for profile_consequential, since it
+        # makes no claim that case would falsify.
+        result.primary_reason = "cog_structure"
+        result.warnings.append(
+            "Already tiled, with overviews, and already compressed with "
+            f"{target_compression}, but this isn't a valid Cloud "
+            "Optimized GeoTIFF yet - reprocessing to add that structure. "
+            "Pan/zoom speed and file size should both stay about the "
+            "same; the only change is how the file's bytes are "
+            "arranged, not the pixel data itself."
+        )
     else:
         result.primary_reason = "tiling" if not is_tiled else "overviews"
 
@@ -973,19 +1237,35 @@ def convert(
         result.message = output_exists_message(output_path)
         return result
 
-    co_args = []
+    source_bytes = os.path.getsize(path)
+    estimated_output_bytes = _estimate_output_ceiling_bytes(detection, profile, source_bytes)
+    space_problem = _check_free_space(output_path, estimated_output_bytes)
+    if space_problem:
+        result.action = "blocked"
+        result.output_path = output_path
+        result.message = space_problem
+        return result
+
+    # -of COG first, so GEOKLEIN_7_REPRODUCE's command reads naturally
+    # ("gdal_translate -of COG -co ..."). OVERVIEW_COUNT comes from
+    # overview_levels' length, not from leaving COG to pick its own
+    # default - see _default_overview_levels()'s docstring.
+    co_args = ["-of", "COG"]
     for k, v in creation_options.items():
         co_args += ["-co", f"{k}={v}"]
+    for k, v in overview_config.items():
+        co_args += ["-co", f"{k}={v}"]
+    co_args += ["-co", f"OVERVIEW_COUNT={len(overview_levels)}"]
     full_args = co_args + list(profile_opt.translate_extra_args or [])
 
     # Built from creation_options/overview_config themselves (the same
-    # dicts turned into co_args above and used by BuildOverviews
-    # below), not read back from the output file - see AppliedSettings'
-    # docstring for why that separation matters. Nothing here states an
-    # outcome that hasn't happened yet: resampling method is a decision
-    # already made, not a claim about whether BuildOverviews (Step 4,
-    # below) will succeed - whether overviews actually exist is left to
-    # the file itself to show, not restated here.
+    # dicts turned into co_args above), not read back from the output
+    # file - see AppliedSettings' docstring for why that separation
+    # matters. Nothing here states an outcome that hasn't happened yet:
+    # resampling method is a decision already made, not a claim about
+    # whether Translate will actually succeed - whether overviews
+    # actually exist is left to the file itself to show, not restated
+    # here.
     result.decisions.applied = _build_applied_settings(creation_options, overview_config)
     result.decisions.applied.alpha_reattached = bool(profile == "lossy" and detection.has_alpha)
 
@@ -1001,12 +1281,24 @@ def convert(
     if should_clear_nodata:
         full_args += ["-a_nodata", "none"]
 
+    # GEOKLEIN_* metadata is passed as -mo arguments INTO the Translate
+    # call below, not written afterwards with SetMetadataItem() - see
+    # _build_decision_metadata()'s docstring for why the COG driver
+    # specifically requires that ordering. full_args itself (without
+    # these -mo flags) is what GEOKLEIN_7_REPRODUCE's own text is built
+    # from, inside _build_decision_metadata() - the printed reproduce
+    # command doesn't re-include the metadata that describes it.
+    metadata_items = _build_decision_metadata(
+        detection, chosen_profile, profile, result.decisions, full_args,
+    )
+    translate_args = full_args + _metadata_mo_args(metadata_items)
+
     # ---- Step 3: Translate ----
     translate_tracker = _ProgressTracker(translate_progress_cb, translate_progress_cb_data)
     t0 = time.perf_counter()
     try:
         translate_opts = gdal.TranslateOptions(
-            options=full_args, callback=translate_tracker, callback_data=None,
+            options=translate_args, callback=translate_tracker, callback_data=None,
         )
         out_ds = gdal.Translate(output_path, path, options=translate_opts)
     except Exception as exc:  # noqa: BLE001 - surface any GDAL failure to the caller
@@ -1018,11 +1310,10 @@ def convert(
             return result
         result.action = "error"
         result.translate_ok = False
-        # Not removed: unlike a cancellation (the user's own choice) or
-        # BuildOverviews failing after Translate already fully succeeded
-        # (see below), a file left behind by a genuine Translate failure
-        # might be incomplete, but deleting it outright on this module's
-        # own judgement risks discarding something the user could still
+        # Not removed: unlike a cancellation (the user's own choice), a
+        # file left behind by a genuine Translate failure might be
+        # incomplete, but deleting it outright on this module's own
+        # judgement risks discarding something the user could still
         # inspect or recover from - silently losing data is worse than
         # leaving an orphan they've been told about.
         result.message = (
@@ -1046,88 +1337,25 @@ def convert(
         result.message = "Translate failed (no output produced)."
         return result
 
-    # Phase 5 of the purpose-question rework: metadata written here,
-    # on the still-open Translate handle, before it's closed and
-    # reopened for BuildOverviews below - see _write_decision_metadata()'s
-    # docstring for why this has to happen before pyramids, not after.
-    _write_decision_metadata(
-        out_ds, detection, chosen_profile, profile, result.decisions,
-        full_args, overview_config, overview_levels,
-    )
-    out_ds = None  # flush/close before reopening for BuildOverviews
+    out_ds = None  # flush/close - metadata was already written via -mo above
     result.translate_ok = True
     result.output_path = output_path
     result.translate_seconds = time.perf_counter() - t0
     if log_cb:
         log_cb("translate", result.translate_seconds)
 
-    # ---- Step 4: Build Overviews ----
-    overview_tracker = _ProgressTracker(overview_progress_cb, overview_progress_cb_data)
-    prior_config = {k: gdal.GetConfigOption(k) for k in overview_config if k != "RESAMPLING"}
-    for k, v in overview_config.items():
-        if k != "RESAMPLING":
-            gdal.SetConfigOption(k, v)
-    t1 = time.perf_counter()
-    try:
-        out_ds = None
-        try:
-            out_ds = gdal.Open(output_path, gdal.GA_Update)
-            out_ds.BuildOverviews(
-                overview_config.get("RESAMPLING", "AVERAGE"),
-                overviewlist=overview_levels,
-                callback=overview_tracker, callback_data=None,
-            )
-            out_ds = None
-            result.overviews_ok = True
-            result.overview_seconds = time.perf_counter() - t1
-            if log_cb:
-                log_cb("overviews", result.overview_seconds)
-        except Exception as exc:  # noqa: BLE001
-            out_ds = None  # release the GA_Update handle before any delete
-            result.overviews_ok = False
-            if overview_tracker.cancelled:
-                _safe_remove(output_path, result.warnings)
-                result.action = "cancelled"
-                result.message = (
-                    "Cancelled while building overviews - output removed "
-                    "(the base image was complete but pyramids weren't, "
-                    "and a file with no pyramids is exactly the slow-pan "
-                    "problem this plugin exists to fix, so it isn't left "
-                    "behind looking like a finished result)."
-                )
-                return result
-            # Translate already succeeded and the file is on disk. Keep it -
-            # re-running Translate on a large file is expensive, and
-            # overviews can be retried on this exact output directly. Report
-            # honestly rather than silently calling this success. The QGIS
-            # wrapper still raises on this action (see _HARD_FAILURE_ACTIONS
-            # in algorithms/optimise_raster.py - the run genuinely didn't
-            # finish what it promised), but that exception carries this
-            # message verbatim, so whoever sees it - GUI dialog, log,
-            # qgis_process stderr, direct API/CLI use - is told a usable
-            # file already exists and exactly how to finish it, not just
-            # that something failed.
-            result.action = "converted_incomplete"
-            result.message = (
-                f"Translate succeeded but building overviews failed: {exc}. "
-                f"The output at {output_path} exists, tiled and compressed, "
-                "but has no pyramids yet. Add them without re-converting: "
-                "in QGIS, Raster > Miscellaneous > Build Overviews on this "
-                "file, or run this tool again on it."
-            )
-            return result
-    finally:
-        for k, v in prior_config.items():
-            gdal.SetConfigOption(k, v)
-
     # ---- Verify (doc Step 4 "Verify") ----
+    # No separate Build Overviews step to fail independently any more -
+    # base image, compression and pyramids all came from the one
+    # Translate call above, so a failure there was already caught by
+    # the try/except around it.
     expected_block = (
-        int(creation_options["BLOCKXSIZE"]), int(creation_options["BLOCKYSIZE"]),
+        int(creation_options["BLOCKSIZE"]), int(creation_options["BLOCKSIZE"]),
     )
     verification = _verify(output_path, creation_options["COMPRESS"], expected_block)
     result.verification = verification
 
-    result.source_bytes = os.path.getsize(path)
+    result.source_bytes = source_bytes
     result.output_bytes = os.path.getsize(output_path)
     result.size_summary = _size_summary(result.source_bytes, result.output_bytes)
     if result.output_bytes > result.source_bytes:
@@ -1177,8 +1405,6 @@ def _print_report(result: ConversionResult) -> None:
         print(f"  Output: {result.output_path}")
     if result.translate_seconds is not None:
         print(f"  Translate time: {result.translate_seconds:.1f}s")
-    if result.overview_seconds is not None:
-        print(f"  Build overviews time: {result.overview_seconds:.1f}s")
     if result.size_summary:
         print(f"  {result.size_summary}")
     if result.size_note:
@@ -1193,6 +1419,7 @@ def _print_report(result: ConversionResult) -> None:
         print(f"  Overviews: {v.overview_count} {'OK' if v.overviews_ok else 'FAILED'}")
         print(f"  Compression: {v.compression} (expected to contain "
               f"'{v.expected_compression}') {'OK' if v.compression_ok else 'FAILED'}")
+        print(f"  Cloud Optimized GeoTIFF: {'OK' if v.cog_valid else 'FAILED'}")
         print(f"  Overall: {'PASSED' if v.passed else 'FAILED'}")
     for w in result.warnings:
         print(f"\nWarning: {w}")
@@ -1220,7 +1447,7 @@ def main(argv=None) -> int:
         args.path, detection=detection, chosen_profile=args.profile,
         output_path=args.output, force=args.force, nodata_mode=args.nodata_mode,
         force_reprocess=args.force_reprocess,
-        translate_progress_cb=progress_cb, overview_progress_cb=progress_cb,
+        translate_progress_cb=progress_cb,
         log_cb=log_cb,
     )
 

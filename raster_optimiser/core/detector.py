@@ -149,49 +149,94 @@ INTEGER_DTYPES = {
     "Byte", "Int8", "UInt16", "Int16", "UInt32", "Int32", "UInt64", "Int64",
 }
 
+# COG creation-option names, not GTiff's. v1 always writes a Cloud
+# Optimized GeoTIFF (see docs/plugin_design_notes.md) - there is no
+# classic-GTiff code path left for these to serve, so the dicts hold the
+# final -co keys directly rather than a GTiff vocabulary translated
+# later. Differences from the GTiff names these replaced, confirmed
+# against the real COG driver (GDAL 3.13.2) before this switch:
+#   - TILED is gone outright - COG has no such option (a COG is always
+#     tiled; passing TILED=YES produces "driver COG does not support
+#     creation option TILED").
+#   - BLOCKXSIZE/BLOCKYSIZE collapse to one BLOCKSIZE (COG tiles are
+#     always square).
+#   - ZSTD_LEVEL/JPEG_QUALITY become LEVEL/QUALITY (COG names these
+#     uniformly across codecs rather than per-codec).
+#   - PREDICTOR keeps its existing numeric values ("2"/"3") unchanged -
+#     confirmed by testing both directly against the COG driver and
+#     reading them back from IMAGE_STRUCTURE metadata. COG's option list
+#     also documents STANDARD/FLOATING_POINT as aliases for the same
+#     values, but the numeric form was never actually GTiff-only, so
+#     nothing here needed translating.
+#   - PHOTOMETRIC is gone outright, not mapped - COG does not accept it
+#     ("driver COG does not support creation option PHOTOMETRIC") and
+#     doesn't need it: tested directly, a 3-band Byte image with
+#     COMPRESS=JPEG comes out YCbCr-encoded on its own
+#     (SOURCE_COLOR_SPACE=YCbCr in the output's own metadata) with no
+#     creation option asking for it. Lossy is only ever offered for
+#     RGB_8BIT content in this codebase, so that auto-conversion applies
+#     to every JPEG output this tool writes - see
+#     _build_applied_settings() below, which relies on this being
+#     unconditional rather than reading back a PHOTOMETRIC value that no
+#     longer exists.
+# overview_config's keys are also COG creation options now, not
+# GDAL config options set around a separate BuildOverviews() call - the
+# _OVERVIEW suffix (COMPRESS_OVERVIEW) becomes an OVERVIEW_ prefix
+# (OVERVIEW_COMPRESS) for the same reason: COG builds overviews inside
+# the one Translate call, so there is no separate call left to configure
+# with the old suffixed config-option names. OVERVIEW_QUALITY is new -
+# the lossy profile sets it explicitly to match QUALITY rather than
+# accepting COG's own default (75) for overviews specifically, same
+# "documented intent over undocumented default" reasoning
+# PREDICTOR_OVERVIEW/OVERVIEW_PREDICTOR already used below. There is no
+# COG equivalent for PHOTOMETRIC_OVERVIEW or INTERLEAVE_OVERVIEW - both
+# dropped for the same reason PHOTOMETRIC was.
 RECOMMENDED_SETTINGS = {
     "lossy": {
         "creation_options": {
-            "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
-            "COMPRESS": "JPEG", "JPEG_QUALITY": "90", "PHOTOMETRIC": "YCBCR",
+            "BLOCKSIZE": "512",
+            "COMPRESS": "JPEG", "QUALITY": "90",
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
         "overview_config": {
-            "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "JPEG",
-            "PHOTOMETRIC_OVERVIEW": "YCBCR", "INTERLEAVE_OVERVIEW": "PIXEL",
+            "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEW_COMPRESS": "JPEG",
+            "OVERVIEW_QUALITY": "90",
         },
     },
     "lossless_integer": {
         "creation_options": {
-            "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
-            "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "2",
+            "BLOCKSIZE": "512",
+            "COMPRESS": "ZSTD", "LEVEL": "9", "PREDICTOR": "2",
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
-        # PREDICTOR_OVERVIEW matches the base image's PREDICTOR above,
+        # OVERVIEW_PREDICTOR matches the base image's PREDICTOR above,
         # kept explicit as documented intent rather than relying on
         # GDAL's own behaviour: measured directly (isolated GDAL test,
         # base predictor with vs without this set) that GDAL 3.13.2's
-        # BuildOverviews() already inherits the base image's predictor
-        # for internal overviews on its own - this line currently
-        # changes nothing (0.00% size difference, confirmed on real
-        # elevation and RGB test files). It stays anyway, in case that
-        # inheritance behaviour is ever removed or changes in a future
-        # GDAL version - explicit here means the correct value doesn't
-        # depend on undocumented default behaviour continuing to hold.
+        # internal overview builder already inherits the base image's
+        # predictor on its own - this line currently changes nothing
+        # (0.00% size difference, confirmed on real elevation and RGB
+        # test files, prior to the COG switch). It stays anyway, in
+        # case that inheritance behaviour is ever removed or changes in
+        # a future GDAL version - explicit here means the correct value
+        # doesn't depend on undocumented default behaviour continuing
+        # to hold.
         "overview_config": {
-            "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD", "PREDICTOR_OVERVIEW": "2",
+            "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEW_COMPRESS": "ZSTD",
+            "OVERVIEW_PREDICTOR": "2",
         },
     },
     "lossless_float": {
         "creation_options": {
-            "TILED": "YES", "BLOCKXSIZE": "512", "BLOCKYSIZE": "512",
-            "COMPRESS": "ZSTD", "ZSTD_LEVEL": "9", "PREDICTOR": "3",
+            "BLOCKSIZE": "512",
+            "COMPRESS": "ZSTD", "LEVEL": "9", "PREDICTOR": "3",
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
-        # PREDICTOR_OVERVIEW=3: same "documented intent, currently a
+        # OVERVIEW_PREDICTOR=3: same "documented intent, currently a
         # no-op" reasoning as lossless_integer's above.
         "overview_config": {
-            "RESAMPLING": "AVERAGE", "COMPRESS_OVERVIEW": "ZSTD", "PREDICTOR_OVERVIEW": "3",
+            "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEW_COMPRESS": "ZSTD",
+            "OVERVIEW_PREDICTOR": "3",
         },
     },
 }
@@ -308,6 +353,7 @@ class DetectionResult:
     has_overviews: bool = False
     overview_count: int = 0
     compression: Optional[str] = None  # IMAGE_STRUCTURE COMPRESSION tag, e.g. "LZW", "ZSTD", None if uncompressed
+    layout: Optional[str] = None  # IMAGE_STRUCTURE LAYOUT tag, "COG" if the source is itself a valid Cloud Optimized GeoTIFF, None otherwise
     has_aux_xml: Optional[bool] = None
     has_crs: Optional[bool] = None
     raster_size: Optional[tuple] = None
@@ -868,7 +914,14 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     result.block_size = tuple(band1.GetBlockSize())
     result.overview_count = band1.GetOverviewCount()
     result.has_overviews = result.overview_count > 0
-    result.compression = ds.GetMetadata("IMAGE_STRUCTURE").get("COMPRESSION")
+    image_structure_md = ds.GetMetadata("IMAGE_STRUCTURE")
+    result.compression = image_structure_md.get("COMPRESSION")
+    # Cheap - already-open handle, same metadata domain as COMPRESSION
+    # above, no extra file access. Lets already_optimised_at_target()
+    # in converter.py tell a genuine COG apart from a file that's
+    # merely tiled/overviewed/correctly-compressed without being one -
+    # see that function's docstring for why the difference matters.
+    result.layout = image_structure_md.get("LAYOUT")
 
     for i in range(2, band_count + 1):
         other_dtype = gdal.GetDataTypeName(ds.GetRasterBand(i).DataType)

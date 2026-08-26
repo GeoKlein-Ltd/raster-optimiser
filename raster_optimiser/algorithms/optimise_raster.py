@@ -137,8 +137,7 @@ FORCE_REPROCESS_LABEL = "Reprocess even if already optimised"
 # so it fails the Processing run rather than returning a green checkmark
 # with a caveat buried in the log.
 _HARD_FAILURE_ACTIONS = (
-    "error", "blocked", "converted_incomplete", "converted_unverified",
-    "refused_upstream",
+    "error", "blocked", "converted_unverified", "refused_upstream",
 )
 
 
@@ -276,7 +275,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<p><i>Viewing</i>: produces a much smaller file, by "
             "discarding detail the eye won't notice. In testing, a "
             "typical drone orthomosaic came out around 80% smaller. "
-            "Still a GeoTIFF "
+            "Always a Cloud Optimized GeoTIFF (COG) "
             "either way, never a .jpg file. Use it for basemaps, "
             "client copies, QField "
             "backdrops and site context.</p>"
@@ -474,7 +473,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         )
         input_param.setHelp(self.tr(
             "The raster to optimise. Any format GDAL can read. The "
-            "output is always a GeoTIFF."
+            "output is always a Cloud Optimized GeoTIFF (COG)."
         ))
         self.addParameter(input_param)
 
@@ -514,7 +513,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "context.\n"
             "\n"
             "Both load and pan at the same speed. Both are always "
-            "written as GeoTIFF, never a .jpg file.\n"
+            "written as a Cloud Optimized GeoTIFF (COG), never a .jpg "
+            "file.\n"
             "\n"
             "Not every file can be compressed for viewing. Elevation, "
             "16-bit and multispectral imagery can only be written for "
@@ -532,8 +532,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             self.OUTPUT, self.tr("Optimised raster"),
         )
         output_param.setHelp(self.tr(
-            "Where to save the result. Always written as a GeoTIFF, "
-            "tiled with pyramids built in."
+            "Where to save the result. Always written as a Cloud "
+            "Optimized GeoTIFF (COG), tiled with pyramids built in."
         ))
         self.addParameter(output_param)
 
@@ -652,15 +652,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
-        # One continuous 0-100 bar across all three phases: detection
-        # 0-10, Translate 10-75, BuildOverviews 75-100. Each phase gets
-        # its own closure so cancellation and scaling are independent -
-        # see core/converter.py's _ProgressTracker for why returning
-        # False here is what makes Cancel actually stop the running GDAL
-        # call, not just stop future progress updates. detect()'s own
+        # One continuous 0-100 bar across both phases: detection 0-10,
+        # Translate 10-100. Used to be three phases (detection,
+        # Translate, BuildOverviews) - the COG driver builds pyramids
+        # inside the same Translate call now, so there's no separate
+        # overviews phase left to give its own span. Each phase gets its
+        # own closure so cancellation and scaling are independent - see
+        # core/converter.py's _ProgressTracker for why returning False
+        # here is what makes Cancel actually stop the running GDAL call,
+        # not just stop future progress updates. detect()'s own
         # progress_cb (core/detector.py's _black_pixel_sample) uses the
         # same GDAL-style callback shape, so the same closure factory
-        # covers all three phases.
+        # covers both phases.
         def make_progress_cb(base, span):
             def cb(complete, message, cb_data):
                 if feedback.isCanceled():
@@ -728,20 +731,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         requested_profile = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
 
         def log_cb(phase, elapsed_seconds):
-            if phase == "translate":
-                feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
-                feedback.setProgressText(self.tr("Building overviews (pyramids)..."))
-            elif phase == "overviews":
-                feedback.pushInfo(self.tr("Build overviews finished in {:.1f}s").format(elapsed_seconds))
+            # Only "translate" fires now - there's no separate
+            # "overviews" phase left to report (see core/converter.py's
+            # convert() docstring).
+            feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
 
-        feedback.setProgressText(self.tr("Translating (tiling, compressing)..."))
+        feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
         result = convert(
             source_path, detection=detection, chosen_profile=requested_profile,
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
-            translate_progress_cb=make_progress_cb(10, 65),
-            overview_progress_cb=make_progress_cb(75, 25),
+            translate_progress_cb=make_progress_cb(10, 90),
             log_cb=log_cb,
         )
 
@@ -806,8 +807,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
         # Phase 4 of the purpose-question rework: re-emit the
         # consequential decisions as the last thing before completion,
-        # since detection's findings scroll away behind Translate/
-        # BuildOverviews' own progress output otherwise. Only decisions
+        # since detection's findings scroll away behind Translate's own
+        # progress output otherwise. Only decisions
         # worth repeating - a plain file with nothing surprising gets
         # just the location line, not a restatement of the routine
         # "used as asked" case, which would be noise on every run.
@@ -823,8 +824,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # nothing buried in between for the summary to resurface - that
         # defeats the point of a summary. The profile-decision line
         # doesn't have this problem: it was pushed back in
-        # _log_profile_decision(), before Translate/BuildOverviews' own
-        # progress output, so real content genuinely separates it from
+        # _log_profile_decision(), before Translate's own progress
+        # output, so real content genuinely separates it from
         # here.
         last_pushed_message = result.nodata_message
         summary_lines = ["Summary"]
