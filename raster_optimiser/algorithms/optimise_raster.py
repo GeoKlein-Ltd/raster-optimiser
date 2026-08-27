@@ -340,11 +340,11 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "wouldn't shrink it either.\n"
             "\n"
             "Converting it again won't make it any faster or smaller. "
-            "It would just produce a second large file.\n"
+            "It would produce a second large file with the structure "
+            "unchanged.\n"
             "\n"
-            "If you're reconverting deliberately, for example to switch "
-            "it from Analysis to Viewing, tick '{}' under Advanced "
-            "parameters."
+            "If you're reconverting deliberately, to change how NoData "
+            "is handled, tick '{}' under Advanced parameters."
         ).format(FORCE_REPROCESS_LABEL)
 
     def checkParameterValues(self, parameters, context):

@@ -1215,9 +1215,11 @@ def convert(
             )
             return result
         # force_reprocess overrides a genuinely nothing-to-gain file: a
-        # deliberate choice (e.g. switching profile after the fact), not
-        # a normal tiling/overviews/compression rebuild - primary_reason
-        # wouldn't mean anything here, so this is a warning instead.
+        # deliberate choice (e.g. wanting a different NoData mode applied,
+        # since that's resolved independently of this already-optimised
+        # check - see _resolve_nodata_handling() below), not a normal
+        # tiling/overviews/compression rebuild - primary_reason wouldn't
+        # mean anything here, so this is a warning instead.
         result.warnings.append(
             "Already tiled, with overviews, and at the target compression, "
             "but reprocessing anyway - Force reprocess is ticked."

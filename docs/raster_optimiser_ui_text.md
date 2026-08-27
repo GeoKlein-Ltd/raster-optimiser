@@ -183,9 +183,9 @@ Blocks execution. Escapable via Reprocess. Four conditions, all required: the fi
 
 > This file is already tiled and has pyramids built, so it should already load and pan quickly in QGIS or any other GDAL-based software. It's also already using the target compression, so reprocessing wouldn't shrink it either.
 >
-> Converting it again won't make it any faster or smaller. It would just produce a second large file.
+> Converting it again won't make it any faster or smaller. It would produce a second large file with the structure unchanged.
 >
-> If you're reconverting deliberately, for example to switch it from Analysis to Viewing, tick **Reprocess even if already optimised** under Advanced parameters.
+> If you're reconverting deliberately, to change how NoData is handled, tick **Reprocess even if already optimised** under Advanced parameters.
 
 ---
 
