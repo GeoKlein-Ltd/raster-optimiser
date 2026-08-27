@@ -841,28 +841,87 @@ def _format_bytes(n: int) -> str:
 
 
 # Shown after a successful conversion whenever the output ends up larger
-# than the source. Only reachable with the Analysis profile - Viewing
-# compression is dramatically smaller than nearly any source, so this
-# fires almost exclusively there. A source that arrives already
-# compressed (DEFLATE is Metashape/Terra's typical default) can be close
-# enough to ZSTD's size that seven overview levels - which add roughly a
-# third back on top of the base image, regardless of profile - push the
-# total past the original. That is a real, expected outcome, not a
-# failure: this plugin trades file size for pan/zoom speed on the base
-# image, and pyramids are an unavoidable part of buying that speed.
+# than the source AND this run built the source's pyramids for the first
+# time (detection.has_overviews was False going in - see convert()'s
+# "pyramids_added_fresh" check). Only reachable with the Analysis profile
+# in that case - Viewing compression is dramatically smaller than nearly
+# any source, so this fires almost exclusively there. A source that
+# arrives already compressed (DEFLATE is Metashape/Terra's typical
+# default) can be close enough to ZSTD's size that seven fresh overview
+# levels - which add roughly a third back on top of the base image,
+# regardless of profile - push the total past the original. That is a
+# real, expected outcome, not a failure: this plugin trades file size for
+# pan/zoom speed on the base image, and pyramids are an unavoidable part
+# of buying that speed.
+#
+# This explanation is specifically about pyramids being BUILT here for
+# the first time - it must not fire when the source already had
+# overviews, since then pyramids aren't what changed (see
+# _SIZE_INCREASE_RESTRUCTURE_EXPLANATION below for that case), NOR when
+# the profile decision was already consequential (see convert()'s
+# `result.decisions.profile_consequential` check) - a JPEG-source
+# profile_reason warning already explains the increase in that case, and
+# this note's own "pyramids add back roughly a third" claim can be wrong
+# in cause AND magnitude for it: confirmed live on a JPEG source with NO
+# existing pyramids, re-run through Analysis - this note still fired
+# (has_overviews was False, so the first condition alone didn't catch it)
+# and claimed "roughly a third" under a real +837% increase, while the
+# profile_reason warning two lines above had already correctly explained
+# the real cause (re-encoding already-degraded pixels losslessly). A
+# similar case (a 0.02% increase on a file that already had pyramids)
+# is what prompted _SIZE_INCREASE_RESTRUCTURE_EXPLANATION below in the
+# first place - both are the same underlying mistake: this note firing
+# when something else already, correctly, accounts for the increase.
 _SIZE_INCREASE_EXPLANATION = (
     "Output is larger than source. Expected when the source was already "
     "compressed, since pyramids add back roughly a third. Not a failure: "
     "the gain here is speed, not size."
 )
 
-# Appended to _SIZE_INCREASE_EXPLANATION only when Viewing is genuinely
-# available for this file (detection.profile_mode == "choice") - this
-# size growth is most likely on a file already forced to Analysis
-# (elevation, 16-bit/multispectral, or an RGB file with no alpha band),
-# where suggesting Viewing would be advice the user cannot act on, and
-# which forced_reason has often just finished explaining the tool will
-# not do anyway.
+# Growth on a file that already had pyramids before this run, below which
+# _SIZE_INCREASE_RESTRUCTURE_EXPLANATION is skipped entirely rather than
+# shown. 1%: comfortably above the kind of overhead pure COG restructuring
+# itself can add (a small, fixed amount of header/IFD/ghost-area bytes
+# relative to any real image - the confirmed real-world case that
+# prompted this was 0.02%) while still well below a genuine, worth-
+# explaining increase from a compression change or a deeper pyramid than
+# the source already had. Not a measured boundary - there was only one
+# real data point (0.02%) to calibrate against - but a round number
+# comfortably on the "not worth a paragraph" side of it, chosen the same
+# way _NODATA_PCT_DISPLAY_FLOOR above states a plain threshold rather
+# than pretending to a precision this can't have.
+_SIZE_INCREASE_RESTRUCTURE_THRESHOLD_PCT = 1.0
+
+# Shown instead of _SIZE_INCREASE_EXPLANATION when the source already had
+# pyramids (so building them isn't the cause), the profile decision
+# was NOT already consequential (see convert()'s check - a JPEG-source
+# profile_reason warning already covers that case, more specifically and
+# correctly than a generic sentence here could), and the growth is large
+# enough to be worth naming a cause for at all (see the threshold above).
+# Deliberately does not name a single specific cause - restructuring a
+# file that was already tiled/overviewed/correctly-compressed can still
+# grow it either because this tool's own pyramid depth exceeds what the
+# source already had, or because of the compression change itself - and
+# claiming one specific cause here risked being just as wrong as the bug
+# this replaced.
+_SIZE_INCREASE_RESTRUCTURE_EXPLANATION = (
+    "Output is larger than source. This file already had pyramids, so "
+    "they are not the cause here - the increase comes from the "
+    "compression change or Cloud Optimized restructuring made in this "
+    "run, not from building pyramids that already existed."
+)
+
+# Appended to _SIZE_INCREASE_EXPLANATION only when Viewing was genuinely
+# available for this file (detection.profile_mode == "choice") AND
+# Analysis is the profile that actually ran. Both conditions are needed:
+# profile_mode == "choice" alone doesn't distinguish "Viewing was offered
+# but Analysis ran" from "Viewing was offered and Viewing ran" - without
+# the second check, a Viewing run that happened to grow past its source
+# (e.g. an already-JPEG source re-encoded) got told "a file written for
+# viewing would be smaller" immediately after writing one for viewing,
+# which is nonsensical advice about the very run that just happened.
+# Confirmed live: PURPOSE=Viewing on Ortho_school_v1_optimised.tif
+# printed exactly that contradiction.
 _SIZE_INCREASE_VIEWING_SUGGESTION = (
     "A file written for viewing would be smaller, if size matters more "
     "than preserving every pixel value."
@@ -1199,20 +1258,59 @@ def convert(
         # fails COG validation despite passing the other three checks -
         # see docs/plugin_design_notes.md). Unlike the compression case
         # above, this doesn't promise a smaller file or faster pan/zoom
-        # - both should stay about the same, since nothing about the
-        # pixel data changes, only the file's internal byte layout - so
-        # it gets its own message rather than reusing the compression
-        # one, and isn't suppressed for profile_consequential, since it
-        # makes no claim that case would falsify.
+        # - both should stay about the same - so it gets its own message
+        # rather than reusing the compression one, and isn't suppressed
+        # for profile_consequential, since it makes no size/speed claim
+        # that case would falsify.
         result.primary_reason = "cog_structure"
-        result.warnings.append(
-            "Already tiled, with overviews, and already compressed with "
-            f"{target_compression}, but this isn't a valid Cloud "
-            "Optimized GeoTIFF yet - reprocessing to add that structure. "
-            "Pan/zoom speed and file size should both stay about the "
-            "same; the only change is how the file's bytes are "
-            "arranged, not the pixel data itself."
-        )
+        # profile == "lossy" implies the source is already JPEG here,
+        # not just correlates with it: compression_at_target (checked
+        # above to even reach this branch) already confirmed the
+        # source's compression contains the lossy profile's target
+        # (JPEG) - so this is never reached by a lossy profile on a
+        # non-JPEG source. Restructuring that source into a COG still
+        # requires a full Translate rewrite, and GDAL has no way to copy
+        # already-compressed JPEG tiles into a COG unchanged - confirmed
+        # directly (checksum mismatch even with matching COMPRESS/
+        # QUALITY/BLOCKSIZE; no passthrough option exists on the COG
+        # driver; cogger does this but is a separate unbundled binary,
+        # rejected for that cost, not for lacking the capability - see
+        # docs/plugin_design_notes.md, "A lossy source cannot be
+        # restructured into a COG without re-encoding"). So unlike the
+        # lossless case below, the pixel values here change slightly too,
+        # not just the byte layout - the message has to say so plainly
+        # rather than repeat the lossless case's "not the pixel data
+        # itself" claim, which is false for this combination.
+        #
+        # No size claim: measured directly at +0.039% on a source this
+        # tool itself had written at QUALITY=90, but +21% on a source
+        # built at a different JPEG quality then re-encoded at this
+        # tool's fixed 90 - true only for this tool's own prior output,
+        # not in general, since the source's original quality isn't
+        # known up front. Pan/zoom speed is the one thing this branch can
+        # actually guarantee regardless of source quality: the file was
+        # already tiled with overviews before this run.
+        if profile == "lossy":
+            result.warnings.append(
+                "Already tiled, with overviews, and already compressed "
+                f"with {target_compression}, but this isn't a valid "
+                "Cloud Optimized GeoTIFF yet - reprocessing to add that "
+                "structure. Restructuring to COG means rewriting the "
+                "file, and a lossy source can't be rewritten without "
+                "decoding and re-encoding it - there's no way to copy "
+                "already-compressed JPEG data into a COG unchanged. So "
+                "the pixel values change slightly here too, on top of "
+                "the byte layout. Pan/zoom speed isn't affected."
+            )
+        else:
+            result.warnings.append(
+                "Already tiled, with overviews, and already compressed "
+                f"with {target_compression}, but this isn't a valid "
+                "Cloud Optimized GeoTIFF yet - reprocessing to add that "
+                "structure. Pan/zoom speed and file size should both "
+                "stay about the same; the only change is how the file's "
+                "bytes are arranged, not the pixel data itself."
+            )
     else:
         result.primary_reason = "tiling" if not is_tiled else "overviews"
 
@@ -1359,8 +1457,35 @@ def convert(
     result.output_bytes = os.path.getsize(output_path)
     result.size_summary = _size_summary(result.source_bytes, result.output_bytes)
     if result.output_bytes > result.source_bytes:
-        size_note = _SIZE_INCREASE_EXPLANATION
-        if detection.profile_mode == "choice":
+        size_note = None
+        if result.decisions.profile_consequential:
+            # A JPEG-source profile_reason warning already explains this
+            # increase - see PROFILE_REASON_JPEG_SOURCE_ANALYSIS/_VIEWING
+            # in detector.py - and explains it correctly, whether or not
+            # this run also happened to build pyramids for the first
+            # time. Checked first, before pyramids_added_fresh, and
+            # unconditionally suppresses either explanation below:
+            # confirmed live that has_overviews being False was not
+            # enough on its own to route around this - a JPEG source
+            # with no existing pyramids, re-run through Analysis, still
+            # got told "pyramids add back roughly a third" under a real
+            # +837% increase, directly beneath the profile_reason warning
+            # that had already correctly explained it two lines above.
+            pass
+        else:
+            pyramids_added_fresh = not detection.has_overviews
+            if pyramids_added_fresh:
+                size_note = _SIZE_INCREASE_EXPLANATION
+            else:
+                # Source already had pyramids, so they aren't the cause -
+                # see _SIZE_INCREASE_RESTRUCTURE_EXPLANATION's docstring.
+                pct_growth = (
+                    (result.output_bytes - result.source_bytes) / result.source_bytes * 100
+                    if result.source_bytes else 0.0
+                )
+                if pct_growth >= _SIZE_INCREASE_RESTRUCTURE_THRESHOLD_PCT:
+                    size_note = _SIZE_INCREASE_RESTRUCTURE_EXPLANATION
+        if size_note and detection.profile_mode == "choice" and profile == "lossless":
             size_note += " " + _SIZE_INCREASE_VIEWING_SUGGESTION
         result.size_note = size_note
 

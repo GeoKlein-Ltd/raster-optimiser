@@ -398,6 +398,34 @@ PROFILE_REASON_JPEG_SOURCE_ANALYSIS = (
     "file instead."
 )
 
+# Counterpart to PROFILE_REASON_JPEG_SOURCE_ANALYSIS for the other
+# direction: Viewing/lossy requested on a source that's already JPEG-
+# compressed. Confirmed directly (see docs/plugin_design_notes.md, "A
+# lossy source cannot be restructured into a COG without re-encoding")
+# that GDAL has no way to copy already-compressed JPEG tiles through
+# unchanged, so re-running Viewing here re-encodes pixels that were
+# already lossy-compressed once - a second generation of loss, with
+# previously no warning at all. That silence was worse than the
+# Analysis case above, which already warned.
+#
+# No size claim: an earlier version said "at roughly the same file
+# size, not a smaller file", which only holds when the source's own
+# JPEG quality happens to match this tool's fixed QUALITY=90. Measured
+# directly: +0.04%/+0.039% on two sources this tool itself had written
+# at quality 90, but +21% on a source built at GDAL's own JPEG default
+# (quality 75) re-encoded at 90 - a real, not a rounding-level,
+# difference, and one this tool cannot predict up front since it never
+# reads the source's original quality setting. True for this tool's own
+# output, false in general, so dropped rather than caveated. What's
+# actually guaranteed regardless of source quality is pan/zoom speed,
+# which this file already had before this run and keeps either way.
+PROFILE_REASON_JPEG_SOURCE_VIEWING = (
+    "This file was already compressed for viewing, so re-running "
+    "Viewing on it discards detail a second time rather than the "
+    "first. Pan and zoom speed isn't affected either way. For a clean "
+    "copy, run this tool on the original file instead."
+)
+
 
 def _is_jpeg_compression(compression: Optional[str]) -> bool:
     """True if the source file's IMAGE_STRUCTURE COMPRESSION tag names a
@@ -440,8 +468,13 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
     variant (see _is_jpeg_compression) is honoured exactly as asked -
     lossless ZSTD is applied, nothing overridden - and still worth a
     warning, because the pixel values being preserved were already
-    changed by that prior JPEG pass. Routine matches (anything else)
-    are consequential=False.
+    changed by that prior JPEG pass. The same applies in the other
+    direction: requesting Viewing on an already-JPEG source is also
+    honoured exactly as asked, and still worth a warning, because
+    re-encoding already-lossy pixels as JPEG again is a second
+    generation of loss with no size benefit (confirmed no passthrough
+    route exists - see docs/plugin_design_notes.md). Routine matches
+    (anything else) are consequential=False.
 
     requested may be None (a caller that never expressed a preference,
     e.g. the CLI's --profile is optional) - never a mismatch on its
@@ -455,11 +488,19 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
             if requested == "lossless" and _is_jpeg_compression(detection.compression):
                 return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
             return PROFILE_REASON_ANALYSIS_HONOURED, False
+        # actual == "lossy" - not reachable today (no content type ever
+        # forces lossy, only lossless), kept for symmetry with the
+        # lossless branch above so a future forced-lossy case doesn't
+        # silently skip this check.
+        if requested == "lossy" and _is_jpeg_compression(detection.compression):
+            return PROFILE_REASON_JPEG_SOURCE_VIEWING, True
         return PROFILE_REASON_VIEWING_HONOURED_RGB, False
 
     # profile_mode == "choice" (RGB_8BIT only): never blocked or
     # overridden any more, so always honoured.
     if requested == "lossy":
+        if _is_jpeg_compression(detection.compression):
+            return PROFILE_REASON_JPEG_SOURCE_VIEWING, True
         return PROFILE_REASON_VIEWING_HONOURED_RGB, False
     if _is_jpeg_compression(detection.compression):
         return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True

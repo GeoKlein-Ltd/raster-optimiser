@@ -406,3 +406,64 @@ that structure" rather than either being skipped or hitting the
 compression-mismatch message (which would falsely claim the compression
 itself is wrong). See `docs/raster_optimiser_ui_text.md`'s "Already tiled,
 overviews and compression right, but not a valid COG" for the exact text.
+
+---
+
+## A lossy source cannot be restructured into a COG without re-encoding
+
+**Status:** confirmed, 2026-08-27. When a JPEG-compressed source is
+restructured into a Cloud Optimized GeoTIFF, GDAL always fully decodes and
+re-encodes the pixel data - there is no way, in this toolchain, to copy
+already-compressed tiles across unchanged. This was checked four ways rather
+than assumed, since the wrong assumption here would mean building an
+incorrect "no-op recompression" code path on top of it:
+
+1. **The COG driver's own creation-option list** (tested directly:
+   `gdal.GetDriverByName('COG').GetMetadataItem('DMD_CREATIONOPTIONLIST')`
+   against GDAL 3.13.2, the version bundled with this QGIS install) has
+   nothing resembling passthrough, copy, or reuse of source-compressed bytes.
+   The closest candidate, `OVERVIEWS=FORCE_USE_EXISTING`, was tested earlier
+   in this same investigation and disproven by per-overview-level checksum
+   mismatch - it matches the source's overview *count and dimensions*, not
+   its bytes.
+2. **`cogger`** (tested by reading its documentation and GDAL's own COG
+   driver docs, not installed or run): a real, separate tool
+   (<https://github.com/airbusgeo/cogger>) that genuinely does what's being
+   asked - it restructures an already internally-tiled, standard-compressed
+   GeoTIFF with existing overviews into a COG by "reshuffling of the
+   original geotiff's bytes", explicitly without pixel manipulation. It
+   exists and works; it is also a separate, unbundled, unsigned Go binary
+   with no relationship to this project's GDAL/QGIS toolchain today.
+   Rejected for that dependency cost, not for lacking the capability -
+   bundling a third-party compiled binary to cover one edge case (an
+   already-JPEG source) was judged not worth it.
+3. **`rio-cogeo`** (read documentation only, not installed, per instruction):
+   no passthrough mode is documented anywhere. Its default path predates the
+   COG driver and builds output via GDAL's own `CreateCopy`/`Translate`; its
+   `--use-cog-driver` flag routes to the exact GDAL COG driver already
+   tested in (1). It adds no independent capability here.
+4. **`gdal_edit.py`/`tiffcp`** (read documentation for both; neither is
+   present anywhere in this OSGeo4W install, confirmed by searching the
+   whole tree): `gdal_edit.py` is explicitly scoped to
+   georeferencing/metadata/nodata/statistics only and never touches pixel
+   data, compression, tiling, or IFD structure - it cannot restructure
+   anything. `tiffcp` can retile/restrip a TIFF and documents itself as not
+   altering image data content while doing so, but that claim is about
+   pixel *values* surviving a lossless round-trip, not about avoiding
+   recompression - it does not and cannot apply to JPEG-in-TIFF anyway: JPEG
+   data is chunked in DCT blocks aligned to the tile grid, so changing tile
+   boundaries requires decoding to pixels regardless of what any tool
+   intends. `tiffcp` is also not COG-aware - it has no concept of the
+   leading-IFD/ghost-area layout a valid COG requires, so even a
+   byte-preserving retile from it would not itself be a valid COG.
+
+The consequence: restructuring an already-JPEG source into a COG with the
+lossy profile always changes pixel values slightly (second-generation JPEG
+loss), even though nothing else about the conversion does. The chosen
+response is to warn, not refuse - see
+`docs/raster_optimiser_ui_text.md` for the resulting warning text and
+`core/converter.py`'s `resolve_profile_reason()`/cog_structure branch for
+where it's produced. Refusing would leave someone whose only asset is a JPEG
+basemap with no route to a COG through this tool at all, for a trade-off
+(second-generation loss, not a size or speed regression) the user can
+reasonably judge for themselves once told about it plainly.

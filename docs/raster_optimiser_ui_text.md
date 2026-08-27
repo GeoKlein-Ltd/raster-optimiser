@@ -237,6 +237,16 @@ Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (s
 
 ---
 
+### Viewing requested on a file whose source was already compressed for viewing
+
+`resolve_profile_reason()` when Viewing is requested (or genuinely available and chosen) and the source file's `IMAGE_STRUCTURE` `COMPRESSION` tag names a JPEG variant - most commonly a prior Viewing-profile output from this same tool, re-run through Viewing again. The counterpart to the entry above: honoured exactly as asked, nothing overridden, YCbCr JPEG is applied - flagged anyway because GDAL has no way to copy already-compressed JPEG tiles into a COG unchanged, confirmed directly (see `docs/plugin_design_notes.md`, "A lossy source cannot be restructured into a COG without re-encoding"), so re-running Viewing here decodes and re-encodes pixels that were already lossy-compressed once. A second generation of loss - previously silent, since only the Analysis direction warned before this.
+
+No size claim: measured directly on real files, re-encoding at this tool's fixed `QUALITY=90` came out +0.04%/+0.039% on two sources this tool itself had written at quality 90, but +21% on a source built at a different JPEG quality (GDAL's own default, 75) then re-encoded at 90. That's a real difference driven by the gap between the source's original quality and this tool's fixed one, which isn't known up front - true only for this tool's own prior output, false in general, so dropped rather than caveated. What's actually guaranteed regardless of the source's original quality is pan/zoom speed, since the file was already optimised for that before this run.
+
+> This file was already compressed for viewing, so re-running Viewing on it discards detail a second time rather than the first. Pan and zoom speed isn't affected either way. For a clean copy, run this tool on the original file instead.
+
+---
+
 ### Already tiled and has pyramids, but compression isn't the target yet
 
 Fires when the file is tiled with pyramids (so pan/zoom speed is already fine) but the current compression isn't the target one for the profile in use, e.g. a file arriving as LZW when the target is ZSTD. Runs regardless of Reprocess: unlike "File is already optimised" above, there's a real file-size gain here, so it isn't a redundant rebuild that needs an explicit override. Suppressed specifically when the entry above also fires (Analysis requested on an already-JPEG-compressed source): that case is not a size gain, typically the opposite, so promising "expect a smaller file" there would be false, and the entry above already explains what's actually happening.
@@ -247,9 +257,17 @@ Fires when the file is tiled with pyramids (so pan/zoom speed is already fine) b
 
 ### Already tiled, overviews and compression right, but not a valid COG
 
-Fires when the file is tiled, has pyramids, and is already on the target compression, but isn't a valid Cloud Optimized GeoTIFF - the fourth condition "File is already optimised" now checks. Runs regardless of Reprocess, same reasoning as the compression entry above: there's something real to gain (a genuinely valid COG), so it isn't a redundant rebuild needing an explicit override. This is expected to fire on every file produced by a version of this tool before v1 - see `docs/plugin_design_notes.md`. Unlike the compression entry above, this doesn't promise a smaller or faster file, because neither changes: only the file's internal byte layout does, not the pixel data. Not suppressed by the JPEG-source-Analysis entry two sections up, since it makes no claim that case would falsify.
+Fires when the file is tiled, has pyramids, and is already on the target compression, but isn't a valid Cloud Optimized GeoTIFF - the fourth condition "File is already optimised" now checks. Runs regardless of Reprocess, same reasoning as the compression entry above: there's something real to gain (a genuinely valid COG), so it isn't a redundant rebuild needing an explicit override. This is expected to fire on every file produced by a version of this tool before v1 - see `docs/plugin_design_notes.md`. Not suppressed by the JPEG-source entries two sections up, since neither wording below contradicts what those already say.
+
+Two versions of this message exist, chosen by which profile is in use - reaching this branch at all already means the source's compression matches the profile's target, so a lossy profile here means the source was already JPEG (confirmed directly - see `docs/plugin_design_notes.md`, "A lossy source cannot be restructured into a COG without re-encoding"), and a lossless profile means it was already ZSTD/lossless. Only the first of those actually re-encodes pixels:
+
+With the lossless profile (source already lossless), neither size nor pixel values change, only the byte layout:
 
 > Already tiled, with overviews, and already compressed with {target}, but this isn't a valid Cloud Optimized GeoTIFF yet - reprocessing to add that structure. Pan/zoom speed and file size should both stay about the same; the only change is how the file's bytes are arranged, not the pixel data itself.
+
+With the lossy profile (source already JPEG), restructuring still requires a full rewrite, and a lossy source can't be rewritten without re-encoding it - so pixel values change slightly here too, not just the layout. No size claim, for the same reason the Viewing entry above has none: measured at +0.039% on a source this tool itself had written at `QUALITY=90`, but +21% on a source built at a different original quality - true only for this tool's own output, not in general. Pan/zoom speed is what this branch can actually guarantee, since the file was already tiled with overviews before this run:
+
+> Already tiled, with overviews, and already compressed with {target}, but this isn't a valid Cloud Optimized GeoTIFF yet - reprocessing to add that structure. Restructuring to COG means rewriting the file, and a lossy source can't be rewritten without decoding and re-encoding it - there's no way to copy already-compressed JPEG data into a COG unchanged. So the pixel values change slightly here too, on top of the byte layout. Pan/zoom speed isn't affected.
 
 ---
 
@@ -261,13 +279,21 @@ Routine, always logged after a successful conversion. Units are binary (1024-bas
 
 ### Output larger than source
 
-Routine, logged only when the output ends up bigger than the source - almost always with Analysis, since a source that arrived already compressed can be close enough to ZSTD's size that pyramids (which add roughly a third back on top of the base image) push the total past the original. Not a failure: this tool trades file size for pan/zoom speed on the base image, and pyramids are an unavoidable part of buying that speed.
+Routine, logged only when the output ends up bigger than the source. First checked: whether the profile decision was already consequential (`result.decisions.profile_consequential` - the "already compressed for viewing" entries above, in either direction). If so, this note is suppressed entirely, regardless of anything else about the file - that entry already explains the growth, correctly, and a second, generic explanation here risked repeating or contradicting it. This is checked unconditionally, not only when the source already had pyramids: a real, confirmed bug had this note fire anyway on a JPEG source with no existing pyramids, re-run through Analysis - "pyramids add back roughly a third" shown directly under a real +837% increase, immediately below a profile_reason warning that had already correctly explained the actual cause (see `docs/plugin_design_notes.md`).
 
-The Viewing suggestion is appended only when Viewing is genuinely available for this file (`detection.profile_mode == "choice"`). This growth is most likely on a file that's forced to Analysis outright (elevation, 16-bit/multispectral, or an RGB file with no alpha band) - on those files, suggesting Viewing would be advice the user cannot act on, and `forced_reason` has usually just finished explaining that the tool will not do it anyway.
+Otherwise, which of two things happens depends on whether the source already had pyramids going in, since that decides whether "pyramids" is even a truthful cause to name:
+
+**Source had no pyramids before this run** (this run built them for the first time) - almost always Analysis, since a source that arrived already compressed can be close enough to ZSTD's size that fresh pyramids (which add roughly a third back on top of the base image) push the total past the original. Not a failure: this tool trades file size for pan/zoom speed on the base image, and pyramids are an unavoidable part of buying that speed.
 
 > Output is larger than source. Expected when the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size.
 
-With Viewing available, a second sentence is appended:
+**Source already had pyramids before this run** - pyramids are not the cause here, so the note above must not be shown; the same confirmed bug above also had it fire this way, blaming pyramids for a 0.02% increase on a file that already had them. If the growth is at least 1% (`_SIZE_INCREASE_RESTRUCTURE_THRESHOLD_PCT` in `core/converter.py`), a different sentence names the compression change or COG restructuring as the cause instead of pyramids - deliberately not more specific than that, since either can be the actual driver and picking one wrongly again was the whole problem. Below 1%, nothing is shown at all: on a file that already had pyramids, that much growth is COG-restructure overhead, not worth a paragraph explaining it. 1% is not a measured boundary (the one real case seen was 0.02%) - it's a round number comfortably above that noise floor and comfortably below a growth anyone would want explained.
+
+> Output is larger than source. This file already had pyramids, so they are not the cause here - the increase comes from the compression change or Cloud Optimized restructuring made in this run, not from building pyramids that already existed.
+
+In every case where a note is shown at all, the Viewing suggestion is appended only when Viewing was genuinely available for this file (`detection.profile_mode == "choice"`) AND Analysis is the profile that actually ran. Both conditions are needed: profile_mode alone doesn't distinguish "Viewing was offered but Analysis ran" from "Viewing was offered and Viewing ran" - without the second check, a Viewing run that happened to grow past its source (an already-JPEG source re-encoded, for instance) was told "a file written for viewing would be smaller" right after writing one, which is nonsensical about the run that just happened. Confirmed live on `Ortho_school_v1_optimised.tif` with Viewing requested before this was fixed. The growth this note describes is most likely on a file that's forced to Analysis outright (elevation, 16-bit/multispectral, or an RGB file with no alpha band) - on those files, suggesting Viewing would be advice the user cannot act on, and `forced_reason` has usually just finished explaining that the tool will not do it anyway.
+
+With Viewing available, a second sentence is appended to whichever note above was shown, for example:
 
 > Output is larger than source. Expected when the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size. A file written for viewing would be smaller, if size matters more than preserving every pixel value.
 
