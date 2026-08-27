@@ -459,11 +459,17 @@ incorrect "no-op recompression" code path on top of it:
 
 The consequence: restructuring an already-JPEG source into a COG with the
 lossy profile always changes pixel values slightly (second-generation JPEG
-loss), even though nothing else about the conversion does. The chosen
+loss). Size also changes, and not predictably: measured directly at +0.039%
+on a source this tool itself had written at QUALITY=90, but +21% on a source
+built at a different JPEG quality (GDAL's own default, 75) then re-encoded at
+this tool's fixed 90. The gap between a source's original quality and this
+tool's fixed one is not known up front, so the size effect cannot be
+predicted either. What stays genuinely unaffected is pan and zoom speed,
+since the file was already tiled with overviews before this run. The chosen
 response is to warn, not refuse - see
 `docs/raster_optimiser_ui_text.md` for the resulting warning text and
 `core/converter.py`'s `resolve_profile_reason()`/cog_structure branch for
 where it's produced. Refusing would leave someone whose only asset is a JPEG
-basemap with no route to a COG through this tool at all, for a trade-off
-(second-generation loss, not a size or speed regression) the user can
+basemap with no route to a COG through this tool at all, for a trade-off (a
+second generation of loss, and possibly a size change) the user can
 reasonably judge for themselves once told about it plainly.

@@ -10,7 +10,7 @@ design notes.
 
 ## What to expect
 
-Four things that look like problems and aren't.
+Five things that look like problems and aren't.
 
 **The output looks slightly different in colour.** On 16-bit and multispectral
 imagery, QGIS calculates its own contrast stretch for each layer, and two
@@ -20,9 +20,12 @@ the difference disappears. To confirm the data is unchanged, compare the band
 statistics in Layer Properties: they will match exactly.
 
 **The output is larger than the source.** This happens when the source was
-already compressed and you chose Analysis. Pyramids add back roughly a third of
-the base image size, and that is the cost of the speed improvement. The file is
-still faster to pan; it is not smaller.
+already compressed and you chose Analysis. If the source did not already have
+pyramids, building them adds roughly a third to the base image size. If it
+already had pyramids, the increase instead comes from the compression change
+or from restructuring the file into a valid Cloud Optimized GeoTIFF. Either
+way, this is the cost of the speed improvement: the file is faster to pan,
+not smaller.
 
 **The output has slightly different georeferencing text.** Some files store
 their CRS as a BOUNDCRS, an EPSG code wrapped in a datum transformation. GDAL
@@ -38,6 +41,14 @@ with no gain in accuracy: the pixel values were already changed by the first
 pass, and preserving them now keeps those changed values rather than recovering
 the originals. The plugin warns when it detects this. For measurement work, run
 it on the original file.
+
+**Running the plugin again with the same purpose on a file it already
+optimised.** If you run the plugin a second time with the same purpose on a
+file it has already converted, it will not redo the work silently. It stops
+before converting and tells you the file is already tiled, has pyramids, and
+is already using the target compression, so converting it again would not
+make it faster or smaller. To force it anyway, tick "Reprocess even if
+already optimised" under Advanced parameters.
 
 ## Licence
 
