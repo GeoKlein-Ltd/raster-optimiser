@@ -473,3 +473,16 @@ where it's produced. Refusing would leave someone whose only asset is a JPEG
 basemap with no route to a COG through this tool at all, for a trade-off (a
 second generation of loss, and possibly a size change) the user can
 reasonably judge for themselves once told about it plainly.
+
+---
+
+## The output-larger-than-source note's 1.0% suppression threshold
+
+**Status:** implemented, 2026-08-27 (`core/converter.py`'s
+`_SIZE_INCREASE_RESTRUCTURE_THRESHOLD_PCT`). On a file that already had
+pyramids, the note is shown only when the increase is at least 1.0%, and
+suppressed entirely below that. The number sits above the one confirmed
+pure-COG-restructure case (a 0.02% increase with no other cause) and below
+any increase judged worth naming a cause for, rather than being measured
+directly. It is a round number chosen to sit comfortably on the right side
+of that single data point, not a boundary calibrated against several.
