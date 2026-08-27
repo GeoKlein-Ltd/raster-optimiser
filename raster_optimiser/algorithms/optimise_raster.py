@@ -605,9 +605,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "this setting, since there's real file size to save "
             "there.\n"
             "\n"
-            "Tick this to convert an already-optimal file anyway, for "
-            "example to switch it from Analysis to Viewing to save "
-            "disk space."
+            "Tick this to convert an already-optimal file anyway, to "
+            "change how NoData is handled."
         ))
         self.addParameter(force_reprocess_param)
 

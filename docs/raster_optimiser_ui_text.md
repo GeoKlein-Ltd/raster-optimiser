@@ -148,7 +148,7 @@ Label: **Reprocess even if already optimised**
 Help:
 > By default, a file that's already tiled with pyramids and already at the target compression is left alone, since converting it again wouldn't make it any faster or smaller. A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save there.
 >
-> Tick this to convert an already-optimal file anyway, for example to switch it from Analysis to Viewing to save disk space.
+> Tick this to convert an already-optimal file anyway, to change how NoData is handled.
 
 ---
 
