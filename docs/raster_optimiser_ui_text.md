@@ -28,7 +28,7 @@ QGIS renders this as HTML. Section headings are plain `<p>` text, not `<b>`: QGI
 
 **What this does**
 
-Makes large rasters load and pan quickly in QGIS or any other GDAL-based software, and reduces their file size.
+Makes large rasters load and pan quickly in QGIS or any other GDAL-based software, and reduces their file size. The output is always a Cloud Optimized GeoTIFF (COG), never a .jpg file.
 
 **Why your file is slow**
 
@@ -43,7 +43,7 @@ This tool adds both, and compresses the file sensibly on the way through.
 
 *Analysis*: keeps every pixel value exactly as it is. Use it for anything you extract numbers from: vegetation indices, crown segmentation, classification, change detection.
 
-*Viewing*: produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Always a Cloud Optimized GeoTIFF (COG) either way, never a .jpg file. Use it for basemaps, client copies, QField backdrops and site context.
+*Viewing*: produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context.
 
 Both load and pan at the same speed. The choice only affects file size and whether pixel values survive unchanged.
 
