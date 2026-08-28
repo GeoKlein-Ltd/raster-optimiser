@@ -56,12 +56,12 @@ from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _va
 try:
     from .detector import (
         detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
-        describe_detection, content_label,
+        describe_detection, content_label, is_jpeg_compression,
     )
 except ImportError:  # running as a plain script, not as part of the core package
     from detector import (
         detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
-        describe_detection, content_label,
+        describe_detection, content_label, is_jpeg_compression,
     )
 
 gdal.UseExceptions()
@@ -101,7 +101,6 @@ class AppliedSettings:
     compression: str  # "ZSTD" | "JPEG"
     compression_detail: Optional[str] = None  # "level 9" | "quality 90 with YCbCr"
     predictor: Optional[str] = None  # "2" | "3" | None (JPEG has none)
-    tiled: bool = True
     block_size: tuple = (512, 512)
     alpha_reattached: bool = False  # True only when the lossy profile dropped and remasked a real alpha band
     resampling: str = "AVERAGE"  # overview resampling method - a real decision, not recoverable from the file afterwards, unlike whether overviews exist at all
@@ -537,7 +536,7 @@ def _estimate_output_ceiling_bytes(
     4.4x the raw pixel data.
     """
     if profile == "lossy":
-        if "JPEG" in (detection.compression or "").upper():
+        if is_jpeg_compression(detection.compression):
             return int(source_bytes * 1.05)
         return int(source_bytes * 0.5)
     bytes_per_sample = gdal.GetDataTypeSize(gdal.GetDataTypeByName(detection.dtype)) // 8
@@ -633,9 +632,6 @@ def _build_applied_settings(creation_options: dict, overview_config: dict) -> Ap
         compression=compress,
         compression_detail=detail,
         predictor=creation_options.get("PREDICTOR"),
-        # Unconditional, not read from a TILED option - COG has none;
-        # a Cloud Optimized GeoTIFF is tiled by definition.
-        tiled=True,
         block_size=(int(creation_options["BLOCKSIZE"]), int(creation_options["BLOCKSIZE"])),
         resampling=overview_config.get("OVERVIEW_RESAMPLING", "AVERAGE"),
     )
@@ -995,7 +991,7 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
     ]["creation_options"]["COMPRESS"]
     # Containment, not exact equality - GDAL reports "YCbCr JPEG" for
     # this tool's own lossy/Viewing output, not bare "JPEG" (the same
-    # trap _is_jpeg_compression() above exists to document). An exact
+    # trap is_jpeg_compression() in detector.py exists to document). An exact
     # match here meant a Viewing-profile output, re-run with Viewing,
     # was never recognised as already at target - it got reprocessed
     # instead, with a warning claiming the compression wasn't JPEG yet.

@@ -427,7 +427,7 @@ PROFILE_REASON_JPEG_SOURCE_VIEWING = (
 )
 
 
-def _is_jpeg_compression(compression: Optional[str]) -> bool:
+def is_jpeg_compression(compression: Optional[str]) -> bool:
     """True if the source file's IMAGE_STRUCTURE COMPRESSION tag names a
     JPEG variant. Not a plain "== JPEG" check: GDAL reports "YCbCr JPEG"
     (not "JPEG") for the common RGB case where PHOTOMETRIC=YCBCR - which
@@ -465,7 +465,7 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
     mentioning), so consequential alone is enough to decide severity.
     A genuine match can still be consequential, though: requesting
     Analysis on a file whose source compression is already some JPEG
-    variant (see _is_jpeg_compression) is honoured exactly as asked -
+    variant (see is_jpeg_compression) is honoured exactly as asked -
     lossless ZSTD is applied, nothing overridden - and still worth a
     warning, because the pixel values being preserved were already
     changed by that prior JPEG pass. The same applies in the other
@@ -485,24 +485,24 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
         if requested is not None and requested != actual:
             return detection.forced_reason, True
         if actual == "lossless":
-            if requested == "lossless" and _is_jpeg_compression(detection.compression):
+            if requested == "lossless" and is_jpeg_compression(detection.compression):
                 return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
             return PROFILE_REASON_ANALYSIS_HONOURED, False
         # actual == "lossy" - not reachable today (no content type ever
         # forces lossy, only lossless), kept for symmetry with the
         # lossless branch above so a future forced-lossy case doesn't
         # silently skip this check.
-        if requested == "lossy" and _is_jpeg_compression(detection.compression):
+        if requested == "lossy" and is_jpeg_compression(detection.compression):
             return PROFILE_REASON_JPEG_SOURCE_VIEWING, True
         return PROFILE_REASON_VIEWING_HONOURED_RGB, False
 
     # profile_mode == "choice" (RGB_8BIT only): never blocked or
     # overridden any more, so always honoured.
     if requested == "lossy":
-        if _is_jpeg_compression(detection.compression):
+        if is_jpeg_compression(detection.compression):
             return PROFILE_REASON_JPEG_SOURCE_VIEWING, True
         return PROFILE_REASON_VIEWING_HONOURED_RGB, False
-    if _is_jpeg_compression(detection.compression):
+    if is_jpeg_compression(detection.compression):
         return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
     return PROFILE_REASON_ANALYSIS_HONOURED, False
 
