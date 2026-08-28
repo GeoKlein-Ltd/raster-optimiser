@@ -370,7 +370,7 @@ A decision line is also dropped if it would sit immediately under the message it
 Format:
 
 > Summary
-> {the profile-decision message, only if consequential - either Viewing was requested but Analysis was used, or Analysis was requested (and honoured) on a source already compressed for viewing - see the Log messages above}
+> {the profile-decision message, only if consequential - either Viewing was requested but Analysis was used, Analysis was requested (and honoured) on a source already compressed for viewing, or Viewing was requested (and honoured) on a source already compressed for viewing - see the Log messages above}
 > {the NoData message, only if it was consequential AND not immediately adjacent to its own original - see above; under the current message order this line never actually appears}
 > These decisions are also recorded in the file, under Layer Properties > Information > More information.
 

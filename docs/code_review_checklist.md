@@ -86,6 +86,16 @@ ones just edited.
   labels became Automatic, Reveal hidden pixels, and Keep as-is.
 - Where a comment says a branch is defensive or unreachable, is that still
   true?
+- Does each message's stated reason survive the condition that produces it?
+  Read the guard, then the message, and check the message does not offer a
+  cause the guard has already excluded. Three separate strings offered
+  "switch from Analysis to Viewing" as a reason to tick Reprocess, which
+  `already_optimised_at_target()` can never be true for.
+- When a user-facing string changes, which prose files describe that
+  behaviour? `docs/raster_optimiser_ui_text.md` is kept in sync code-first
+  and verified clean. `plugin_design_notes.md` and `README.md` are not
+  covered by that rule, and both retained claims the code had already
+  dropped.
 
 Note that a targeted audit for stale comments found five and missed a sixth in
 a file it had already opened twice. This section needs the full read as much as

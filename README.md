@@ -10,7 +10,7 @@ design notes.
 
 ## What to expect
 
-Five things that look like problems and aren't.
+Six things that look like problems and aren't.
 
 **The output looks slightly different in colour.** On 16-bit and multispectral
 imagery, QGIS calculates its own contrast stretch for each layer, and two
@@ -19,13 +19,14 @@ their pixels are identical. Copy the symbology from one layer to the other and
 the difference disappears. To confirm the data is unchanged, compare the band
 statistics in Layer Properties: they will match exactly.
 
-**The output is larger than the source.** This happens when the source was
-already compressed and you chose Analysis. If the source did not already have
-pyramids, building them adds roughly a third to the base image size. If it
-already had pyramids, the increase instead comes from the compression change
-or from restructuring the file into a valid Cloud Optimized GeoTIFF. Either
-way, this is the cost of the speed improvement: the file is faster to pan,
-not smaller.
+**The output is larger than the source.** This happens when the source file
+was already compressed and you chose Analysis, or when you chose Viewing on a
+file that was already compressed for viewing. If the source did not already
+have pyramids, building them adds roughly a third to the base image size. If
+it already had pyramids, the increase instead comes from the compression
+change or from restructuring the file into a valid Cloud Optimized GeoTIFF.
+Either way, this is the cost of the speed improvement: the file is faster to
+pan, not smaller.
 
 **The output has slightly different georeferencing text.** Some files store
 their CRS as a BOUNDCRS, an EPSG code wrapped in a datum transformation. GDAL
@@ -39,16 +40,32 @@ arguably the more accurate of the two.
 viewing and run it again for analysis, the result will be substantially larger
 with no gain in accuracy: the pixel values were already changed by the first
 pass, and preserving them now keeps those changed values rather than recovering
-the originals. The plugin warns when it detects this. For measurement work, run
-it on the original file.
+the originals. If you run it again for viewing instead, the file is compressed
+a second time rather than the first, so a little more detail is lost each
+time, though pan and zoom speed stay the same either way. The plugin warns
+when it detects either case. For measurement work, or for a clean copy, run it
+on the original file instead.
 
 **Running the plugin again with the same purpose on a file it already
 optimised.** If you run the plugin a second time with the same purpose on a
 file it has already converted, it will not redo the work silently. It stops
-before converting and tells you the file is already tiled, has pyramids, and
-is already using the target compression, so converting it again would not
-make it faster or smaller. To force it anyway, tick "Reprocess even if
-already optimised" under Advanced parameters.
+before converting and tells you the file is already tiled, has pyramids, is
+already using the target compression, and is already a valid Cloud Optimized
+GeoTIFF, so converting it again would not make it faster or smaller. To force
+it anyway, tick "Reprocess even if already optimised" under Advanced
+parameters.
+
+**Running the plugin on a file optimised by an earlier version of the
+plugin.** This version is the first to always write a genuine Cloud Optimized
+GeoTIFF. A file from an earlier version can already be tiled, have pyramids,
+and be on the target compression, and still not be a valid COG, because a COG
+also requires the file's index to sit at the front rather than after the
+image data. The plugin reprocesses it anyway, even without ticking Reprocess,
+to add the missing structure. For a file that was written for viewing, this
+means decoding and re-encoding the JPEG data, so the pixel values change
+slightly, the same as running the plugin twice for viewing above. For any
+other file, pan and zoom speed and file size stay about the same, and only
+the byte layout changes.
 
 ## Licence
 
