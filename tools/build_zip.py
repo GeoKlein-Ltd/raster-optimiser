@@ -15,7 +15,7 @@ without any of the repo's own dev files (testdata/, docs/, tools/,
 Usage:
     python tools/build_zip.py [--out <path>]
 
-Defaults to <repo root>/raster_optimiser.<version>.zip, version read
+Defaults to <repo root>/raster_optimiser-<version>.zip, version read
 from metadata.txt - the naming convention plugins.qgis.org expects.
 """
 
@@ -67,7 +67,7 @@ def main(argv=None):
             print(f"  {rel}")
 
     version = _read_version()
-    out_path = args.out or os.path.join(REPO_ROOT, f"{PLUGIN_NAME}.{version}.zip")
+    out_path = args.out or os.path.join(REPO_ROOT, f"{PLUGIN_NAME}-{version}.zip")
 
     if os.path.exists(out_path):
         os.remove(out_path)

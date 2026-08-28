@@ -394,7 +394,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 
 Two full worked examples, both taken from a real run against the current code (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding):
 
-> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 0.1.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder until the plugins.qgis.org listing exists)
+> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder until the plugins.qgis.org listing exists)
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
 > GEOKLEIN_4_DECISION = Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
@@ -412,9 +412,9 @@ Two full worked examples, both taken from a real run against the current code (e
 
 Also set, the standard TIFF tag other tools (ArcGIS, ExifTool, Photoshop) read where GDAL's own metadata domain is ignored. Deliberately NOT the full `GEOKLEIN_2_DETECTED`/`GEOKLEIN_4_DECISION` text concatenated - that produced the same paragraph appearing twice in Layer Properties. One short sentence instead: tool and version, what the file is (`content_label()`, the same short phrase `GEOKLEIN_2_DETECTED`'s longer sentence is built from), and what compression was applied:
 
-> TIFFTAG_IMAGEDESCRIPTION = Optimised by GeoKlein Raster Optimiser 0.1.0. Float32 elevation (DSM, DTM or CHM), written as Lossless ZSTD.
+> TIFFTAG_IMAGEDESCRIPTION = Optimised by GeoKlein Raster Optimiser 1.0.0. Float32 elevation (DSM, DTM or CHM), written as Lossless ZSTD.
 
-> TIFFTAG_IMAGEDESCRIPTION = Optimised by GeoKlein Raster Optimiser 0.1.0. 8-bit RGB imagery, written as JPEG.
+> TIFFTAG_IMAGEDESCRIPTION = Optimised by GeoKlein Raster Optimiser 1.0.0. 8-bit RGB imagery, written as JPEG.
 
 ---
 
