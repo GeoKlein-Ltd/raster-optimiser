@@ -252,6 +252,18 @@ any other.
   both were untranslatable outright - fixed by building the translated list
   inside `initAlgorithm()` instead, where it is resolved fresh on every
   instance rather than once at import.
+- Where a template is wrapped in `self.tr()` and a value is spliced into it
+  afterward with `.format()`, is the spliced value translated too? Both
+  halves can look correct read on their own - the template's `self.tr()`
+  call is fine, and the constant is fine wherever it's translated at its
+  own point of use - and still be wrong together: an untranslated splice
+  leaves the surrounding sentence in the target language but the spliced
+  text in English, and where that text names a widget the user has to go
+  find, the sentence points at something that is not there. Found
+  2026-08-28 in `_already_optimised_message()` and the NoData parameter's
+  `setHelp()`, both of which spliced a raw label constant in after
+  translating the sentence around it; fixed by translating the constant at
+  the splice site too, not only at its other point of use.
 - Strings in `core/detector.py` and `core/converter.py` cannot be wrapped,
   since neither module imports QGIS. Confirm that is still the only reason any
   of them are unwrapped.
