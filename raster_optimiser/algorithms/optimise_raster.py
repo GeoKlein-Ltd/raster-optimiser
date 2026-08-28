@@ -111,11 +111,16 @@ PURPOSE_ANALYSIS = 0
 PURPOSE_VIEWING = 1
 _PURPOSE_ANALYSIS_NAME = "Analysis: every pixel value preserved"
 _PURPOSE_VIEWING_NAME = "Viewing: smallest possible file"
-PURPOSE_OPTIONS = [_PURPOSE_ANALYSIS_NAME, _PURPOSE_VIEWING_NAME]
+# No PURPOSE_OPTIONS list here: self.tr() needs a live algorithm
+# instance to resolve against, and there is none yet at module level,
+# only from the moment an OptimiseRasterAlgorithm() actually exists -
+# see initAlgorithm(), which builds the translated options list fresh
+# on every instance rather than once at import time.
 
-# Index order matches NODATA_OPTIONS below exactly - see
-# _NODATA_MODE_STRINGS for the one place this crosses into convert()'s
-# plain "auto"/"reveal"/"keep" strings.
+# Index order matches the NODATA dropdown's options list, built the
+# same way in initAlgorithm() below, exactly - see _NODATA_MODE_STRINGS
+# for the one place this crosses into convert()'s plain
+# "auto"/"reveal"/"keep" strings.
 NODATA_AUTO = 0
 NODATA_REVEAL = 1
 NODATA_KEEP = 2
@@ -123,7 +128,6 @@ _NODATA_AUTO_SHORT_NAME = "Automatic"
 _NODATA_AUTO_NAME = f"{_NODATA_AUTO_SHORT_NAME}: decide per file (recommended)"
 _NODATA_REVEAL_NAME = "Reveal hidden pixels"
 _NODATA_KEEP_NAME = "Keep as-is"
-NODATA_OPTIONS = [_NODATA_AUTO_NAME, _NODATA_REVEAL_NAME, _NODATA_KEEP_NAME]
 NODATA_MODE_LABEL = "Hidden pixels (NoData)"
 _NODATA_MODE_STRINGS = ("auto", "reveal", "keep")  # index -> convert()'s nodata_mode
 
@@ -344,7 +348,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "\n"
             "If you're reconverting deliberately, to change how NoData "
             "is handled, tick '{}' under Advanced parameters."
-        ).format(FORCE_REPROCESS_LABEL)
+        ).format(self.tr(FORCE_REPROCESS_LABEL))
 
     def checkParameterValues(self, parameters, context):
         # Runs before execution and can refuse instantly, with nothing run
@@ -476,9 +480,16 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         self.addParameter(input_param)
 
+        # Built here rather than at module level (see the PURPOSE_
+        # constants' own comment above): self.tr() needs self, and
+        # resolving the translation here means it happens fresh on
+        # every algorithm instance - each dialog open, batch run, or
+        # model load - not once at import, before this plugin's
+        # translator is necessarily installed.
+        purpose_options = [self.tr(_PURPOSE_ANALYSIS_NAME), self.tr(_PURPOSE_VIEWING_NAME)]
         purpose_param = QgsProcessingParameterEnum(
             self.PURPOSE, self.tr("What will you use this file for"),
-            options=PURPOSE_OPTIONS,
+            options=purpose_options,
             defaultValue=PURPOSE_ANALYSIS,
         )
         # Mandatory with a real default now (Analysis, index 0) -
@@ -543,9 +554,13 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # as an override, not a routine choice, same as Reprocess and
         # Replace existing output file already were.
 
+        # Same reasoning as purpose_options in initAlgorithm() above.
+        nodata_options = [
+            self.tr(_NODATA_AUTO_NAME), self.tr(_NODATA_REVEAL_NAME), self.tr(_NODATA_KEEP_NAME),
+        ]
         nodata_param = QgsProcessingParameterEnum(
             self.NODATA_MODE, self.tr(NODATA_MODE_LABEL),
-            options=NODATA_OPTIONS,
+            options=nodata_options,
             defaultValue=NODATA_AUTO,
         )
         nodata_param.setFlags(nodata_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
@@ -579,7 +594,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "rather than transparent.\n"
             "\n"
             "'{keep}' leaves the file's NoData setting untouched."
-        ).format(auto=_NODATA_AUTO_SHORT_NAME, reveal=_NODATA_REVEAL_NAME, keep=_NODATA_KEEP_NAME))
+        ).format(
+            auto=self.tr(_NODATA_AUTO_SHORT_NAME), reveal=self.tr(_NODATA_REVEAL_NAME),
+            keep=self.tr(_NODATA_KEEP_NAME),
+        ))
         self.addParameter(nodata_param)
 
         force_reprocess_param = QgsProcessingParameterBoolean(
