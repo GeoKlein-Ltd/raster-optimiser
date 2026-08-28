@@ -92,10 +92,14 @@ ones just edited.
   "switch from Analysis to Viewing" as a reason to tick Reprocess, which
   `already_optimised_at_target()` can never be true for.
 - When a user-facing string changes, which prose files describe that
-  behaviour? `docs/raster_optimiser_ui_text.md` is kept in sync code-first
-  and verified clean. `plugin_design_notes.md` and `README.md` are not
-  covered by that rule, and both retained claims the code had already
-  dropped.
+  behaviour? `docs/raster_optimiser_ui_text.md` is meant to be kept in sync
+  code-first, but "kept in sync" is a discipline, not a guarantee: the same
+  review that added this question found a gap in that file too (the
+  End-of-run summary format block listed two consequential cases where
+  `resolve_profile_reason()` produces three - fixed 2026-08-28). Check it
+  along with the others, not instead of them. `plugin_design_notes.md` and
+  `README.md` are not covered by that discipline at all, and both retained
+  claims the code had already dropped.
 
 Note that a targeted audit for stale comments found five and missed a sixth in
 a file it had already opened twice. This section needs the full read as much as
@@ -151,9 +155,17 @@ any other.
 - Does every return path close its dataset, including early refusals?
 - Does every failure path either remove the partial output or tell the user it
   exists and what to do with it?
-- `convert()` restores prior GDAL config options in a `finally` block. If
-  `GetConfigOption` returned `None` for an option that was unset, does
-  `SetConfigOption(k, None)` unset it again, or leave the value set?
+- Does `convert()` set any global GDAL state (`gdal.SetConfigOption()` or
+  similar) that needs restoring afterward? Checked 2026-08-28: no - it does
+  not any more. The pre-COG version set overview compression/photometric
+  config options globally around a separate `BuildOverviews()` call and
+  restored them in a `finally` block afterward; the COG rework replaced
+  that with one `Translate()` call using `-co` creation options scoped to
+  that call alone, so there is nothing global left to restore. Re-check if
+  global config options are ever reintroduced - the original form of this
+  question asked whether `SetConfigOption(k, None)` genuinely unsets a
+  value that `GetConfigOption` returned `None` for, which would need
+  re-verifying then, not assumed from this note.
 
 ## Section 5: cancellation
 
@@ -184,8 +196,10 @@ any other.
     on it - the classified check is a safety refusal against silent
     corruption, so a partial scan concluding "not classified" would be
     exactly the wrong kind of wrong.
-- For each of the three phases (detection, Translate, BuildOverviews): what is
-  left on disk after a cancel, and what is the user told?
+- For each of the two phases (detection, Translate - the COG driver builds
+  pyramids inside the same Translate call now, so there is no separate
+  BuildOverviews phase left to check): what is left on disk after a cancel,
+  and what is the user told?
 
 ## Section 6: comparisons and matching
 
@@ -228,10 +242,16 @@ any other.
 
 ## Section 9: translation consistency
 
-- `self.tr()` is applied to some strings in `optimise_raster.py`, but the enum
-  options passed as `options=PURPOSE_OPTIONS` and `options=NODATA_OPTIONS` are
-  raw. List every user-facing string in that file that is not wrapped, and say
-  whether each is deliberate. Not yet audited.
+- `self.tr()` needs a live algorithm instance to resolve against - any
+  user-facing string built at module level, before an `OptimiseRasterAlgorithm`
+  instance exists, can never reach it. List every user-facing string in
+  `optimise_raster.py`, say whether it is built inside an instance method or
+  at module scope, and say whether that placement is deliberate. First
+  audited 2026-08-28: both dropdowns' option lists (`PURPOSE_OPTIONS` and
+  `NODATA_OPTIONS`) were module-level constants for exactly this reason, so
+  both were untranslatable outright - fixed by building the translated list
+  inside `initAlgorithm()` instead, where it is resolved fresh on every
+  instance rather than once at import.
 - Strings in `core/detector.py` and `core/converter.py` cannot be wrapped,
   since neither module imports QGIS. Confirm that is still the only reason any
   of them are unwrapped.
