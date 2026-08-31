@@ -747,9 +747,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         requested_profile = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
 
         def log_cb(phase, elapsed_seconds):
-            # Only "translate" fires now - there's no separate
-            # "overviews" phase left to report (see core/converter.py's
-            # convert() docstring).
+            # "verify" fires once, right after Translate succeeds and
+            # before convert() closes/flushes the output dataset and
+            # runs _verify() (the COG validator) - both silent
+            # otherwise, so the bar sat pinned at 100% with stale
+            # "Translating..." text for several seconds with nothing
+            # telling the user why. This only changes the status text,
+            # not the bar position - see convert()'s log_cb docstring
+            # for why _verify() itself gets no percentage of its own.
+            if phase == "verify":
+                feedback.setProgressText(self.tr(
+                    "Checking the output is a valid Cloud Optimized "
+                    "GeoTIFF (COG)..."
+                ))
+                return
+            # "translate" - Translate itself has finished.
             feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
 
         feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
