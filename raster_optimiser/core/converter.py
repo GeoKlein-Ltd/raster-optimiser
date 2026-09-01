@@ -719,7 +719,7 @@ def _format_reproduce_commands(full_args: list) -> str:
 
 
 def _build_decision_metadata(
-    detection: "DetectionResult", requested_profile: Optional[str],
+    path: str, detection: "DetectionResult", requested_profile: Optional[str],
     profile_used: str, decisions: "DecisionSummary", full_args: list,
 ) -> dict:
     """Builds the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
@@ -753,17 +753,25 @@ def _build_decision_metadata(
     GEOKLEIN_6_HIDDEN_PIXELS is always present, as an empty string when
     there's no message this run, rather than omitted - confirmed
     directly that "-mo KEY=" (empty) actually removes an inherited
-    value with that key, not just blanks it, which is what makes this
-    safe against the case the old strip-any-GEOKLEIN_-key loop existed
-    for: Translate inherits source metadata, so re-running this tool on
-    a file it already produced (with a message that run, none this
-    run) would otherwise leave a stale record sitting next to the fresh
-    one. This only covers the seven keys this tool has ever written,
-    not a generic scan of the source's own metadata for any other key
-    starting with GEOKLEIN_ - deliberately: there has never been an
-    eighth key or a differently-named one, and scanning for one would
-    cost a second gdal.Open() of the source for a case that has never
-    happened.
+    value with that key, not just blanks it. Translate inherits source
+    metadata, so re-running this tool on a file it already produced
+    (with a message that run, none this run) would otherwise leave a
+    stale record sitting next to the fresh one.
+
+    The same problem exists for any other GEOKLEIN_* key the source
+    happens to carry that isn't one of the seven above, so this
+    function also opens the source itself (metadata-only, no pixel
+    read - see the scan below) and clears any inherited key starting
+    with GEOKLEIN_ it doesn't already know about. This repo's own
+    commit history has never held an eighth key or a differently-named
+    one - confirmed directly against every commit, not assumed - but
+    that's a fact about this repository, not about every build of this
+    tool that has ever run: a build predating git init wrote
+    GEOKLEIN_SUMMARY into real files, and files carrying it still
+    exist. The scan below exists for exactly that gap - a stray key
+    this repo's history has no record of, but a real file can still
+    carry - not because an eighth key has ever turned up in anything
+    reviewed here.
     """
     version = _read_plugin_version()
     today = datetime.date.today()
@@ -806,6 +814,29 @@ def _build_decision_metadata(
             f"{_compression_display_label(decisions.applied.compression)}."
         ),
     }
+
+    # Scan the source's own metadata for a stray GEOKLEIN_* key none of
+    # the seven above already covers - see this function's docstring
+    # for why the fixed seven aren't assumed to be the whole possible
+    # set. A second gdal.Open() here (detect()'s own handle is already
+    # closed by this point - see detector.py's "finally: ds = None"
+    # blocks) but metadata-only, so cheap even on a large source: no
+    # pixel data is touched, only the header. Never lets a scan failure
+    # block the conversion itself - a source metadata read that fails
+    # here is surprising (detection already opened this same file
+    # successfully earlier in this same run) but not a reason to abort
+    # a Translate that would otherwise succeed.
+    try:
+        src_ds = gdal.Open(path, gdal.GA_ReadOnly)
+        src_metadata = src_ds.GetMetadata() if src_ds is not None else {}
+    except Exception:  # noqa: BLE001 - never block the conversion on this scan
+        src_metadata = {}
+    finally:
+        src_ds = None
+    for key in src_metadata:
+        if key.startswith("GEOKLEIN_") and key not in items:
+            items[key] = ""
+
     return items
 
 
@@ -1400,7 +1431,7 @@ def convert(
     # from, inside _build_decision_metadata() - the printed reproduce
     # command doesn't re-include the metadata that describes it.
     metadata_items = _build_decision_metadata(
-        detection, chosen_profile, profile, result.decisions, full_args,
+        path, detection, chosen_profile, profile, result.decisions, full_args,
     )
     translate_args = full_args + _metadata_mo_args(metadata_items)
 
