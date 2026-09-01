@@ -53,7 +53,7 @@ This section now documents every parameter, not just Purpose - the panel grew fr
 
 Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values survive unchanged.
 
-Not every file can be written for Viewing. Elevation, 16-bit and multispectral imagery are always written for Analysis. So are some 8-bit RGB files, depending on how their transparency is stored - see "Vague clause not yet fixed" below. Where that applies, the tool writes for Analysis and says why in the log and in the file's own metadata, under Layer Properties, Information.
+Not every file can be written for Viewing. Elevation, 16-bit and multispectral imagery are always written for Analysis. So are 8-bit RGB files whose transparent border is marked by a NoData value rather than an alpha band, because Viewing shifts pixel values slightly and a border marked by value would no longer match. A border marked by an alpha band is defined by position, so it survives. Where Analysis is forced, the tool says why in the log and in the file's own metadata, under Layer Properties, Information.
 
 If you are not sure, choose Analysis. It costs disk space and nothing else.
 
@@ -82,10 +82,6 @@ Some rasters cannot be optimised safely with these settings. The tool detects th
 - **Files with no coordinate reference system.**
 
 This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`, `NO_BANDS`, `UNSUPPORTED_DTYPE` are also refusal codes it doesn't mention) - deliberately, per `plugin_design_notes.md`'s "\"What it will not process\" lists a subset of refusals on purpose" entry: the section exists to save someone time on a file they can recognise in advance, and none of those three are recognisable that way.
-
-**Vague clause not yet fixed**
-
-"Depending on how their transparency is stored" (above) was flagged, not fixed, when this panel was rewritten: the actual mechanism (`detector.py:835-861`) is that an 8-bit RGB file is forced to Analysis when its transparent border is marked only by a NoData pixel value with no alpha band, because lossy compression shifts pixel values slightly and a value-based border marker does not survive that reliably - a file with a real alpha band marks its border by position instead and is unaffected. A plain-English replacement clause was proposed and reported but not applied; the vague wording above is still what ships.
 
 **Glossary**
 
@@ -138,7 +134,7 @@ Help:
 >
 > Both load and pan at the same speed. Both are always written as a Cloud Optimized GeoTIFF (COG), never a .jpg file.
 >
-> Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and some 8-bit RGB files can too, depending on how their transparency is stored. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
+> Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and so can 8-bit RGB files whose transparent border is marked by a NoData value rather than an alpha band, because viewing shifts pixel values slightly and a border marked by value would no longer match. A border marked by an alpha band is defined by position, so it survives. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
 >
 > If you're not sure, choose Analysis. It costs disk space and nothing else.
 
