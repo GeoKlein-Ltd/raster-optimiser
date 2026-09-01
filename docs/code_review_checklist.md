@@ -100,6 +100,19 @@ ones just edited.
   along with the others, not instead of them. `plugin_design_notes.md` and
   `README.md` are not covered by that discipline at all, and both retained
   claims the code had already dropped.
+- Does any comment or docstring assert something about every version of this
+  plugin that has ever run, rather than every version in this repository? The
+  git history is not a complete record of that: a build predating `git init`
+  wrote `GEOKLEIN_SUMMARY`, a key no commit in this repository contains, and
+  files carrying it still exist. A claim about what past builds did or did not
+  write needs to be scoped explicitly to the repository, or defended against
+  files the repository has no record of, not stated as a fact about every
+  build that has ever run. Found 2026-09-01 in `_build_decision_metadata()`'s
+  own docstring, which claimed "there has never been an eighth key or a
+  differently-named one" - true of every commit, confirmed directly against
+  the full git history, and false of at least one real file; fixed by scoping
+  the claim to what the repository's history can actually attest to, and
+  adding a scan for exactly the case the old claim had ruled out.
 
 Note that a targeted audit for stale comments found five and missed a sixth in
 a file it had already opened twice. This section needs the full read as much as
