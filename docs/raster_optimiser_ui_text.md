@@ -28,42 +28,50 @@ QGIS renders this as HTML. Section headings are plain `<p>` text, not `<b>`: QGI
 
 **What this does**
 
-Makes large rasters load and pan quickly in QGIS or any other GDAL-based software, and reduces their file size. The output is always a Cloud Optimized GeoTIFF (COG), never a .jpg file.
+Makes large rasters load and pan quickly in QGIS, QField, or any other GDAL-based software, and reduces their file size. The output is always a Cloud Optimized GeoTIFF, never a .jpg file.
 
 **Why your file is slow**
 
-Most orthomosaics and elevation rasters come out of processing software missing two things GDAL needs in order to draw them quickly:
+Most orthomosaics and elevation rasters come out of processing software without two things GDAL needs to draw them quickly.
 
-- **Pyramids**, also called overviews: pre-built smaller copies of the image. Without them, QGIS has to read every pixel in the file just to draw a zoomed-out view. On a 470-megapixel ortho, that's the entire file, on every pan and every zoom.
-- **Tiling**: storing pixels as small squares rather than full-width rows, so software can read one part of the image without touching the rest.
+Without pyramids, QGIS reads every pixel in the file to draw a zoomed-out view, and does it again on every pan and every zoom.
 
-This tool adds both, and compresses the file sensibly on the way through.
+Without tiling, QGIS cannot read one corner of the image without reading the full width of every row that corner sits in.
+
+This tool adds both, and picks a compression setting to match what the file contains.
 
 **What will you use this file for**
 
-*Analysis*: keeps every pixel value exactly as it is. Use it for anything you extract numbers from: vegetation indices, crown segmentation, classification, change detection.
+*Analysis* keeps every pixel value exactly as it is. Use it for anything you take numbers from: vegetation indices, crown segmentation, classification, change detection.
 
-*Viewing*: produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context.
+*Viewing* discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out around 80% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 
-Both load and pan at the same speed. The choice only affects file size and whether pixel values survive unchanged.
+Both load and pan at the same speed. The choice affects file size, and whether pixel values survive unchanged.
 
-Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and some 8-bit RGB files can too, depending on how their transparency is stored. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
+Not every file can be written for viewing. Elevation, 16-bit and multispectral imagery are always written for analysis, and so are some 8-bit RGB files, depending on how their transparency is stored. Where that applies, the tool writes for analysis and says why in the log and in the file itself.
 
-**What it won't process**
+**What it will not process**
 
-Some rasters can't be optimised safely with these settings, so the tool detects them and stops rather than producing something quietly wrong:
+Some rasters cannot be optimised safely with these settings. The tool detects them and stops, rather than producing something quietly wrong.
 
-- **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two categories produces a third that doesn't exist.
+- **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two category codes produces a third that means nothing.
 - **Files with no coordinate reference system.**
 
 Your source file is never modified. The tool always writes a new file. (No longer `<b>` in code either, for the same reason as the section headings above.)
 
 **Glossary**
 
-- **NoData**: a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could ever be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 is simply black.
+Ten entries now, alphabetical - up from five. `converter.py:106`/`:636` confirm AVERAGE is the actual overview resampling method the Resampling entry describes; `GeoKlein_raster_optimisation_workflow.md:48` confirms the COG entry's "index at the front, not after the image data" wording.
+
 - **Alpha band**: an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
-- **Collar**: the transparent border around a survey area, where the image doesn't fill the rectangular file.
+- **Band**: one layer of values in a raster. A colour photograph has three, red, green and blue. An elevation model has one. Multispectral imagery has more, often including light the eye cannot see.
+- **Bit depth**: how much range each pixel value has. 8-bit holds 0 to 255, which is enough for colour. 16-bit and Float32 hold far more, which is what measurements need.
+- **Cloud Optimized GeoTIFF (COG)**: a GeoTIFF that is tiled, has pyramids, and keeps its index at the front of the file rather than after the image data. Software can then read one small part of it without reading the whole thing, including over a network.
+- **Collar**: the transparent border around a survey area, where the image does not fill the rectangular file.
+- **Lossless and lossy**: lossless compression makes a file smaller with every pixel value still recoverable exactly. Lossy compression makes it much smaller by discarding detail, and the discarded detail does not come back.
+- **NoData**: a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 means black.
 - **Pyramids, also called overviews**: pre-built smaller copies of the image at successive zoom levels.
+- **Resampling**: working out the pixel values for a smaller copy of an image from the pixels it replaces. Averaging is the usual method, and it is why pyramids cannot be built safely on classified rasters.
 - **Tiling**: storing the image as small squares instead of full-width rows.
 
 **(closing block, separated by a horizontal rule)**
