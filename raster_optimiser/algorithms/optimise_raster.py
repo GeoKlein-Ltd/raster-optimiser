@@ -686,11 +686,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
         # One continuous 0-100 bar across both phases: detection 0-10,
-        # Translate 10-100. Used to be three phases (detection,
-        # Translate, BuildOverviews) - the COG driver builds pyramids
-        # inside the same Translate call now, so there's no separate
-        # overviews phase left to give its own span. Each phase gets its
-        # own closure so cancellation and scaling are independent - see
+        # Translate 10-90. The remaining 90-100 is reserved for
+        # convert()'s own close/flush and _verify() afterwards, which
+        # have no progress percentage of their own (see log_cb below) -
+        # left at 90 rather than jumped to 100 the moment Translate's
+        # own callback reports done, so the bar doesn't sit at 100
+        # while there's real, unfinished work still happening; 100 is
+        # only set explicitly once convert() has actually returned,
+        # further down. Used to be three phases (detection, Translate,
+        # BuildOverviews) - the COG driver builds pyramids inside the
+        # same Translate call now, so there's no separate overviews
+        # phase left to give its own span. Each phase gets its own
+        # closure so cancellation and scaling are independent - see
         # core/converter.py's _ProgressTracker for why returning False
         # here is what makes Cancel actually stop the running GDAL call,
         # not just stop future progress updates. detect()'s own
@@ -764,22 +771,29 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         requested_profile = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
 
         def log_cb(phase, elapsed_seconds):
-            # "verify" fires once, right after Translate succeeds and
-            # before convert() closes/flushes the output dataset and
-            # runs _verify() (the COG validator) - both silent
-            # otherwise, so the bar sat pinned at 100% with stale
+            # "translate" fires first, once Translate (plus the
+            # dataset close/flush right after it) has finished. "verify"
+            # fires second, right before convert() runs _verify() (the
+            # COG validator) - real work with no progress percentage of
+            # its own, that would otherwise sit behind stale
             # "Translating..." text for several seconds with nothing
-            # telling the user why. This only changes the status text,
-            # not the bar position - see convert()'s log_cb docstring
-            # for why _verify() itself gets no percentage of its own.
-            if phase == "verify":
-                feedback.setProgressText(self.tr(
-                    "Checking the output is a valid Cloud Optimized "
-                    "GeoTIFF (COG)..."
-                ))
+            # telling the user why. Deliberately in this order, not the
+            # reverse: a log reading "Checking the output" before
+            # "Translate finished" would describe events out of
+            # sequence, which is worse than the close/flush between
+            # them going unlabelled (its cost is already folded into
+            # elapsed_seconds below). This only changes the status
+            # text, not the bar position - see convert()'s log_cb
+            # docstring for why _verify() itself gets no percentage of
+            # its own.
+            if phase == "translate":
+                feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
                 return
-            # "translate" - Translate itself has finished.
-            feedback.pushInfo(self.tr("Translate finished in {:.1f}s").format(elapsed_seconds))
+            # "verify"
+            feedback.setProgressText(self.tr(
+                "Checking the output is a valid Cloud Optimized "
+                "GeoTIFF (COG)..."
+            ))
 
         feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
         result = convert(
@@ -787,7 +801,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
-            translate_progress_cb=make_progress_cb(10, 90),
+            translate_progress_cb=make_progress_cb(10, 80),
             log_cb=log_cb,
         )
 
@@ -812,6 +826,17 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
         if result.action in _HARD_FAILURE_ACTIONS:
             raise QgsProcessingException(result.message)
+
+        # Only reached once convert() has genuinely finished, including
+        # _verify() - see make_progress_cb's own comment above for why
+        # Translate itself only ever reaches 90, not 100. Set explicitly
+        # here rather than from any callback, since nothing inside
+        # convert() reports a percentage for the close/flush or
+        # _verify() spans - not on the already_optimised/cancelled/hard-
+        # failure paths above, which never produced a freshly-verified
+        # file and would misrepresent what happened if the bar jumped
+        # to 100 there too.
+        feedback.setProgress(100)
 
         feedback.pushInfo(result.message)
         if result.size_summary:

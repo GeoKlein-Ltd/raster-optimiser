@@ -1110,23 +1110,29 @@ def convert(
     about the destination path, a different concern).
 
     log_cb, if given, is called once as log_cb("translate", elapsed_seconds)
-    when the single Translate call finishes (detection is timed by the
-    caller, not here - this module never calls detect()). It is also
-    called once as log_cb("verify", None), right after Translate
-    succeeds and before this function closes/flushes the output dataset
-    and runs _verify() - both real work, with no progress percentage of
-    their own, that would otherwise sit behind whatever status text the
+    when the single Translate call finishes, including the dataset
+    close/flush that immediately follows it (detection is timed by the
+    caller, not here - this module never calls detect()). It is then
+    called once more as log_cb("verify", None), right before this
+    function runs _verify() - real work, with no progress percentage of
+    its own, that would otherwise sit behind whatever status text the
     caller last set (typically still "Translating..."), looking
-    finished/hung rather than busy. elapsed_seconds is None on this call
-    specifically so a caller can tell "phase starting, no number yet"
-    from "phase finished, here's how long it took" without a second
-    parameter. Used to be called a second time for a separate
-    "overviews" phase; there is only one Translate phase now, plus this
-    verify marker. Kept separate from the GDAL progress callback since
-    that fires many times per phase; this fires once per event, and
-    structured rather than pre-formatted so a caller can drive its own
-    UI (e.g. QGIS feedback.setProgressText()) off the phase name without
-    parsing a string.
+    finished/hung rather than busy. elapsed_seconds is None on this
+    second call specifically so a caller can tell "phase starting, no
+    number yet" from "phase finished, here's how long it took" without a
+    second parameter. "translate" fires before "verify" deliberately, in
+    that order: a caller building a log from these two events (e.g. QGIS
+    feedback.pushInfo()/setProgressText()) gets "Translate finished"
+    before "Checking the output", matching what actually happened - the
+    close/flush between Translate returning and this callback firing has
+    no event of its own, which is fine, since its cost is already folded
+    into elapsed_seconds above rather than needing a separate label. Used
+    to be called a second time for a separate "overviews" phase; there is
+    only one Translate phase now, plus this verify marker. Kept separate
+    from the GDAL progress callback since that fires many times per
+    phase; this fires once per event, and structured rather than
+    pre-formatted so a caller can drive its own UI off the phase name
+    without parsing a string.
     """
     result = ConversionResult(source_path=path)
 
@@ -1442,20 +1448,22 @@ def convert(
         result.message = "Translate failed (no output produced)."
         return result
 
-    # Translate itself is done, but flushing/closing the dataset below
-    # and _verify() after it are both real work with no progress
-    # percentage of their own - see this function's log_cb docstring.
-    # Fired before the close/flush, not after, so status text covers
-    # that too, not just _verify() - the whole span is silent otherwise.
-    if log_cb:
-        log_cb("verify", None)
-
     out_ds = None  # flush/close - metadata was already written via -mo above
     result.translate_ok = True
     result.output_path = output_path
     result.translate_seconds = time.perf_counter() - t0
     if log_cb:
         log_cb("translate", result.translate_seconds)
+
+    # _verify() below is real work with no progress percentage of its
+    # own - see this function's log_cb docstring. Fired after
+    # "translate", not before, so the log reads "Translate finished"
+    # then "Checking the output" in that order - a log reporting the
+    # wrong order is worse than the close/flush above going unlabelled
+    # between the two (it's already folded into translate_seconds
+    # above, not a separate silent gap of its own).
+    if log_cb:
+        log_cb("verify", None)
 
     # ---- Verify (doc Step 4 "Verify") ----
     # No separate Build Overviews step to fail independently any more -
