@@ -486,3 +486,31 @@ pure-COG-restructure case (a 0.02% increase with no other cause) and below
 any increase judged worth naming a cause for, rather than being measured
 directly. It is a round number chosen to sit comfortably on the right side
 of that single data point, not a boundary calibrated against several.
+
+---
+
+## "What it will not process" lists a subset of refusals on purpose
+
+**Status:** deliberate, 2026-08-31. `shortHelpString()`'s "What it will not
+process" section names only classified rasters and files with no CRS, and
+leaves out three other refusal codes in `core/detector.py`: UNREADABLE,
+NO_BANDS and UNSUPPORTED_DTYPE. The section exists to save someone time on
+a file they can recognise in advance; nobody looks at a raster and can
+tell it has zero bands or an unsupported data type, so those three already
+explain themselves in the refusal message when they happen and do not need
+advance warning here.
+
+---
+
+## Progress bar pauses around 10% early on QGIS 4.2, cause not found
+
+**Status:** investigated, not resolved, 2026-08-31. On QGIS 4.2 the
+progress bar pauses briefly around 10% early in a run, with nothing in the
+log explaining why. Instrumentation that day measured the setup block
+before Translate at 0.001s and the gap from the `gdal.Translate()` call to
+its first callback tick at 0.020s, with steady ticks afterwards and no
+plateau, ruling out both original candidates without reproducing the
+symptom on the test file used. The remaining theory is a Qt repaint or
+event-loop effect, where the progress value climbs normally but the screen
+does not follow it; treated as cosmetic and not investigated further
+before release.
