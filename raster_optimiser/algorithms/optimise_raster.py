@@ -323,6 +323,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<p>If you are not sure, choose Analysis. It is the safest "
             "option: your file still ends up smaller and faster, just "
             "not as small as Viewing would make it.</p>"
+            "<p><b><i>Optimised raster</i></b>: where to save the "
+            "result.</p>"
             "<p>The three settings below are under <b>Advanced "
             "parameters</b>.</p>"
             "<p><b><i>Hidden pixels (NoData)</i></b>: what to do when a file "
@@ -659,8 +661,14 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         self.addParameter(purpose_param)
 
+        # Label kept short: QGIS names the loaded output layer after this
+        # description, and that name is what persists in the project's
+        # Layers panel. "Save optimised raster as" was tried and reverted
+        # for exactly that reason - it produced a layer literally called
+        # "Save optimised raster as". The field label is read once; the
+        # layer name lives on.
         output_param = QgsProcessingParameterRasterDestination(
-            self.OUTPUT, self.tr("Save optimised raster as"),
+            self.OUTPUT, self.tr("Optimised raster"),
         )
         output_param.setHelp(self.tr(
             "Where to save the result. Always written as a Cloud "

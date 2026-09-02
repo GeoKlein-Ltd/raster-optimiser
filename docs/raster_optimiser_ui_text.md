@@ -41,7 +41,7 @@ Both mean QGIS has to do more work than the view on screen actually requires. Th
 
 **What does each parameter do?**
 
-This section covers Input layer, What will you use this file for, and the three Advanced settings. The output path has no entry of its own; the "your source file is never modified" note that used to sit there is now under Input layer.
+This section covers every parameter. "Your source file is never modified" sits on the Input layer line, not the Optimised raster line where it used to be - that placement is better.
 
 ***Input layer***: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system. Your source file is never modified.
 
@@ -60,6 +60,8 @@ Not every file can be written for Viewing. Elevation (DEMs), 16-bit and multispe
 Where Analysis is forced, the tool says why in the log and in the file's own metadata, under Layer Properties, Information.
 
 If you are not sure, choose Analysis. It is the safest option: your file still ends up smaller and faster, just not as small as Viewing would make it.
+
+***Optimised raster***: where to save the result.
 
 The three settings below are under **Advanced parameters**.
 
@@ -121,7 +123,7 @@ Report problems: https://github.com/GeoKlein-Ltd/raster-optimiser/issues
 
 ## Parameter labels and help text
 
-Order follows `initAlgorithm()`: Main (Input layer, What will you use this file for, Save optimised raster as) then Advanced (Hidden pixels (NoData), Reprocess even if already optimised, Replace existing output file).
+Order follows `initAlgorithm()`: Main (Input layer, What will you use this file for, Optimised raster) then Advanced (Hidden pixels (NoData), Reprocess even if already optimised, Replace existing output file).
 
 ### Input layer
 
@@ -155,9 +157,11 @@ Help. Deliberately short: the full explanation, including which files are forced
 
 ---
 
-### Save optimised raster as (Output)
+### Optimised raster (Output)
 
-Label: **Save optimised raster as**
+Label: **Optimised raster**
+
+Kept short deliberately: QGIS names the loaded output layer after this description, and that name is what persists in the project's Layers panel (the field label is read once). "Save optimised raster as" was tried and reverted because it produced a layer literally called "Save optimised raster as". The output-layer name can be set independently of this label from `processAlgorithm()` - `context.layerToLoadOnCompletionDetails(path).name` plus `.forceName = True`, both writable on `QgsProcessingContext.LayerDetails` on 3.44 LTR and 4.2 - but that is not currently done; the label is just kept short enough to work as both.
 
 Help:
 > Where to save the result. Always written as a Cloud Optimized GeoTIFF (COG), tiled with pyramids built in.
