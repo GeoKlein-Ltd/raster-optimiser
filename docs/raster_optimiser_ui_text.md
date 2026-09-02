@@ -67,7 +67,7 @@ The three settings below are under Advanced parameters.
 - *Reveal hidden pixels* always clears it, which brings the content back but can render the collar as a solid black border.
 - *Keep as-is* leaves the file's NoData setting untouched.
 
-*Reprocess even if already optimised*: by default a file that is already tiled, has pyramids, and is already at the target compression is left alone, since converting it again would not make it faster or smaller. Tick this to convert it anyway, for instance to change how NoData is handled.
+*Reprocess even if already optimised*: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF - converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file too, for instance to change how NoData is handled.
 
 *Replace existing output file*:
 
@@ -177,10 +177,12 @@ Advanced.
 
 Label: **Reprocess even if already optimised**
 
-Help:
-> By default, a file that's already tiled with pyramids and already at the target compression is left alone, since converting it again wouldn't make it any faster or smaller. A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save there.
+Help. Paragraph breaks are `<br><br>` in the code, not blank lines (same tooltip rich-text constraint as the PURPOSE help above).
+> By default, a file is left alone only when it's already tiled with pyramids, already at the target compression, and already a valid Cloud Optimized GeoTIFF - converting it again wouldn't make it any faster or smaller.
 >
-> Tick this to convert an already-optimal file anyway, to change how NoData is handled.
+> A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save. So is a file that's tiled, pyramided and already correctly compressed but isn't a valid COG yet - the case for every file written by an earlier version of this plugin.
+>
+> Tick this to convert an already-valid file anyway, to change how NoData is handled.
 
 ---
 

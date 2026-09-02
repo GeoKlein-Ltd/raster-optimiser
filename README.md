@@ -1,9 +1,9 @@
 # Raster Optimiser
 
-A QGIS Processing plugin that detects slow, unoptimised orthomosaics and
-elevation rasters and converts them to fast-panning, correctly-compressed
-GeoTIFFs - the right tiling, pyramid and compression settings applied
-automatically, no GDAL flags to memorise.
+A QGIS Processing plugin that converts slow, unoptimised orthomosaics and
+elevation rasters into fast-panning Cloud Optimized GeoTIFFs (COGs) - the
+right tiling, pyramid and compression settings applied automatically, no
+GDAL flags to memorise.
 
 See `docs/GeoKlein_raster_optimisation_workflow.md` for the full workflow and
 design notes.

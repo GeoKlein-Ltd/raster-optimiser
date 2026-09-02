@@ -326,11 +326,14 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "untouched.</li>"
             "</ul>"
             "<p><i>Reprocess even if already optimised</i>: by default "
-            "a file that is already tiled, has pyramids, and is already "
-            "at the target compression is left alone, since converting "
-            "it again would not make it faster or smaller. Tick this to "
-            "convert it anyway, for instance to change how NoData is "
-            "handled.</p>"
+            "a file is left alone only when it is already tiled, has "
+            "pyramids, is at the target compression, and is already a "
+            "valid Cloud Optimized GeoTIFF - converting it again would "
+            "not make it faster or smaller. A file that meets only the "
+            "first three, tiled and pyramided at the target compression "
+            "but not yet a valid COG, is reprocessed anyway. Tick this "
+            "to convert an already-valid file too, for instance to "
+            "change how NoData is handled.</p>"
             "<p><i>Replace existing output file</i>:</p>"
             "<ul>"
             "<li>Unticked, the tool stops rather than overwriting a "
@@ -687,16 +690,24 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # This is its explicit override, plumbed through to convert()
         # itself (not just gated in the UI layer), so it works
         # identically via the CLI (--force-reprocess) and direct API use.
+        # Paragraph breaks are "<br><br>", not "\n\n": QGIS renders this
+        # tooltip as rich text wrapped in one <p>, so literal newlines
+        # collapse to spaces (same constraint as PURPOSE's setHelp
+        # above - confirmed on QGIS 4.2 and 3.44 LTR).
         force_reprocess_param.setHelp(self.tr(
-            "By default, a file that's already tiled with pyramids and "
-            "already at the target compression is left alone, since "
-            "converting it again wouldn't make it any faster or "
-            "smaller. A file that's tiled with pyramids but still on a "
-            "less efficient compression is reprocessed regardless of "
-            "this setting, since there's real file size to save "
-            "there.\n"
-            "\n"
-            "Tick this to convert an already-optimal file anyway, to "
+            "By default, a file is left alone only when it's already "
+            "tiled with pyramids, already at the target compression, "
+            "and already a valid Cloud Optimized GeoTIFF - converting "
+            "it again wouldn't make it any faster or smaller."
+            "<br><br>"
+            "A file that's tiled with pyramids but still on a less "
+            "efficient compression is reprocessed regardless of this "
+            "setting, since there's real file size to save. So is a "
+            "file that's tiled, pyramided and already correctly "
+            "compressed but isn't a valid COG yet - the case for every "
+            "file written by an earlier version of this plugin."
+            "<br><br>"
+            "Tick this to convert an already-valid file anyway, to "
             "change how NoData is handled."
         ))
         self.addParameter(force_reprocess_param)

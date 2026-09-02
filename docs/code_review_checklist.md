@@ -100,6 +100,24 @@ ones just edited.
   along with the others, not instead of them. `plugin_design_notes.md` and
   `README.md` are not covered by that discipline at all, and both retained
   claims the code had already dropped.
+- When a behavioural rule is stated in prose or user-facing text, enumerate
+  every place it appears *before* changing any of them, and fix the whole
+  set in one pass. Fixing the locations one session happens to open, and
+  trusting a later search to surface the rest, is how a rule ends up stated
+  several different ways at once. The four-condition "already optimised"
+  rule - a file is left alone only when it is a valid COG *and* tiled *and*
+  has pyramids *and* is at the target compression - was corrected in five
+  separate places across three sessions: `_already_optimised_message()`,
+  `shortHelpString()`'s Reprocess paragraph, `FORCE_REPROCESS`'s
+  `setHelp()`, `metadata.txt`'s `about=`, and `README.md`'s intro. Each
+  session fixed only what it had loaded and left the others asserting three
+  conditions. The full set for a claim like this is: the string constants
+  and helper methods that build the message, every parameter `setHelp()`
+  and `shortHelpString()`, `metadata.txt` (`description=` and `about=`),
+  `README.md`, `docs/raster_optimiser_ui_text.md`, and
+  `plugin_design_notes.md`. A `grep` for one distinctive phrase from the
+  claim, run across all of those before editing, is the cheap version of
+  this - the expensive version is the three sessions it actually took.
 - Does any comment or docstring assert something about every version of this
   plugin that has ever run, rather than every version in this repository? The
   git history is not a complete record of that: a build predating `git init`
