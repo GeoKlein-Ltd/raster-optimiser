@@ -569,12 +569,24 @@ that does not exist.
 
 **What was done about it:** a `processAlgorithm()` log line before
 `convert()` explains the slow start and names a rough 20 to 30 second
-figure, so the wait reads as expected rather than hung. It is gated to
-`_resolved_profile_for_target(detection, purpose_choice) == "lossy"`:
-Analysis climbs fairly evenly, and gating on the *resolved* profile
-means a Viewing request coerced to Analysis (elevation, 16-bit,
-NoData-only RGB) does not get a message about a slowdown it will not
-see. A first version pushed the line on every run and phrased it to
+figure, so the wait reads as expected rather than hung. Two gates:
+
+- `_resolved_profile_for_target(detection, purpose_choice) == "lossy"`.
+  Analysis climbs fairly evenly, and gating on the *resolved* profile
+  means a Viewing request coerced to Analysis (elevation, 16-bit,
+  NoData-only RGB) does not get a message about a slowdown it will not
+  see.
+- source pixel count at least `_SLOW_START_NOTE_MIN_PIXELS` (250
+  megapixels). Below that the slow phase was under a second in the crop
+  measurements below, so the note would describe a wait that does not
+  happen. 250 MP sits above the largest "fast" point (171 MP) and below
+  the smallest "slow" one (513 MP); the constant's own comment carries
+  the limits (one point either side of the crossover, nothing between
+  264 and 612 MB, and the step is a memory boundary that moves with
+  RAM, `GDAL_CACHEMAX` and disk speed, so this is a single-machine
+  calibration).
+
+A first version pushed the line on every run and phrased it to
 distinguish the two paths in prose; that read as a warning about
 something that was not happening on Analysis runs. An earlier attempt
 still, to carry the message in the status text and swap it for
@@ -582,24 +594,55 @@ still, to carry the message in the status text and swap it for
 first tick lands at about 20ms, so the message flashed and vanished
 before the slow phase it described.
 
+### Crop measurements, 2026-09-02
+
+Lossy path, on nested crops of `Ortho_school_v1.tif` (DEFLATE, 4-band
+Byte, no overviews) plus the full file. Two crops each at 43 and 171
+megapixels: one from the near-empty top-left corner (low bytes per
+pixel) and one from the dense centre (high), to tell pixel count apart
+from compressed size. Slow phase = first callback tick until the first
+inter-tick gap under about a second.
+
+| crop | source MB | MP | bytes/px | slow phase | slow phase ends at `complete` | Translate total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| corner 43 MP | 2.1 | 43 | 0.05 | ~0.1s | 0.01 | 0.7s |
+| centre 43 MP | 58.3 | 43 | 1.36 | ~0.16s | 0.01 | 1.5s |
+| corner 171 MP | 121.4 | 171 | 0.71 | ~0.4s | 0.01 | 4.3s |
+| centre 171 MP | 263.6 | 171 | 1.54 | ~0.7s | 0.01 | 5.8s |
+| corner 513 MP | 611.8 | 513 | 1.19 | ~10.1s | 0.062 | 26.5s |
+| full | 1782.2 | 1524 | 1.17 | ~45.0s | 0.180 | 86.7s |
+
+First tick was 15 to 20 ms in every run.
+
+**Finding 1: pixel count drives the slow phase; compressed bytes only
+nudge it.** At a fixed 43 MP, 28x more bytes (2.1 to 58 MB) moved the
+slow phase from ~0.1 to ~0.16s. At 171 MP, 2.2x more bytes (121 to 264
+MB) moved it from ~0.4 to ~0.7s. So decode cost adds a small multiplier
+but never turns a fast run slow. Pixel count is what carries it into
+"worth warning" territory, non-linearly: near-linear to ~170 MP, then a
+sharp step between 170 and 510 MP (0.7s to 10s), then roughly linear
+again. That step is the full-resolution working set crossing a
+memory/cache boundary, which is why the MP threshold is a single-machine
+calibration.
+
+**Finding 2: the `complete` value where the slow phase ends is not
+stable.** It is 0.01 on every file up to ~260 MB, then 0.062 at ~610 MB,
+then 0.180 on the full file - the base-image phase's share of the
+progress bar grows with pixel count, from about 1 to about 18 per cent,
+and would also move with band count, overview count and codec.
+
 **Status text during the slow phase: left as "Translating...", no
-swap.** The status text is set once before `convert()` and stays put
-through the whole run. A later idea was to show a different string
-during the slow phase and swap it for "Translating..." once `complete`
-crossed a threshold around 0.05. Rejected on measurement: a `complete`
-threshold is calibrated to how one version of GDAL's COG driver
-apportioned progress on one file, which is not a documented contract.
-Crop measurements on 2026-09-02 (nested crops of `Ortho_school_v1.tif`
-at roughly 60, 260 and 610 MB plus the 1.78 GB original, lossy path)
-show the base-image phase ending at `complete` 0.01 on every file up to
-about 260 MB, then 0.06 at about 610 MB, then 0.18 on the full file -
-the fraction of the bar it occupies grows with pixel count, and would
-also move with band count, overview count and codec. There is no stable
-value to swap on. Tick-cadence detection instead - swap once two
-consecutive ticks arrive under about a second apart - would survive a
-different file, but it adds state and logic to `make_progress_cb` for a
-marginal gain over the gated log line above, which already tells a
-large-Viewing user what to expect. Not worth the machinery.
+swap.** It is set once before `convert()` and stays put. The idea was to
+show a different string during the slow phase and swap it for
+"Translating..." once `complete` crossed a threshold around 0.05.
+Finding 2 rules that out: there is no stable `complete` value to swap
+on, so any threshold would be calibrated to how this one GDAL version
+apportioned progress on this one file. Tick-cadence detection instead -
+swap once two consecutive ticks arrive under about a second apart -
+would survive a different file, but it adds state and logic to
+`make_progress_cb` for a marginal gain over the gated log line, which
+already tells a large-Viewing user what to expect. Not worth the
+machinery.
 
 ---
 

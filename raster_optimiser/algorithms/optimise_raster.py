@@ -144,6 +144,25 @@ _HARD_FAILURE_ACTIONS = (
     "error", "blocked", "converted_unverified", "refused_upstream",
 )
 
+# Source pixel-count floor below which the slow-start log line in
+# processAlgorithm() is suppressed. Measured 2026-09-02 on lossy crops
+# of one ortho (Ortho_school_v1.tif, DEFLATE, 4-band Byte): the slow
+# early phase of Translate was ~0.7s at 171 megapixels (whole Translate
+# 5.8s), ~10s at 513 MP, ~45s at 1524 MP. Below a few hundred MP the
+# note describes a wait that does not happen. 250 MP sits above the
+# largest "fast" point measured (171 MP) and below the smallest "slow"
+# one (513 MP).
+#
+# Caveats, so nobody reads this as a firm number: there is one measured
+# point either side of the crossover and nothing between 264 and 612 MB,
+# so the knee could be anywhere in 200-500 MP. The 170-510 MP step is a
+# memory boundary - the full-resolution working set spilling from cache
+# to disk - so it moves with RAM, GDAL_CACHEMAX and disk speed. 250 MP
+# is a single-machine calibration, not a portable constant; revisit if
+# the note is reported firing on quick runs or missing on slow ones.
+# See docs/plugin_design_notes.md "Progress bar sits near 10%".
+_SLOW_START_NOTE_MIN_PIXELS = 250_000_000  # 250 megapixels
+
 
 def _resolved_profile_for_target(detection, purpose_choice):
     """The actual lossy/lossless identity that will be used, needed to
@@ -942,19 +961,26 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # GDAL's first progress tick lands ~20ms after the
         # gdal.Translate() call, but the COG driver then works through
         # the full-resolution image before building the pyramids and
-        # counts that phase as almost no progress (complete 0.00-0.05),
-        # so the bar can sit near 10% for 20-30s early on (measured ~25s
-        # of an 84s run on a 1.66 GiB source). Gated to a RESOLVED lossy
-        # profile: Analysis climbs fairly evenly (worst inter-tick gap
-        # 1.7s, not near 10%), and resolving the profile here - rather
-        # than reading the raw request - is what makes the gate correct
-        # now: a Viewing request coerced to Analysis (elevation,
-        # 16-bit, NoData-only RGB) resolves to lossless and rightly
-        # doesn't get the message. An earlier attempt to carry this in
-        # the status text, swapped in on the first tick, was reverted -
-        # the first tick is too early to persist through the slow phase.
+        # counts that phase as almost no progress, so the bar can sit
+        # near 10% for tens of seconds early on (measured ~10s at 513 MP,
+        # ~45s at 1524 MP). Two gates:
+        #  - RESOLVED lossy profile: Analysis climbs fairly evenly (worst
+        #    inter-tick gap 1.7s, not near 10%), and resolving the
+        #    profile here rather than reading the raw request is what
+        #    makes this correct - a Viewing request coerced to Analysis
+        #    (elevation, 16-bit, NoData-only RGB) resolves to lossless
+        #    and rightly doesn't get the message.
+        #  - source pixel count >= _SLOW_START_NOTE_MIN_PIXELS: below
+        #    ~250 MP the slow phase was under a second in testing, so the
+        #    note would describe a wait that won't happen. See that
+        #    constant for the measurements and their limits.
+        # An earlier attempt to carry this in the status text, swapped in
+        # on GDAL's first tick, was reverted - the first tick is too
+        # early to persist through the slow phase.
         # See docs/plugin_design_notes.md "Progress bar sits near 10%".
-        if _resolved_profile_for_target(detection, purpose_choice) == "lossy":
+        source_pixels = detection.raster_size[0] * detection.raster_size[1]
+        if (_resolved_profile_for_target(detection, purpose_choice) == "lossy"
+                and source_pixels >= _SLOW_START_NOTE_MIN_PIXELS):
             feedback.pushInfo(self.tr(
                 "At the start of a large conversion the bar can sit near "
                 "10% for 20 to 30 seconds while GDAL works through the "

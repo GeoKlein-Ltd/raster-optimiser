@@ -229,15 +229,15 @@ Set by `processAlgorithm()` as the run moves through its phases. One continuous 
 | When | `setProgressText()` | Also pushed to the log |
 | --- | --- | --- |
 | Detection starts | `Detecting raster type...` | `Detection finished in {n}s` on completion |
-| Detection done, before `convert()` | `Translating (tiling, compressing, pyramids)...` | the slow-start note (below), on a resolved lossy run only |
+| Detection done, before `convert()` | `Translating (tiling, compressing, pyramids)...` | the slow-start note (below), on a large resolved-lossy run only |
 | Translate finishes | (unchanged) | `Translate finished in {n}s` |
 | Before `_verify()` | `Checking the output is a valid Cloud Optimized GeoTIFF (COG)...` | - |
 
-Slow-start log line, pushed once before `convert()` and only when `_resolved_profile_for_target(detection, purpose_choice) == "lossy"`:
+Slow-start log line, pushed once before `convert()` when both gates pass: `_resolved_profile_for_target(detection, purpose_choice) == "lossy"` **and** source pixel count at least `_SLOW_START_NOTE_MIN_PIXELS` (250 megapixels).
 
 > At the start of a large conversion the bar can sit near 10% for 20 to 30 seconds while GDAL works through the full-resolution image before building the pyramids.
 
-The bar genuinely does move during this stretch, just slowly, so `setProgressText()` stays on "Translating..." throughout - it is not frozen, and there is no separate "reading the source" phase to name. The rough 20 to 30 second figure is deliberate: "slowly" alone leaves someone guessing whether it has hung, a number lets them wait. It is hedged by "large conversion" and matches the measured ~25 seconds on a 1.66 GiB Viewing conversion (see `plugin_design_notes.md`, "Progress bar sits near 10%"). Gated on the **resolved** profile, not the requested one: Analysis climbs fairly evenly (worst inter-tick gap 1.7s, not near 10%), and resolving the profile means a Viewing request coerced to Analysis (elevation, 16-bit, NoData-only RGB) correctly does not get the message. An earlier version was pushed on every run and set a "Reading the source before conversion starts..." status text before `convert()`, swapped for "Translating..." on GDAL's first callback tick via a `first_tick_text` argument to `make_progress_cb`; both were reverted once instrumentation showed the first tick lands at ~20ms, far too early to carry a message through the slow phase.
+The bar genuinely does move during this stretch, just slowly, so `setProgressText()` stays on "Translating..." throughout - it is not frozen, and there is no separate "reading the source" phase to name. The rough 20 to 30 second figure is deliberate: "slowly" alone leaves someone guessing whether it has hung, a number lets them wait. Both "large" and the figure are backed by the crop measurements in `plugin_design_notes.md` ("Progress bar sits near 10%"): the note only fires above 250 MP, where the slow phase measured ~10s at 513 MP and ~45s at 1524 MP; below ~170 MP it was under a second, hence the pixel-count gate. Gated on the **resolved** profile, not the requested one: Analysis climbs fairly evenly (worst inter-tick gap 1.7s, not near 10%), and resolving the profile means a Viewing request coerced to Analysis (elevation, 16-bit, NoData-only RGB) correctly does not get the message. An earlier version was pushed on every run, at any size, and set a "Reading the source before conversion starts..." status text before `convert()`, swapped for "Translating..." on GDAL's first callback tick via a `first_tick_text` argument to `make_progress_cb`; all of that was reverted once instrumentation showed the first tick lands at ~20ms, far too early to carry a message through the slow phase.
 
 ---
 
