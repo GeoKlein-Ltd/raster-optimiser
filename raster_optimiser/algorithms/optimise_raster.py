@@ -160,7 +160,13 @@ _HARD_FAILURE_ACTIONS = (
 # to disk - so it moves with RAM, GDAL_CACHEMAX and disk speed. 250 MP
 # is a single-machine calibration, not a portable constant; revisit if
 # the note is reported firing on quick runs or missing on slow ones.
-# See docs/plugin_design_notes.md "Progress bar sits near 10%".
+# This floor is only one of three gates - the note also needs a resolved
+# lossy profile and a source with no overviews (see the push site in
+# processAlgorithm()). It stays despite not being portable because a
+# wrong threshold only shows or withholds one hedged sentence at the
+# wrong boundary, where a wrong duration - since removed from the
+# message - would have misinformed. See docs/plugin_design_notes.md
+# "Progress bar sits near 10%".
 _SLOW_START_NOTE_MIN_PIXELS = 250_000_000  # 250 megapixels
 
 
@@ -484,7 +490,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "should already load and pan quickly in QGIS or any other "
             "GDAL-based software. It's also "
             "already using the target compression, so reprocessing "
-            "wouldn't shrink it either.\n"
+            "wouldn't shrink it either, and it is already a valid "
+            "Cloud Optimized GeoTIFF (COG).\n"
             "\n"
             "Converting it again won't make it any faster or smaller. "
             "It would produce a second large file with the structure "
@@ -962,8 +969,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # gdal.Translate() call, but the COG driver then works through
         # the full-resolution image before building the pyramids and
         # counts that phase as almost no progress, so the bar can sit
-        # near 10% for tens of seconds early on (measured ~10s at 513 MP,
-        # ~45s at 1524 MP). Two gates:
+        # near 10% early on - measured ~10s at 513 MP, ~45s at 1524 MP on
+        # one machine, but the phase is a memory boundary that moves with
+        # RAM, GDAL_CACHEMAX and disk speed, so a slower machine can wait
+        # much longer. The note deliberately no longer names a figure -
+        # see docs/plugin_design_notes.md "Progress bar sits near 10%".
+        # Three gates:
         #  - RESOLVED lossy profile: Analysis climbs fairly evenly (worst
         #    inter-tick gap 1.7s, not near 10%), and resolving the
         #    profile here rather than reading the raw request is what
@@ -974,16 +985,23 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         #    ~250 MP the slow phase was under a second in testing, so the
         #    note would describe a wait that won't happen. See that
         #    constant for the measurements and their limits.
+        #  - source has NO overviews: every measurement behind both the
+        #    note and the 250 MP knee was taken on a no-overviews source.
+        #    Three reprocess runs on sources that already had overviews
+        #    (Translate 31.9s, 30.4s, 4.6s) showed no stall near 10% at
+        #    all - a file with overviews is being restructured, not read
+        #    from scratch. See docs/plugin_design_notes.md.
         # An earlier attempt to carry this in the status text, swapped in
         # on GDAL's first tick, was reverted - the first tick is too
         # early to persist through the slow phase.
         # See docs/plugin_design_notes.md "Progress bar sits near 10%".
         source_pixels = detection.raster_size[0] * detection.raster_size[1]
         if (_resolved_profile_for_target(detection, purpose_choice) == "lossy"
-                and source_pixels >= _SLOW_START_NOTE_MIN_PIXELS):
+                and source_pixels >= _SLOW_START_NOTE_MIN_PIXELS
+                and not detection.has_overviews):
             feedback.pushInfo(self.tr(
                 "At the start of a large conversion the bar can sit near "
-                "10% for 20 to 30 seconds while GDAL works through the "
+                "10% for a while, as GDAL works through the "
                 "full-resolution image before building the pyramids."
             ))
         feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))

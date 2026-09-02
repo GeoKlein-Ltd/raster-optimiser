@@ -568,8 +568,8 @@ that did not reproduce the symptom, and concluded a Qt repaint effect
 that does not exist.
 
 **What was done about it:** a `processAlgorithm()` log line before
-`convert()` explains the slow start and names a rough 20 to 30 second
-figure, so the wait reads as expected rather than hung. Two gates:
+`convert()` explains the slow start so the wait reads as expected rather
+than hung. Three gates:
 
 - `_resolved_profile_for_target(detection, purpose_choice) == "lossy"`.
   Analysis climbs fairly evenly, and gating on the *resolved* profile
@@ -585,6 +585,43 @@ figure, so the wait reads as expected rather than hung. Two gates:
   264 and 612 MB, and the step is a memory boundary that moves with
   RAM, `GDAL_CACHEMAX` and disk speed, so this is a single-machine
   calibration).
+- `not detection.has_overviews`. Added 2026-09-02 after the note was
+  reported firing on three reprocess runs where there was no wait at
+  all: reprocess of a fresh COG output (Translate 31.9s), of a pre-COG
+  file (30.4s), and of an already-optimised DSM (4.6s), none of which
+  stalled near 10%. All three had a source that was already tiled with
+  overviews; every measurement behind both the note's existence and the
+  250 MP knee was taken on a source with *no* overviews
+  (`Ortho_school_v1.tif` and its crops). The slow phase is GDAL decoding
+  a full-resolution image with no overviews to work from - exactly the
+  case those runs did not have - so a source that already carries
+  overviews is being restructured, not read from scratch, and does not
+  get the note.
+
+**Why the message no longer names a duration.** The first version named
+"a rough 20 to 30 second figure" on the reasoning that "slowly" alone
+leaves someone guessing whether the run has hung, while a number lets
+them wait. The figure was dropped because it was measured on a single
+machine (~10s at 513 MP, ~45s at 1524 MP here) and this same section
+already establishes the slow phase as a memory boundary that moves with
+RAM, `GDAL_CACHEMAX` and disk speed. A slower or RAM-starved machine can
+sit near 10% for well over 30 seconds, at which point the figure stops
+reassuring and starts reading as "something is wrong". "For a while" is
+honest on every machine; the figure was honest only on the one it came
+from.
+
+**Why the 250 MP gate stays despite the same portability problem.** The
+knee moves with the same RAM/`GDAL_CACHEMAX`/disk variables, so 250 MP is
+no more portable than the discarded figure was. It stays because the two
+failure modes are not equivalent. A wrong *duration* misinforms - it
+asserts a specific false fact the user measures against. A wrong
+*threshold* only shows or withholds one hedged sentence at the wrong
+boundary: a slightly-early trigger adds a mild, non-alarming line to a
+run that turned out quick; a slightly-late one falls back to the
+pre-existing "bar looks stuck, no explanation" behaviour, no worse than
+before the note existed. The floor also still does a job the wording
+change does not remove: it suppresses the note on the many small lossy
+runs where the crop data shows the slow phase is under a second.
 
 A first version pushed the line on every run and phrased it to
 distinguish the two paths in prose; that read as a warning about

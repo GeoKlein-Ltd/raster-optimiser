@@ -14,12 +14,13 @@ Detection stays pure content-type/profile classification and never
 judges "is this file already good enough" - that's this module's job:
 it always compares the current file's structure against the target
 settings BEFORE writing anything, and does nothing at all only when the
-file is already tiled, has overviews, AND is already on the target
-compression - compression-aware, not just tiling/overviews (see
-convert()'s already_optimised/at_target_compression check below). A file
-that's tiled with overviews but still on a non-target codec proceeds
-anyway, for the compression gain alone. See docs/plugin_design_notes.md
-for the reasoning.
+file is already a valid Cloud Optimized GeoTIFF, tiled, has overviews,
+AND is already on the target compression - compression- and COG-aware,
+not just tiling/overviews (see convert()'s already_optimised/
+at_target_compression check below). A file that's tiled with overviews
+but still on a non-target codec, or not yet a valid COG, proceeds
+anyway - for the compression gain, or to add the COG structure. See
+docs/plugin_design_notes.md for the reasoning.
 
 Run directly against a file:
 
@@ -1252,10 +1253,11 @@ def convert(
             result.ok = True
             result.action = "already_optimised"
             result.message = (
-                "Already tiled with overviews, and already compressed with "
-                f"{target_compression} - the speed problem this plugin "
-                "exists to fix is already solved here, and there's nothing "
-                "left to gain on file size either. Not touching it."
+                "Already a valid Cloud Optimized GeoTIFF, tiled with "
+                f"overviews, and already compressed with {target_compression} "
+                "- the speed problem this plugin exists to fix is already "
+                "solved here, and there's nothing left to gain on file size "
+                "either. Not touching it."
             )
             return result
         # force_reprocess overrides a genuinely nothing-to-gain file: a
@@ -1265,8 +1267,9 @@ def convert(
         # tiling/overviews/compression rebuild - primary_reason wouldn't
         # mean anything here, so this is a warning instead.
         result.warnings.append(
-            "Already tiled, with overviews, and at the target compression, "
-            "but reprocessing anyway - Force reprocess is ticked."
+            "Already a valid Cloud Optimized GeoTIFF, tiled with overviews, "
+            "and at the target compression, but reprocessing anyway - Force "
+            "reprocess is ticked."
         )
     elif already_optimised and not compression_at_target:
         # Tiled with overviews, so pan/zoom speed is already fine, but the
