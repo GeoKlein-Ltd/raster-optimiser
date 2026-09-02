@@ -22,7 +22,7 @@ The NoData parameter is the three-option dropdown described below (Automatic / R
 
 ## shortHelpString()
 
-QGIS renders this as HTML. Section headings and inline emphasis use real `<b>`, by explicit content decision. Known tradeoff: QGIS's help-panel template gives `<b>` text a fixed, non-theme-aware colour that reads as low-contrast dark-grey-on-dark-grey in the Night Mapping theme (`#535353` background) and other dark themes, and no single inline colour fixes it (nothing satisfies WCAG contrast against both that and the default theme's near-white background at once) - so on dark themes the bold text is legible but dull rather than prominent. Lists use real `<ul>`/`<li>`, and the numbered list under "Reasons your file is slow" uses `<ol>`. Parameter names are `<b><i>` (bold + italic, shown as `***name***` below); option values - Analysis / Viewing, and the Automatic / Reveal / Keep NoData choices - stay `<i>` only (`*value*`), to keep the parameter-vs-value distinction visible. Formatting below matches the code.
+QGIS renders this as HTML. Section headings and inline emphasis use real `<b>`, by explicit content decision. Known tradeoff: QGIS's help-panel template gives `<b>` text a fixed, non-theme-aware colour that reads as low-contrast dark-grey-on-dark-grey in the Night Mapping theme (`#535353` background) and other dark themes, and no single inline colour fixes it (nothing satisfies WCAG contrast against both that and the default theme's near-white background at once) - so on dark themes the bold text is legible but dull rather than prominent. Lists use real `<ul>`/`<li>`, and the numbered list under "Reasons your file is slow" uses `<ol>`. Anything the user picks - parameter names, and the option values Analysis / Viewing, the Automatic / Reveal / Keep NoData choices, and Unticked / Ticked - is `<b><i>` (bold + italic, shown as `***name***` below). The two "What it will not process" items are neither headings nor options and are plain prose. Formatting below matches the code.
 
 ---
 
@@ -45,11 +45,11 @@ This section covers Input layer, What will you use this file for, and the three 
 
 ***Input layer***: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system. Your source file is never modified.
 
-***What will you use this file for***: *Analysis* or *Viewing*.
+***What will you use this file for***: ***Analysis*** or ***Viewing***.
 
-*Analysis* compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
+***Analysis*** compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
 
-*Viewing* compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic comes out 80 to 90% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
+***Viewing*** compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic comes out 80 to 90% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
 
 Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values are preserved.
 
@@ -65,9 +65,9 @@ The three settings below are under **Advanced parameters**.
 
 ***Hidden pixels (NoData)***: what to do when a file marks transparency with a NoData value of 0. On 8-bit imagery that is unsafe, because 0 is also the value of a black pixel, so deep shadow and dark water can be treated as empty and punched out as holes.
 
-- *Automatic* checks each file and only clears NoData where real content is hidden behind it.
-- *Reveal hidden pixels* always clears it, which brings the content back but can render the collar as a solid black border.
-- *Keep as-is* leaves the file's NoData setting untouched.
+- ***Automatic*** checks each file and only clears NoData where real content is hidden behind it.
+- ***Reveal hidden pixels*** always clears it, which brings the content back but can render the collar as a solid black border.
+- ***Keep as-is*** leaves the file's NoData setting untouched.
 
 **Note:** even though it may appear that way, this operation does not fill holes. It uncovers hidden pixels that were already there. It does not interpolate or create data. Where a raster has holes because the data is genuinely missing rather than hidden, this plugin cannot fill them.
 
@@ -75,25 +75,25 @@ The three settings below are under **Advanced parameters**.
 
 ***Replace existing output file***:
 
-- Unticked, the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
-- Ticked, the file is replaced.
+- ***Unticked***, the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
+- ***Ticked***, the file is replaced.
 
 **What it will not process**
 
 Some rasters cannot be optimised safely with these settings. The tool detects them and stops, rather than handing you compromised data that looks fine.
 
-- **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two category codes produces a third that means nothing.
-- **Files with no coordinate reference system.**
+- Classified rasters: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two category codes produces a third that means nothing.
+- Files with no coordinate reference system.
 
 This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`, `NO_BANDS`, `UNSUPPORTED_DTYPE` are also refusal codes it doesn't mention) - deliberately, per `plugin_design_notes.md`'s "\"What it will not process\" lists a subset of refusals on purpose" entry: the section exists to save someone time on a file they can recognise in advance, and none of those three are recognisable that way.
 
 **Things that look wrong but are not**
 
-*The zoomed-out view looks slightly different.* Flick between your source and the output at a low zoom and you may see pixels shift or shimmer slightly. This is the pyramids. Your source has none, so QGIS builds its zoomed-out view on the fly each time. The output has real pyramids, built by averaging. Two different ways of shrinking the same image, so they will not match exactly. Zoom in to full resolution and the difference goes. It happens on Analysis too, where every pixel value is preserved.
+***Why does the zoomed-out view look slightly different?*** Flick between your source and the output zoomed out and you may see pixels shift or shimmer slightly. This is the pyramids. Your source has none, so QGIS builds its zoomed-out view on the fly each time. The output has real pyramids, built by averaging. Two different ways of shrinking the same image, so they will not match exactly. Zoom in to full resolution and the difference goes. It happens on Analysis too, where every pixel value is preserved.
 
-*The colours look slightly different.* On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
+***Why do the colours look slightly different?*** On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
 
-*The output is larger than the source.* This happens when the source was already compressed. Pyramids and the COG structure add bytes back. The file is faster to pan, not smaller.
+***Why is the output larger than the source?*** This happens when the source was already compressed. Pyramids and the COG structure add bytes back. The file is faster to pan, not smaller.
 
 The first item's claim checks out against the code: detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS decimates on the fly for the zoomed-out view, nearest-neighbour by its default layer resampling), and all three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`. Different algorithms, so the low-zoom views differ; independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
 
@@ -128,7 +128,9 @@ Order follows `initAlgorithm()`: Main (Input layer, What will you use this file 
 Label: **Input layer**
 
 Help:
-> The raster to optimise. Any format GDAL can read. The output is always a Cloud Optimized GeoTIFF (COG).
+> The raster to optimise. Any format GDAL can read.
+
+(The "output is always a COG" sentence was removed from this tooltip: it describes the output, not the input, and the same claim is already in the Save optimised raster as tooltip, the panel, and `metadata.txt`'s `description=`.)
 
 ---
 
@@ -173,14 +175,16 @@ Options:
 2. **Reveal hidden pixels**
 3. **Keep as-is**
 
-Help:
+Help. Paragraph breaks are `<br><br>` in the code (same tooltip rich-text constraint as PURPOSE). The three option names are written literally here, not spliced in from the `_NODATA_*_NAME` constants via `.format()` the way they were before - so nothing needs translating at a splice site, but they have to be kept in step with the dropdown labels by hand. Last paragraph matches the "does not fill holes" note in the panel; this tooltip is where the wrong impression forms first.
 > Many orthomosaics mark transparency using a NoData value of 0. On 8-bit imagery that's unsafe, because 0 is also the value of a genuinely black pixel, so deep shadow, dark water and wet tarmac get treated as empty and punched out as holes.
 >
-> **Automatic** checks each file and only clears NoData when real content is hidden behind it. Files where NoData marks nothing but the transparent collar are left alone.
+> 'Automatic' checks each file and only clears NoData when real content is hidden behind it. Files where NoData marks nothing but the transparent collar are left alone.
 >
-> **Reveal hidden pixels** always clears NoData. Hidden content comes back, but the collar may render as a solid black border rather than transparent.
+> 'Reveal hidden pixels' always clears NoData. Hidden content comes back, but the collar may render as a solid black border rather than transparent.
 >
-> **Keep as-is** leaves the file's NoData setting untouched.
+> 'Keep as-is' leaves the file's NoData setting untouched.
+>
+> This does not fill holes. It uncovers pixels that were already there. Nothing is interpolated or created.
 
 ---
 

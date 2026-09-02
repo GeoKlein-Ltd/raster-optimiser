@@ -287,14 +287,14 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "GDAL can read, apart from classified rasters and files "
             "with no coordinate reference system. Your source file is "
             "never modified.</p>"
-            "<p><b><i>What will you use this file for</i></b>: <i>Analysis</i> "
-            "or <i>Viewing</i>.</p>"
-            "<p><i>Analysis</i> compresses the raster and keeps every "
+            "<p><b><i>What will you use this file for</i></b>: <b><i>Analysis</i></b> "
+            "or <b><i>Viewing</i></b>.</p>"
+            "<p><b><i>Analysis</i></b> compresses the raster and keeps every "
             "pixel value exactly as the original. Use it for anything "
             "you take pixel values from: height measurements, "
             "vegetation indices, segmentation, classification, change "
             "detection, raster calculations.</p>"
-            "<p><i>Viewing</i> compresses the raster and discards "
+            "<p><b><i>Viewing</i></b> compresses the raster and discards "
             "detail the eye will not notice, which makes the file "
             "considerably smaller. A typical drone orthomosaic comes "
             "out 80 to 90% smaller. Use it for basemaps, client "
@@ -331,12 +331,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "black pixel, so deep shadow and dark water can be treated "
             "as empty and punched out as holes.</p>"
             "<ul>"
-            "<li><i>Automatic</i> checks each file and only clears "
+            "<li><b><i>Automatic</i></b> checks each file and only clears "
             "NoData where real content is hidden behind it.</li>"
-            "<li><i>Reveal hidden pixels</i> always clears it, which "
+            "<li><b><i>Reveal hidden pixels</i></b> always clears it, which "
             "brings the content back but can render the collar as a "
             "solid black border.</li>"
-            "<li><i>Keep as-is</i> leaves the file's NoData setting "
+            "<li><b><i>Keep as-is</i></b> leaves the file's NoData setting "
             "untouched.</li>"
             "</ul>"
             "<p><b>Note:</b> even though it may appear that way, this "
@@ -356,10 +356,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "for instance to change how NoData is handled.</p>"
             "<p><b><i>Replace existing output file</i></b>:</p>"
             "<ul>"
-            "<li>Unticked, the tool stops rather than overwriting a "
-            "file that already exists at the output path, and tells "
-            "you what it found.</li>"
-            "<li>Ticked, the file is replaced.</li>"
+            "<li><b><i>Unticked</i></b>, the tool stops rather than "
+            "overwriting a file that already exists at the output path, "
+            "and tells you what it found.</li>"
+            "<li><b><i>Ticked</i></b>, the file is replaced.</li>"
             "</ul>"
 
             "<p><b>What it will not process</b></p>"
@@ -367,34 +367,35 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "settings. The tool detects them and stops, rather than "
             "handing you compromised data that looks fine.</p>"
             "<ul>"
-            "<li><b>Classified rasters</b>: land cover, species class, "
+            "<li>Classified rasters: land cover, species class, "
             "or any map where pixel values are category codes rather "
             "than measurements. Building pyramids averages neighbouring "
             "pixels, and averaging two category codes produces a third "
             "that means nothing.</li>"
-            "<li><b>Files with no coordinate reference system.</b></li>"
+            "<li>Files with no coordinate reference system.</li>"
             "</ul>"
 
             "<p><b>Things that look wrong but are not</b></p>"
-            "<p><i>The zoomed-out view looks slightly different.</i> "
-            "Flick between your source and the output at a low zoom and "
-            "you may see pixels shift or shimmer slightly. This is the "
-            "pyramids. Your source has none, so QGIS builds its "
-            "zoomed-out view on the fly each time. The output has real "
-            "pyramids, built by averaging. Two different ways of "
-            "shrinking the same image, so they will not match exactly. "
-            "Zoom in to full resolution and the difference goes. It "
-            "happens on Analysis too, where every pixel value is "
-            "preserved.</p>"
-            "<p><i>The colours look slightly different.</i> On 16-bit "
-            "and multispectral imagery, QGIS works out its own contrast "
-            "stretch for each layer, so two layers can look different "
-            "even when their pixels are identical. Copy the symbology "
-            "from one to the other and the difference disappears.</p>"
-            "<p><i>The output is larger than the source.</i> This "
-            "happens when the source was already compressed. Pyramids "
-            "and the COG structure add bytes back. The file is faster "
-            "to pan, not smaller.</p>"
+            "<p><b><i>Why does the zoomed-out view look slightly "
+            "different?</i></b> Flick between your source and the output "
+            "zoomed out and you may see pixels shift or shimmer "
+            "slightly. This is the pyramids. Your source has none, so "
+            "QGIS builds its zoomed-out view on the fly each time. The "
+            "output has real pyramids, built by averaging. Two different "
+            "ways of shrinking the same image, so they will not match "
+            "exactly. Zoom in to full resolution and the difference "
+            "goes. It happens on Analysis too, where every pixel value "
+            "is preserved.</p>"
+            "<p><b><i>Why do the colours look slightly different?</i></b> "
+            "On 16-bit and multispectral imagery, QGIS works out its "
+            "own contrast stretch for each layer, so two layers can "
+            "look different even when their pixels are identical. Copy "
+            "the symbology from one to the other and the difference "
+            "disappears.</p>"
+            "<p><b><i>Why is the output larger than the source?</i></b> "
+            "This happens when the source was already compressed. "
+            "Pyramids and the COG structure add bytes back. The file is "
+            "faster to pan, not smaller.</p>"
 
             "<p><b>Glossary</b></p>"
             "<ul>"
@@ -591,8 +592,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             self.INPUT, self.tr("Input layer"),
         )
         input_param.setHelp(self.tr(
-            "The raster to optimise. Any format GDAL can read. The "
-            "output is always a Cloud Optimized GeoTIFF (COG)."
+            "The raster to optimise. Any format GDAL can read."
         ))
         self.addParameter(input_param)
 
@@ -698,26 +698,33 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # the one place both are decided. The run log always states what
         # happened, including "not applicable" as the defensive fallback
         # for callers that skip checkParameterValues.
+        # Paragraph breaks are "<br><br>", not "\n\n" (QGIS renders this
+        # tooltip as rich text in one <p>, so newlines collapse - same
+        # as PURPOSE / FORCE_REPROCESS). The three option names are
+        # written literally rather than spliced in from
+        # _NODATA_*_NAME via .format(): keeping everything inside one
+        # self.tr() means there is nothing left to translate at a splice
+        # site. They must stay in step with the dropdown option labels
+        # by hand - docs/raster_optimiser_ui_text.md flags that.
         nodata_param.setHelp(self.tr(
             "Many orthomosaics mark transparency using a NoData value "
             "of 0. On 8-bit imagery that's unsafe, because 0 is also "
             "the value of a genuinely black pixel, so deep shadow, "
             "dark water and wet tarmac get treated as empty and "
-            "punched out as holes.\n"
-            "\n"
-            "'{auto}' checks each file and only clears NoData when "
-            "real content is hidden behind it. Files where NoData "
-            "marks nothing but the transparent collar are left "
-            "alone.\n"
-            "\n"
-            "'{reveal}' always clears NoData. Hidden content comes "
-            "back, but the collar may render as a solid black border "
-            "rather than transparent.\n"
-            "\n"
-            "'{keep}' leaves the file's NoData setting untouched."
-        ).format(
-            auto=self.tr(_NODATA_AUTO_SHORT_NAME), reveal=self.tr(_NODATA_REVEAL_NAME),
-            keep=self.tr(_NODATA_KEEP_NAME),
+            "punched out as holes."
+            "<br><br>"
+            "'Automatic' checks each file and only clears NoData when "
+            "real content is hidden behind it. Files where NoData marks "
+            "nothing but the transparent collar are left alone."
+            "<br><br>"
+            "'Reveal hidden pixels' always clears NoData. Hidden "
+            "content comes back, but the collar may render as a solid "
+            "black border rather than transparent."
+            "<br><br>"
+            "'Keep as-is' leaves the file's NoData setting untouched."
+            "<br><br>"
+            "This does not fill holes. It uncovers pixels that were "
+            "already there. Nothing is interpolated or created."
         ))
         self.addParameter(nodata_param)
 
