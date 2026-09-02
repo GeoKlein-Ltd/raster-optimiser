@@ -192,6 +192,31 @@ above.
 
 ---
 
+## Deferred: a separate name for the loaded output layer
+
+**Status:** not built, 2026-09-02. QGIS names the layer it loads on
+completion after the output parameter's description, and that name is
+what persists in the saved project (the field label itself is read once
+and gone). So the `OUTPUT` parameter's label is kept short - "Optimised
+raster". "Save optimised raster as" was tried and reverted because it
+produced a layer literally called "Save optimised raster as".
+
+The layer name can be set independently of the label from
+`processAlgorithm()`: after resolving the output path, guard with
+`context.willLoadLayerOnCompletion(path)`, then
+`context.layerToLoadOnCompletionDetails(path)` returns a mutable
+`QgsProcessingContext.LayerDetails` whose `.name` and `.forceName` are
+both writable (confirmed on 3.44 LTR and 4.2).
+
+The reason to do this eventually: "Optimised raster" is unhelpful when
+several are loaded in one session - they all get the same name plus a
+numeric suffix. Deriving the layer name from the source filename (e.g.
+the source stem, or the source stem plus a short suffix) would make a
+batch readable. Deferred only because the short label works as both for
+now.
+
+---
+
 ## History-based rules versus nature-based rules
 
 **Status:** implemented, 2026-08-24 (`core/detector.py`'s
