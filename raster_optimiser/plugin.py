@@ -35,13 +35,7 @@ ALGORITHM_ID = "raster_optimiser:optimise_raster"
 # ...) already live under Raster, so that's where someone looking for a
 # raster tool checks first - the Plugins menu is an undifferentiated
 # grab-bag of every installed plugin regardless of what it does.
-#
-# Deliberately still "Raster Optimiser", not renamed to "GeoKlein" like
-# provider.py's toolbox heading was in Phase 6: "GeoKlein" alone under
-# the Raster menu wouldn't tell anyone what the entry does, unlike the
-# toolbox case, where "Optimise raster" (the algorithm's own name) is
-# what's actually read first.
-RASTER_MENU_NAME = "Raster Optimiser"
+RASTER_MENU_NAME = "GeoKlein Raster Optimiser"
 
 
 class RasterOptimiserPlugin:
