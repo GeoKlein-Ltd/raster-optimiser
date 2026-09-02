@@ -127,16 +127,16 @@ Options:
 1. **Analysis: every pixel value preserved**
 2. **Viewing: smallest possible file**
 
-Help:
-> Analysis keeps every pixel value exactly as it is. Use it for anything you extract numbers from: vegetation indices, crown segmentation, classification, change detection.
+Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR).
+> Analysis keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
 >
-> Viewing produces a much smaller file, by discarding detail the eye won't notice. In testing, a typical drone orthomosaic came out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context.
+> Viewing discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out around 80% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 >
-> Both load and pan at the same speed. Both are always written as a Cloud Optimized GeoTIFF (COG), never a .jpg file.
+> Both load and pan at the same speed, and both are written as a Cloud Optimized GeoTIFF (COG).
 >
-> Not every file can be compressed for viewing. Elevation, 16-bit and multispectral imagery can only be written for analysis, and so can 8-bit RGB files whose transparent border is marked by a NoData value rather than an alpha band, because viewing shifts pixel values slightly and a border marked by value would no longer match. A border marked by an alpha band is defined by position, so it survives. Where that applies the tool writes for analysis instead, and explains why in the log and in the file itself.
+> Some files cannot be written for Viewing and are written for Analysis instead. The tool says why when that happens. See the panel on the right for which files and why.
 >
-> If you're not sure, choose Analysis. It costs disk space and nothing else.
+> If you are not sure, choose Analysis. It costs disk space and nothing else.
 
 ---
 

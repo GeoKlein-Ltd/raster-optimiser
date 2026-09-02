@@ -580,35 +580,35 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # like a contradiction of what was asked for - it's serving the
         # same purpose, just via the only settings that purpose allows
         # on that data.
+        # Paragraph breaks are "<br><br>", not "\n\n": QGIS builds the
+        # parameter tooltip by wrapping this help() text in a single
+        # <p>...</p> and rendering it as rich text, so literal newlines
+        # collapse to spaces and the whole thing shows as one unbroken
+        # block (confirmed on QGIS 4.2 and 3.44 LTR - <br><br> renders
+        # an identical gap on both). Kept short deliberately: the info
+        # panel on the right (shortHelpString()) now carries the full
+        # explanation, including which files are forced to Analysis and
+        # why, so this only has to cover the choice itself.
         purpose_param.setHelp(self.tr(
-            "Analysis keeps every pixel value exactly as it is. Use "
-            "it for anything you extract numbers from: vegetation "
-            "indices, crown segmentation, classification, change "
-            "detection.\n"
-            "\n"
-            "Viewing produces a much smaller file, by discarding "
-            "detail the eye won't notice. In testing, a typical drone "
-            "orthomosaic came out around 80% smaller. Use it for "
-            "basemaps, client copies, QField backdrops and site "
-            "context.\n"
-            "\n"
-            "Both load and pan at the same speed. Both are always "
-            "written as a Cloud Optimized GeoTIFF (COG), never a .jpg "
-            "file.\n"
-            "\n"
-            "Not every file can be compressed for viewing. Elevation, "
-            "16-bit and multispectral imagery can only be written for "
-            "analysis, and so can 8-bit RGB files whose transparent "
-            "border is marked by a NoData value rather than an alpha "
-            "band, because viewing shifts pixel values slightly and a "
-            "border marked by value would no longer match. A border "
-            "marked by an alpha band is defined by position, so it "
-            "survives. Where that applies the tool writes for analysis "
-            "instead, and explains why in the log and in the file "
-            "itself.\n"
-            "\n"
-            "If you're not sure, choose Analysis. It costs disk "
-            "space and nothing else."
+            "Analysis keeps every pixel value exactly as it is. Use it "
+            "for anything you take numbers from: height measurements, "
+            "vegetation indices, segmentation, classification, change "
+            "detection."
+            "<br><br>"
+            "Viewing discards detail the eye will not notice, which "
+            "makes the file much smaller. A typical drone orthomosaic "
+            "came out around 80% smaller in testing. Use it for "
+            "basemaps, client copies, QField backdrops and site context."
+            "<br><br>"
+            "Both load and pan at the same speed, and both are written "
+            "as a Cloud Optimized GeoTIFF (COG)."
+            "<br><br>"
+            "Some files cannot be written for Viewing and are written "
+            "for Analysis instead. The tool says why when that happens. "
+            "See the panel on the right for which files and why."
+            "<br><br>"
+            "If you are not sure, choose Analysis. It costs disk space "
+            "and nothing else."
         ))
         self.addParameter(purpose_param)
 
