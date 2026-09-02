@@ -816,24 +816,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # progress_cb (core/detector.py's _black_pixel_sample) uses the
         # same GDAL-style callback shape, so the same closure factory
         # covers both phases.
-        def make_progress_cb(base, span, first_tick_text=None):
-            # first_tick_text, if given, is set as the status text on the
-            # first callback invocation only, then never touched again.
-            # The Translate phase uses it to swap "Reading the
-            # source..." for "Translating..." at the exact moment GDAL's
-            # first progress tick lands - i.e. when the bar actually
-            # leaves 10 - rather than showing "Translating..." during
-            # GDAL's silent start-up read of the whole source (up to
-            # several seconds on a large, compressed, overview-less
-            # source). The detection phase passes none.
-            state = {"first": True}
-
+        def make_progress_cb(base, span):
             def cb(complete, message, cb_data):
                 if feedback.isCanceled():
                     return False
-                if first_tick_text and state["first"]:
-                    state["first"] = False
-                    feedback.setProgressText(first_tick_text)
                 feedback.setProgress(base + complete * span)
                 return True
             return cb
@@ -921,28 +907,36 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                 "GeoTIFF (COG)..."
             ))
 
-        # GDAL reads the whole source before it fires its first progress
-        # callback - up to several seconds on a large, compressed,
-        # overview-less source, during which the bar sits frozen at 10
-        # with nothing explaining why. Say what's happening; the
-        # first_tick_text below swaps in "Translating..." the instant
-        # the bar actually starts moving.
+        # The bar spends its first stretch barely moving: GDAL's first
+        # progress tick lands ~20ms after the gdal.Translate() call, but
+        # the COG driver then works through the full-resolution image
+        # before it builds the pyramids and counts that phase as almost
+        # no progress (complete 0.00-0.05), so on a large Viewing
+        # conversion the bar can sit near 10% for 20-30s (measured ~25s
+        # of an 84s run on a 1.66 GiB source; Analysis moves more
+        # evenly). Say so, so the wait reads as expected rather than
+        # hung. Pushed on every run, not just the lossy path: the
+        # wording itself distinguishes the two, and a Viewing request
+        # coerced to Analysis would get the wrong branch anyway. An
+        # earlier attempt to say this in the status text instead, swapped
+        # in on the first tick, was reverted - the first tick is too
+        # early for it to persist through the slow phase. See
+        # docs/plugin_design_notes.md "Progress bar sits near 10%".
         feedback.pushInfo(self.tr(
-            "GDAL reads through the source before it reports any "
-            "progress, so the bar stays at 10% for a while first. "
-            "Longer on a large raster, or one that is compressed with "
-            "no pyramids."
+            "The bar climbs slowly at first. GDAL works through the "
+            "full-resolution image before it builds the pyramids, and "
+            "it counts that as very little progress even though it "
+            "takes a while. On a large raster written for Viewing this "
+            "can be 20 to 30 seconds near 10%. Analysis moves more "
+            "evenly."
         ))
-        feedback.setProgressText(self.tr("Reading the source before conversion starts..."))
+        feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
         result = convert(
             source_path, detection=detection, chosen_profile=requested_profile,
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
-            translate_progress_cb=make_progress_cb(
-                10, 80,
-                first_tick_text=self.tr("Translating (tiling, compressing, pyramids)..."),
-            ),
+            translate_progress_cb=make_progress_cb(10, 80),
             log_cb=log_cb,
         )
 

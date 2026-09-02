@@ -219,11 +219,15 @@ Set by `processAlgorithm()` as the run moves through its phases. One continuous 
 | When | `setProgressText()` | Also pushed to the log |
 | --- | --- | --- |
 | Detection starts | `Detecting raster type...` | `Detection finished in {n}s` on completion |
-| Detection done, before `convert()` | `Reading the source before conversion starts...` | `GDAL reads through the source before it reports any progress, so the bar stays at 10% for a while first. Longer on a large raster, or one that is compressed with no pyramids.` |
-| GDAL's first progress tick | `Translating (tiling, compressing, pyramids)...` | `Translate finished in {n}s` on completion |
+| Detection done, before `convert()` | `Translating (tiling, compressing, pyramids)...` | the slow-start note (below) |
+| Translate finishes | (unchanged) | `Translate finished in {n}s` |
 | Before `_verify()` | `Checking the output is a valid Cloud Optimized GeoTIFF (COG)...` | - |
 
-The "Reading the source before conversion starts..." step exists because the COG driver reads the whole source before its first progress callback - up to several seconds on a large, compressed, overview-less source - during which the bar is frozen at 10 with nothing explaining why. The status text is set before `convert()`; `make_progress_cb`'s `first_tick_text` swaps in "Translating..." on the first real callback, so it appears exactly when the bar starts moving. The log line names the cause and stops - it deliberately does not add "the run has not stalled", since saying the bar will sit at 10% already tells the reader what to expect.
+Slow-start log line, pushed once before `convert()`:
+
+> The bar climbs slowly at first. GDAL works through the full-resolution image before it builds the pyramids, and it counts that as very little progress even though it takes a while. On a large raster written for Viewing this can be 20 to 30 seconds near 10%. Analysis moves more evenly.
+
+The bar genuinely does move during this stretch, just slowly, so `setProgressText()` stays on "Translating..." throughout - it is not frozen, and there is no separate "reading the source" phase to name. The rough 20 to 30 second figure is deliberate: "slowly" alone leaves someone guessing whether it has hung, a number lets them wait. It is hedged by "on a large raster" and matches the measured ~25 seconds on a 1.66 GiB Viewing conversion (see `plugin_design_notes.md`, "Progress bar sits near 10%"). Pushed on every run, not just Viewing, because the wording distinguishes the two paths itself and a Viewing request coerced to Analysis would otherwise get the wrong branch. An earlier version set a "Reading the source before conversion starts..." status text before `convert()` and swapped in "Translating..." on GDAL's first callback tick via a `first_tick_text` argument to `make_progress_cb`; both were reverted once instrumentation showed the first tick lands at ~20ms, far too early to carry a message through the slow phase.
 
 ---
 

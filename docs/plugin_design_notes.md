@@ -510,18 +510,46 @@ advance warning here.
 
 ---
 
-## Progress bar pauses around 10% early on QGIS 4.2, cause not found
+## Progress bar sits near 10% early in a large Viewing conversion
 
-**Status:** investigated, not resolved, 2026-08-31. On QGIS 4.2 the
-progress bar pauses briefly around 10% early in a run, with nothing in the
-log explaining why. Instrumentation that day measured the setup block
-before Translate at 0.001s and the gap from the `gdal.Translate()` call to
-its first callback tick at 0.020s, with steady ticks afterwards and no
-plateau, ruling out both original candidates without reproducing the
-symptom on the test file used. The remaining theory is a Qt repaint or
-event-loop effect, where the progress value climbs normally but the screen
-does not follow it; treated as cosmetic and not investigated further
-before release.
+**Status:** cause found, 2026-09-02. This section was previously headed
+"Progress bar pauses around 10% early on QGIS 4.2, cause not found" and
+attributed the symptom to a Qt repaint or event-loop effect. That was
+wrong. It is GDAL's own progress reporting.
+
+Instrumented on `Ortho_school_v1.tif` (1.66 GiB, 4-band Byte, DEFLATE,
+no overviews) by recording the timestamp and `complete` value of every
+`gdal.Translate` callback tick, once written for Viewing and once for
+Analysis:
+
+- The first tick arrives about 20ms after the `gdal.Translate()` call,
+  at `complete` 0.0. There is no pre-callback startup gap.
+- The slow stretch is inside Translate, after the first callback. The
+  COG driver works through the full-resolution image before it builds
+  the pyramids, and reports that phase as `complete` 0.00 to 0.05, a few
+  per cent of the bar, while it takes a large share of the wall time, in
+  silent 3 to 7 second steps between ticks.
+- Written for Viewing (JPEG encode of a roughly 1.5 gigapixel image,
+  plus the alpha drop and remask the lossy path does) that phase took
+  about 25 of the run's 84 seconds, with the bar between 10 and 13 per
+  cent throughout. Written for Analysis it is mild: the worst gap
+  between consecutive ticks was 1.7 seconds, at about 24 per cent, and
+  the bar climbs fairly evenly.
+
+The 2026-08-31 instrumentation measured the wrong span. It timed the gap
+from the `gdal.Translate()` call to the first callback tick, found it was
+0.020s, saw no plateau there, and stopped. It also ran on a test file
+that did not reproduce the symptom, and concluded a Qt repaint effect
+that does not exist.
+
+**What was done about it:** a `processAlgorithm()` log line before
+`convert()` explains the slow start and names a rough 20 to 30 second
+figure for a large Viewing run, so the wait reads as expected rather than
+hung. It is pushed on every run, since its wording distinguishes Viewing
+from Analysis on its own. An earlier attempt to carry the message in the
+status text instead, swapped in on GDAL's first callback tick, was
+reverted: the first tick lands at about 20ms, so the message flashed and
+vanished before the slow phase it described.
 
 ---
 
