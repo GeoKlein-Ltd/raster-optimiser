@@ -8,6 +8,24 @@ GDAL flags to memorise.
 See `docs/GeoKlein_raster_optimisation_workflow.md` for the full workflow and
 design notes.
 
+## How to use it
+
+Install it from the QGIS Plugin Manager: Plugins, then Manage and Install
+Plugins, then search for GeoKlein Raster Optimiser and install it.
+
+It runs as a Processing algorithm. Open it from the Processing Toolbox, under
+GeoKlein, Optimise raster, or from the Raster menu. Pick the input raster,
+choose Analysis or Viewing, choose where to save the output, and run.
+
+The output is a standalone file. It is not a working file and it is not
+something held inside QGIS. It is an ordinary Cloud Optimized GeoTIFF, written
+to a path you choose, that opens in any GIS. You can send it to a client or
+put it on a server exactly as it is, with no separate export step.
+
+One thing to watch: the Optimised raster field defaults to "Save to temporary
+file", which still writes a real file but to a location QGIS may clear later.
+To keep the result, set it to a proper path before you run.
+
 ## What to expect
 
 Six things that look like problems and aren't.
