@@ -49,6 +49,14 @@ content type considered for v1 scope should be checked against this
 assumption before being routed through the existing continuous-imagery
 recipe.
 
+**Why deferring it is low risk:** the large classified products above are
+the reason to support this eventually, but the typical classified raster
+is a single band with few distinct values, and that shape already
+compresses well with a run-friendly lossless codec. Files like that are
+among the least likely to arrive slow and oversized in the first place,
+and many are small enough that tiling and pyramids add little. The common
+case loses almost nothing by waiting.
+
 ---
 
 ## Deferred: visual NoData preview (magenta-fill diff)
