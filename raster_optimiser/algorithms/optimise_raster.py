@@ -247,7 +247,10 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # fixes it (nothing satisfies WCAG contrast against both Night
         # Mapping's dark background and the default theme's near-white
         # one at once), so on dark themes the bold text is legible but
-        # dull rather than prominent. docs/raster_optimiser_ui_text.md
+        # dull rather than prominent. Accepted deliberately: most users
+        # are on the default light theme, where the bold structure
+        # earns its keep, and swapping <b> back out is a one-line
+        # revert if that ever changes. docs/raster_optimiser_ui_text.md
         # mirrors this string and must be updated with it.
         return self.tr(
             "<p><b>What does it do?</b></p>"
@@ -367,6 +370,27 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "that means nothing.</li>"
             "<li><b>Files with no coordinate reference system.</b></li>"
             "</ul>"
+
+            "<p><b>Things that look wrong but are not</b></p>"
+            "<p><i>The zoomed-out view looks slightly different.</i> "
+            "Flick between your source and the output at a low zoom and "
+            "you may see pixels shift or shimmer slightly. This is the "
+            "pyramids. Your source has none, so QGIS builds its "
+            "zoomed-out view on the fly each time. The output has real "
+            "pyramids, built by averaging. Two different ways of "
+            "shrinking the same image, so they will not match exactly. "
+            "Zoom in to full resolution and the difference goes. It "
+            "happens on Analysis too, where every pixel value is "
+            "preserved.</p>"
+            "<p><i>The colours look slightly different.</i> On 16-bit "
+            "and multispectral imagery, QGIS works out its own contrast "
+            "stretch for each layer, so two layers can look different "
+            "even when their pixels are identical. Copy the symbology "
+            "from one to the other and the difference disappears.</p>"
+            "<p><i>The output is larger than the source.</i> This "
+            "happens when the source was already compressed. Pyramids "
+            "and the COG structure add bytes back. The file is faster "
+            "to pan, not smaller.</p>"
 
             "<p><b>Glossary</b></p>"
             "<ul>"
@@ -788,10 +812,24 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # progress_cb (core/detector.py's _black_pixel_sample) uses the
         # same GDAL-style callback shape, so the same closure factory
         # covers both phases.
-        def make_progress_cb(base, span):
+        def make_progress_cb(base, span, first_tick_text=None):
+            # first_tick_text, if given, is set as the status text on the
+            # first callback invocation only, then never touched again.
+            # The Translate phase uses it to swap "Reading the
+            # source..." for "Translating..." at the exact moment GDAL's
+            # first progress tick lands - i.e. when the bar actually
+            # leaves 10 - rather than showing "Translating..." during
+            # GDAL's silent start-up read of the whole source (up to
+            # several seconds on a large, compressed, overview-less
+            # source). The detection phase passes none.
+            state = {"first": True}
+
             def cb(complete, message, cb_data):
                 if feedback.isCanceled():
                     return False
+                if first_tick_text and state["first"]:
+                    state["first"] = False
+                    feedback.setProgressText(first_tick_text)
                 feedback.setProgress(base + complete * span)
                 return True
             return cb
@@ -879,13 +917,28 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                 "GeoTIFF (COG)..."
             ))
 
-        feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
+        # GDAL reads the whole source before it fires its first progress
+        # callback - up to several seconds on a large, compressed,
+        # overview-less source, during which the bar sits frozen at 10
+        # with nothing explaining why. Say what's happening; the
+        # first_tick_text below swaps in "Translating..." the instant
+        # the bar actually starts moving.
+        feedback.pushInfo(self.tr(
+            "GDAL reads through the source before it reports any "
+            "progress, so the bar stays at 10% for a while first. "
+            "Longer on a large raster, or one that is compressed with "
+            "no pyramids."
+        ))
+        feedback.setProgressText(self.tr("Reading the source before conversion starts..."))
         result = convert(
             source_path, detection=detection, chosen_profile=requested_profile,
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
-            translate_progress_cb=make_progress_cb(10, 80),
+            translate_progress_cb=make_progress_cb(
+                10, 80,
+                first_tick_text=self.tr("Translating (tiling, compressing, pyramids)..."),
+            ),
             log_cb=log_cb,
         )
 

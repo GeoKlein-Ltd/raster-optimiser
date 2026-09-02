@@ -87,6 +87,16 @@ Some rasters cannot be optimised safely with these settings. The tool detects th
 
 This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`, `NO_BANDS`, `UNSUPPORTED_DTYPE` are also refusal codes it doesn't mention) - deliberately, per `plugin_design_notes.md`'s "\"What it will not process\" lists a subset of refusals on purpose" entry: the section exists to save someone time on a file they can recognise in advance, and none of those three are recognisable that way.
 
+**Things that look wrong but are not**
+
+*The zoomed-out view looks slightly different.* Flick between your source and the output at a low zoom and you may see pixels shift or shimmer slightly. This is the pyramids. Your source has none, so QGIS builds its zoomed-out view on the fly each time. The output has real pyramids, built by averaging. Two different ways of shrinking the same image, so they will not match exactly. Zoom in to full resolution and the difference goes. It happens on Analysis too, where every pixel value is preserved.
+
+*The colours look slightly different.* On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
+
+*The output is larger than the source.* This happens when the source was already compressed. Pyramids and the COG structure add bytes back. The file is faster to pan, not smaller.
+
+The first item's claim checks out against the code: detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS decimates on the fly for the zoomed-out view, nearest-neighbour by its default layer resampling), and all three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`. Different algorithms, so the low-zoom views differ; independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
+
 **Glossary**
 
 Ten entries, alphabetical. `converter.py:106`/`:636` confirm AVERAGE is the actual overview resampling method the Resampling entry describes; `GeoKlein_raster_optimisation_workflow.md:48` confirms the COG entry's "index at the front, not after the image data" wording.
@@ -199,6 +209,21 @@ Help:
 > Unticked, the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
 >
 > Ticked, the existing file is replaced. Your source file is never modified either way.
+
+---
+
+## Progress and status text
+
+Set by `processAlgorithm()` as the run moves through its phases. One continuous 0-100 bar: detection 0-10, Translate 10-90, then 90-100 for convert()'s close/flush and `_verify()`.
+
+| When | `setProgressText()` | Also pushed to the log |
+| --- | --- | --- |
+| Detection starts | `Detecting raster type...` | `Detection finished in {n}s` on completion |
+| Detection done, before `convert()` | `Reading the source before conversion starts...` | `GDAL reads through the source before it reports any progress, so the bar stays at 10% for a while first. Longer on a large raster, or one that is compressed with no pyramids.` |
+| GDAL's first progress tick | `Translating (tiling, compressing, pyramids)...` | `Translate finished in {n}s` on completion |
+| Before `_verify()` | `Checking the output is a valid Cloud Optimized GeoTIFF (COG)...` | - |
+
+The "Reading the source before conversion starts..." step exists because the COG driver reads the whole source before its first progress callback - up to several seconds on a large, compressed, overview-less source - during which the bar is frozen at 10 with nothing explaining why. The status text is set before `convert()`; `make_progress_cb`'s `first_tick_text` swaps in "Translating..." on the first real callback, so it appears exactly when the bar starts moving. The log line names the cause and stops - it deliberately does not add "the run has not stalled", since saying the bar will sit at 10% already tells the reader what to expect.
 
 ---
 
