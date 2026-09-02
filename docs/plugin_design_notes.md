@@ -582,6 +582,25 @@ still, to carry the message in the status text and swap it for
 first tick lands at about 20ms, so the message flashed and vanished
 before the slow phase it described.
 
+**Status text during the slow phase: left as "Translating...", no
+swap.** The status text is set once before `convert()` and stays put
+through the whole run. A later idea was to show a different string
+during the slow phase and swap it for "Translating..." once `complete`
+crossed a threshold around 0.05. Rejected on measurement: a `complete`
+threshold is calibrated to how one version of GDAL's COG driver
+apportioned progress on one file, which is not a documented contract.
+Crop measurements on 2026-09-02 (nested crops of `Ortho_school_v1.tif`
+at roughly 60, 260 and 610 MB plus the 1.78 GB original, lossy path)
+show the base-image phase ending at `complete` 0.01 on every file up to
+about 260 MB, then 0.06 at about 610 MB, then 0.18 on the full file -
+the fraction of the bar it occupies grows with pixel count, and would
+also move with band count, overview count and codec. There is no stable
+value to swap on. Tick-cadence detection instead - swap once two
+consecutive ticks arrive under about a second apart - would survive a
+different file, but it adds state and logic to `make_progress_cb` for a
+marginal gain over the gated log line above, which already tells a
+large-Viewing user what to expect. Not worth the machinery.
+
 ---
 
 ## Bold headings in shortHelpString() render low-contrast on dark themes
