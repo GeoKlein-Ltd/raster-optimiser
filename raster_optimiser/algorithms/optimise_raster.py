@@ -238,7 +238,11 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # rich-text view, not plain text), so this uses real <p>,
         # <ol>/<ul>/<li>, <b> and <i> tags. Bold IS used for section
         # headings and for inline emphasis here, by explicit content
-        # decision. Known tradeoff, kept on record: QGIS's own
+        # decision. Parameter names are <b><i> (bold + italic); option
+        # VALUES - Analysis / Viewing, and the Automatic / Reveal /
+        # Keep NoData choices - stay <i> only, so the parameter-vs-value
+        # distinction reads at a glance. Known tradeoff, kept on record:
+        # QGIS's own
         # help-panel template gives <b> text a fixed, non-theme-aware
         # colour that reads as low-contrast dark-grey-on-dark-grey in
         # the Night Mapping theme (background #535353) and other dark
@@ -279,11 +283,11 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "DTM, so it also takes up less disk space.</p>"
 
             "<p><b>What does each parameter do?</b></p>"
-            "<p><i>Input layer</i>: the raster to optimise. Anything "
+            "<p><b><i>Input layer</i></b>: the raster to optimise. Anything "
             "GDAL can read, apart from classified rasters and files "
             "with no coordinate reference system. Your source file is "
             "never modified.</p>"
-            "<p><i>What will you use this file for</i>: <i>Analysis</i> "
+            "<p><b><i>What will you use this file for</i></b>: <i>Analysis</i> "
             "or <i>Viewing</i>.</p>"
             "<p><i>Analysis</i> compresses the raster and keeps every "
             "pixel value exactly as the original. Use it for anything "
@@ -321,7 +325,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "not as small as Viewing would make it.</p>"
             "<p>The three settings below are under <b>Advanced "
             "parameters</b>.</p>"
-            "<p><i>Hidden pixels (NoData)</i>: what to do when a file "
+            "<p><b><i>Hidden pixels (NoData)</i></b>: what to do when a file "
             "marks transparency with a NoData value of 0. On 8-bit "
             "imagery that is unsafe, because 0 is also the value of a "
             "black pixel, so deep shadow and dark water can be treated "
@@ -341,7 +345,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "data. Where a raster has holes because the data is "
             "genuinely missing rather than hidden, this plugin cannot "
             "fill them.</p>"
-            "<p><i>Reprocess even if already optimised</i>: by default "
+            "<p><b><i>Reprocess even if already optimised</i></b>: by default "
             "a file is left alone only when it is already tiled, has "
             "pyramids, is at the target compression, and is already a "
             "valid Cloud Optimized GeoTIFF (COG), since converting it "
@@ -350,7 +354,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "target compression but not yet a valid COG, is reprocessed "
             "anyway. Tick this to convert an already-valid file again, "
             "for instance to change how NoData is handled.</p>"
-            "<p><i>Replace existing output file</i>:</p>"
+            "<p><b><i>Replace existing output file</i></b>:</p>"
             "<ul>"
             "<li>Unticked, the tool stops rather than overwriting a "
             "file that already exists at the output path, and tells "

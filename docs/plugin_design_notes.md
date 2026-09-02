@@ -514,3 +514,21 @@ symptom on the test file used. The remaining theory is a Qt repaint or
 event-loop effect, where the progress value climbs normally but the screen
 does not follow it; treated as cosmetic and not investigated further
 before release.
+
+---
+
+## Bold headings in shortHelpString() render low-contrast on dark themes
+
+**Status:** known and accepted, 2026-09-02. `shortHelpString()` uses real
+`<b>` for its section headings, glossary terms and (as of this date)
+parameter names. QGIS's Processing help panel applies a fixed,
+non-theme-aware colour to `<b>` text, so on dark themes - Night Mapping
+(`#535353` background) and similar - the bold text renders as
+low-contrast dark-grey-on-dark-grey: legible but dull rather than
+prominent. No single inline colour fixes it, since nothing satisfies WCAG
+contrast against both a dark background and the default theme's near-white
+one at once. An earlier version of the string avoided `<b>` headings for
+exactly this reason. Bold is kept anyway: the default light theme is
+where most users are, and the heading/parameter structure earns its keep
+there. Reverting is mechanical - swap each `<b>...</b>` back to a plain
+`<p>` heading (and drop the `<b>` from the `<b><i>` parameter names).

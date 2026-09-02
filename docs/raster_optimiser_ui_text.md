@@ -22,7 +22,7 @@ The NoData parameter is the three-option dropdown described below (Automatic / R
 
 ## shortHelpString()
 
-QGIS renders this as HTML. Section headings and inline emphasis use real `<b>`, by explicit content decision. Known tradeoff: QGIS's help-panel template gives `<b>` text a fixed, non-theme-aware colour that reads as low-contrast dark-grey-on-dark-grey in the Night Mapping theme (`#535353` background) and other dark themes, and no single inline colour fixes it (nothing satisfies WCAG contrast against both that and the default theme's near-white background at once) - so on dark themes the bold text is legible but dull rather than prominent. Lists use real `<ul>`/`<li>`, and the numbered list under "Reasons your file is slow" uses `<ol>`. Bold below matches the code's `<b>`.
+QGIS renders this as HTML. Section headings and inline emphasis use real `<b>`, by explicit content decision. Known tradeoff: QGIS's help-panel template gives `<b>` text a fixed, non-theme-aware colour that reads as low-contrast dark-grey-on-dark-grey in the Night Mapping theme (`#535353` background) and other dark themes, and no single inline colour fixes it (nothing satisfies WCAG contrast against both that and the default theme's near-white background at once) - so on dark themes the bold text is legible but dull rather than prominent. Lists use real `<ul>`/`<li>`, and the numbered list under "Reasons your file is slow" uses `<ol>`. Parameter names are `<b><i>` (bold + italic, shown as `***name***` below); option values - Analysis / Viewing, and the Automatic / Reveal / Keep NoData choices - stay `<i>` only (`*value*`), to keep the parameter-vs-value distinction visible. Formatting below matches the code.
 
 ---
 
@@ -43,9 +43,9 @@ Both mean QGIS has to do more work than the view on screen actually requires. Th
 
 This section covers Input layer, What will you use this file for, and the three Advanced settings. The output path has no entry of its own; the "your source file is never modified" note that used to sit there is now under Input layer.
 
-*Input layer*: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system. Your source file is never modified.
+***Input layer***: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system. Your source file is never modified.
 
-*What will you use this file for*: *Analysis* or *Viewing*.
+***What will you use this file for***: *Analysis* or *Viewing*.
 
 *Analysis* compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
 
@@ -63,7 +63,7 @@ If you are not sure, choose Analysis. It is the safest option: your file still e
 
 The three settings below are under **Advanced parameters**.
 
-*Hidden pixels (NoData)*: what to do when a file marks transparency with a NoData value of 0. On 8-bit imagery that is unsafe, because 0 is also the value of a black pixel, so deep shadow and dark water can be treated as empty and punched out as holes.
+***Hidden pixels (NoData)***: what to do when a file marks transparency with a NoData value of 0. On 8-bit imagery that is unsafe, because 0 is also the value of a black pixel, so deep shadow and dark water can be treated as empty and punched out as holes.
 
 - *Automatic* checks each file and only clears NoData where real content is hidden behind it.
 - *Reveal hidden pixels* always clears it, which brings the content back but can render the collar as a solid black border.
@@ -71,9 +71,9 @@ The three settings below are under **Advanced parameters**.
 
 **Note:** even though it may appear that way, this operation does not fill holes. It uncovers hidden pixels that were already there. It does not interpolate or create data. Where a raster has holes because the data is genuinely missing rather than hidden, this plugin cannot fill them.
 
-*Reprocess even if already optimised*: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF (COG), since converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file again, for instance to change how NoData is handled.
+***Reprocess even if already optimised***: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF (COG), since converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file again, for instance to change how NoData is handled.
 
-*Replace existing output file*:
+***Replace existing output file***:
 
 - Unticked, the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
 - Ticked, the file is replaced.
