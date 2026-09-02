@@ -643,13 +643,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # panel on the right (shortHelpString()) now carries the full
         # explanation, including which files are forced to Analysis and
         # why, so this only has to cover the choice itself.
+        # Option values are wrapped in single quotes, matching
+        # NODATA_MODE's setHelp() - a tooltip has no bold/italic to lean
+        # on, so quotes are what marks 'Analysis' / 'Viewing' as the
+        # things you pick rather than ordinary words. The info panel
+        # (shortHelpString) uses <b><i> instead and is left alone.
         purpose_param.setHelp(self.tr(
-            "Analysis keeps every pixel value exactly as it is. Use it "
-            "for anything you take numbers from: height measurements, "
-            "vegetation indices, segmentation, classification, change "
-            "detection."
+            "'Analysis' keeps every pixel value exactly as it is. Use "
+            "it for anything you take numbers from: height "
+            "measurements, vegetation indices, segmentation, "
+            "classification, change detection."
             "<br><br>"
-            "Viewing discards detail the eye will not notice, which "
+            "'Viewing' discards detail the eye will not notice, which "
             "makes the file much smaller. A typical drone orthomosaic "
             "came out 80 to 90% smaller in testing. Use it for "
             "basemaps, client copies, QField backdrops and site context."
@@ -657,13 +662,14 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "Both load and pan at the same speed, and both are written "
             "as a Cloud Optimized GeoTIFF (COG)."
             "<br><br>"
-            "Some files cannot be written for Viewing and are written "
-            "for Analysis instead. The tool says why when that happens. "
-            "See the panel on the right for which files and why."
+            "Some files cannot be written for 'Viewing' and are written "
+            "for 'Analysis' instead. The tool says why when that "
+            "happens. See the panel on the right for which files and "
+            "why."
             "<br><br>"
-            "If you are not sure, choose Analysis. It is the safest "
+            "If you are not sure, choose 'Analysis'. It is the safest "
             "option: your file still ends up smaller and faster, just "
-            "not as small as Viewing would make it."
+            "not as small as 'Viewing' would make it."
         ))
         self.addParameter(purpose_param)
 
@@ -772,7 +778,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "compressed but isn't a valid COG yet - the case for every "
             "file written by an earlier version of this plugin."
             "<br><br>"
-            "Tick this to convert an already-valid file again, to "
+            "'Tick' this to convert an already-valid file again, to "
             "change how NoData is handled."
         ))
         self.addParameter(force_reprocess_param)
@@ -792,12 +798,17 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         overwrite_param.setFlags(overwrite_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         # Label alone doesn't say what happens when left unticked - fixed
         # via setHelp() rather than lengthening the label itself.
+        # Paragraph break is "<br><br>", not "\n\n": QGIS renders this
+        # tooltip as rich text in one <p> and collapses newlines, same
+        # as the other setHelp() strings above. 'Unticked' / 'Ticked'
+        # are single-quoted, matching NODATA_MODE and PURPOSE - a
+        # tooltip has no bold/italic to mark the two states with.
         overwrite_param.setHelp(self.tr(
-            "Unticked, the tool stops rather than overwriting a file "
+            "'Unticked', the tool stops rather than overwriting a file "
             "that already exists at the output path, and tells you "
-            "what it found.\n"
-            "\n"
-            "Ticked, the existing file is replaced. Your source file "
+            "what it found."
+            "<br><br>"
+            "'Ticked', the existing file is replaced. Your source file "
             "is never modified either way."
         ))
         self.addParameter(overwrite_param)

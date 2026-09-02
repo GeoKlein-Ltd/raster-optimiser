@@ -146,16 +146,16 @@ Options:
 1. **Analysis: every pixel value preserved**
 2. **Viewing: smallest possible file**
 
-Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR).
-> Analysis keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
+Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR). The option values are single-quoted (as in NODATA_MODE) since a tooltip has no bold or italic; the info panel uses `<b><i>` instead.
+> 'Analysis' keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
 >
-> Viewing discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out 80 to 90% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
+> 'Viewing' discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out 80 to 90% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 >
 > Both load and pan at the same speed, and both are written as a Cloud Optimized GeoTIFF (COG).
 >
-> Some files cannot be written for Viewing and are written for Analysis instead. The tool says why when that happens. See the panel on the right for which files and why.
+> Some files cannot be written for 'Viewing' and are written for 'Analysis' instead. The tool says why when that happens. See the panel on the right for which files and why.
 >
-> If you are not sure, choose Analysis. It is the safest option: your file still ends up smaller and faster, just not as small as Viewing would make it.
+> If you are not sure, choose 'Analysis'. It is the safest option: your file still ends up smaller and faster, just not as small as 'Viewing' would make it.
 
 ---
 
@@ -205,7 +205,7 @@ Help. Paragraph breaks are `<br><br>` in the code, not blank lines (same tooltip
 >
 > A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save. So is a file that's tiled, pyramided and already correctly compressed but isn't a valid COG yet - the case for every file written by an earlier version of this plugin.
 >
-> Tick this to convert an already-valid file again, to change how NoData is handled.
+> 'Tick' this to convert an already-valid file again, to change how NoData is handled.
 
 ---
 
@@ -215,10 +215,10 @@ Advanced.
 
 Label: **Replace existing output file**
 
-Help:
-> Unticked, the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
+Help. Paragraph break is `<br><br>` in the code (it was `\n\n` and rendered as one block until this pass). `Unticked` / `Ticked` are single-quoted, as in NODATA_MODE and PURPOSE.
+> 'Unticked', the tool stops rather than overwriting a file that already exists at the output path, and tells you what it found.
 >
-> Ticked, the existing file is replaced. Your source file is never modified either way.
+> 'Ticked', the existing file is replaced. Your source file is never modified either way.
 
 ---
 
