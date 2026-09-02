@@ -934,9 +934,10 @@ _SIZE_INCREASE_RESTRUCTURE_THRESHOLD_PCT = 1.0
 # this replaced.
 _SIZE_INCREASE_RESTRUCTURE_EXPLANATION = (
     "Output is larger than source. This file already had pyramids, so "
-    "they are not the cause here - the increase comes from the "
-    "compression change or Cloud Optimized restructuring made in this "
-    "run, not from building pyramids that already existed."
+    "building them from scratch is not the cause. The increase comes "
+    "from the compression change made in this run, the Cloud Optimized "
+    "restructuring, or this tool building more pyramid levels than the "
+    "source already had."
 )
 
 # Appended to _SIZE_INCREASE_EXPLANATION only when Viewing was genuinely

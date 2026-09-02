@@ -95,7 +95,7 @@ This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`
 
 ***Why do the colours look slightly different?*** On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
 
-***Why is the output larger than the source?*** This happens when the source was already compressed. Pyramids and the COG structure add bytes back. The file is faster to pan, not smaller.
+***Why is the output larger than the source?*** Pyramids and the Cloud Optimized structure take up space of their own. If the source was already well compressed, or already had pyramids and this run built more levels or changed the compression, that space can outweigh what the new compression saves. The file is faster to pan, not smaller.
 
 The first item's claims check out against the code. Detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS shrinks the source live for the zoomed-out view, nearest-neighbour by its default layer resampling). All three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`, and the count comes from `_default_overview_levels()` (successive halving until the larger side is <= 256 px). So when the source already has pyramids, what can differ is the **resampling method** (this tool always AVERAGE; a source's own pyramids may be nearest, gauss, cubic) and the **level count / stopping point** (a source built by another tool may stop sooner or later). All of this is independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
 
