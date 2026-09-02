@@ -22,28 +22,28 @@ The NoData parameter is the three-option dropdown described below (Automatic / R
 
 ## shortHelpString()
 
-QGIS renders this as HTML. Section headings are plain `<p>` text, not `<b>`: QGIS's own help-panel template applies a fixed, non-theme-aware colour to bold text that reads as dark grey on dark grey in the Night Mapping theme (and likely other dark themes), and no single inline colour can fix it (it can't satisfy WCAG contrast against both a near-white default theme and Night Mapping's `#535353` background at once). Lists use real `<ul>`/`<li>` tags. Headings are shown in **bold** below purely as a doc-formatting convention to mark them as headings, it doesn't mean the code wraps them in `<b>`.
+QGIS renders this as HTML. Section headings and inline emphasis use real `<b>`, by explicit content decision. Known tradeoff: QGIS's help-panel template gives `<b>` text a fixed, non-theme-aware colour that reads as low-contrast dark-grey-on-dark-grey in the Night Mapping theme (`#535353` background) and other dark themes, and no single inline colour fixes it (nothing satisfies WCAG contrast against both that and the default theme's near-white background at once) - so on dark themes the bold text is legible but dull rather than prominent. Lists use real `<ul>`/`<li>`, and the numbered list under "Reasons your file is slow" uses `<ol>`. Bold below matches the code's `<b>`.
 
 ---
 
 **What does it do?**
 
-Makes large rasters load and pan quickly in QGIS, QField, or any other GDAL-based software, and reduces their file size. A raster does not have to be large to be slow. The output is always a Cloud Optimized GeoTIFF (COG), never a .jpg file.
+Makes rasters load and pan quickly in QGIS, QField, or any other GDAL-based software, and also reduces their file size. A raster does not have to be large to be slow. The output is always a Cloud Optimized GeoTIFF (COG), never a .jpg file.
 
 **Reasons your file is slow**
 
 Most orthomosaics and elevation rasters come out of processing software without two things GDAL needs to draw them quickly.
 
-- No pyramids. QGIS reads every pixel in the file to draw a zoomed-out view, and does it again on every pan and every zoom.
-- No tiling. QGIS cannot read one corner of the image without reading the full width of every row that corner sits in.
+1. **No pyramids.** QGIS reads every pixel in the raster to draw a zoomed-out view, and does it again on every pan and every zoom.
+2. **No tiling.** QGIS cannot read one corner of the image without reading the full width of every row that corner sits in.
 
-Both mean far more work than the view on screen needs. This tool adds pyramids and tiling, and picks a compression setting appropriate for what the raster contains, so it also takes up less disk space.
+Both mean QGIS has to do more work than the view on screen actually requires. This tool adds pyramids and tiling, and picks a compression setting appropriate to the nature of the raster, for example an orthomosaic against a DTM, so it also takes up less disk space.
 
 **What does each parameter do?**
 
-This section now documents every parameter, not just Purpose - the panel grew from three headed sections to this one plus What it will not process and Glossary.
+This section covers Input layer, What will you use this file for, and the three Advanced settings. The output path has no entry of its own; the "your source file is never modified" note that used to sit there is now under Input layer.
 
-*Input layer*: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system.
+*Input layer*: the raster to optimise. Anything GDAL can read, apart from classified rasters and files with no coordinate reference system. Your source file is never modified.
 
 *What will you use this file for*: *Analysis* or *Viewing*.
 
@@ -51,15 +51,17 @@ This section now documents every parameter, not just Purpose - the panel grew fr
 
 *Viewing* compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic can come out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
 
-Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values survive unchanged.
+Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values are preserved.
 
-Not every file can be written for Viewing. Elevation, 16-bit and multispectral imagery are always written for Analysis. So are 8-bit RGB files whose transparent border is marked by a NoData value rather than an alpha band, because Viewing shifts pixel values slightly and a border marked by value would no longer match. A border marked by an alpha band is defined by position, so it survives. Where Analysis is forced, the tool says why in the log and in the file's own metadata, under Layer Properties, Information.
+Not every file can be written for Viewing. Elevation (DEMs), 16-bit and multispectral imagery are always written for Analysis, because Viewing would alter the pixel values and silently distort the measurements. You might only notice once you compare against the original.
 
-If you are not sure, choose Analysis. It costs disk space and nothing else.
+8-bit RGB files are also forced to Analysis when their transparent border is marked by a NoData value rather than an alpha band, because Viewing shifts pixel values slightly and a border marked by value would no longer match. A border marked by an alpha band is defined by position, so it survives.
 
-*Optimised raster*: where to save the result. Your source file is never modified.
+Where Analysis is forced, the tool says why in the log and in the file's own metadata, under Layer Properties, Information.
 
-The three settings below are under Advanced parameters.
+If you are not sure, choose Analysis. It is the safest option: your file still ends up smaller and faster, just not as small as Viewing would make it.
+
+The three settings below are under **Advanced parameters**.
 
 *Hidden pixels (NoData)*: what to do when a file marks transparency with a NoData value of 0. On 8-bit imagery that is unsafe, because 0 is also the value of a black pixel, so deep shadow and dark water can be treated as empty and punched out as holes.
 
@@ -67,7 +69,9 @@ The three settings below are under Advanced parameters.
 - *Reveal hidden pixels* always clears it, which brings the content back but can render the collar as a solid black border.
 - *Keep as-is* leaves the file's NoData setting untouched.
 
-*Reprocess even if already optimised*: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF - converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file too, for instance to change how NoData is handled.
+**Note:** even though it may appear that way, this operation does not fill holes. It uncovers hidden pixels that were already there. It does not interpolate or create data. Where a raster has holes because the data is genuinely missing rather than hidden, this plugin cannot fill them.
+
+*Reprocess even if already optimised*: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF (COG), since converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file again, for instance to change how NoData is handled.
 
 *Replace existing output file*:
 
@@ -76,7 +80,7 @@ The three settings below are under Advanced parameters.
 
 **What it will not process**
 
-Some rasters cannot be optimised safely with these settings. The tool detects them and stops, rather than producing something quietly wrong.
+Some rasters cannot be optimised safely with these settings. The tool detects them and stops, rather than handing you compromised data that looks fine.
 
 - **Classified rasters**: land cover, species class, or any map where pixel values are category codes rather than measurements. Building pyramids averages neighbouring pixels, and averaging two category codes produces a third that means nothing.
 - **Files with no coordinate reference system.**
@@ -89,26 +93,25 @@ Ten entries, alphabetical. `converter.py:106`/`:636` confirm AVERAGE is the actu
 
 - **Alpha band**: an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
 - **Band**: one layer of values in a raster. A colour photograph has three, red, green and blue. An elevation model has one. Multispectral imagery has more, often including light the eye cannot see.
-- **Bit depth**: how much range each pixel value has. 8-bit holds 0 to 255, which is enough for colour. 16-bit and Float32 hold far more, which is what measurements need.
+- **Bit depth**: how much range each pixel value has. 8-bit holds 0 to 255, which is enough for colour. 16-bit and Float32 hold far more, which is what rasters holding more complex measurements need.
 - **Cloud Optimized GeoTIFF (COG)**: a GeoTIFF that is tiled, has pyramids, and keeps its index at the front of the file rather than after the image data. Software can then read one small part of it without reading the whole thing, including over a network, which is what the format was designed for.
-- **Collar**: the transparent border around a survey area, where the image does not fill the rectangular file. Keeping it transparent is the alpha band's job. Without one you get a black box around your raster.
+- **Collar**: the transparent border around a survey area, where the image does not completely fill the rectangular bounding box of the file when loaded. Keeping it transparent is the alpha band's job. Without one you get a black box around your raster.
 - **Lossless and lossy**: lossless compression makes a file smaller with every pixel value still recoverable exactly. Lossy compression makes it much smaller by discarding detail, and the discarded detail does not come back.
 - **NoData**: a pixel value the file declares to mean "nothing here". Safe on elevation data, where you can pick a value no real height could be, such as -9999. Risky on 8-bit imagery, where every value from 0 to 255 is a legitimate colour and 0 means black.
 - **Pyramids, also called overviews**: pre-built smaller copies of the whole image at successive zoom levels. Faster because QGIS loads one small copy instead of the full image.
-- **Resampling**: working out the pixel values for a smaller copy of an image from the pixels it replaces. Averaging is the usual method, and it is why pyramids cannot be built safely on classified rasters.
+- **Resampling**: working out the pixel values for a smaller, lower resolution copy of an image from the pixels it replaces. Averaging is the usual method, and it is why pyramids cannot be built safely on classified rasters.
 - **Tiling**: storing the image as small squares instead of full-width rows.
 
 **(closing block, separated by a horizontal rule)**
 
 Made by GeoKlein Ltd, Edinburgh. Built on GDAL.
-
 Report problems: https://github.com/GeoKlein-Ltd/raster-optimiser/issues
 
 ---
 
 ## Parameter labels and help text
 
-Order follows `initAlgorithm()`: Main (Input layer, What will you use this file for, Optimised raster) then Advanced (Hidden pixels (NoData), Reprocess even if already optimised, Replace existing output file).
+Order follows `initAlgorithm()`: Main (Input layer, What will you use this file for, Save optimised raster as) then Advanced (Hidden pixels (NoData), Reprocess even if already optimised, Replace existing output file).
 
 ### Input layer
 
@@ -136,13 +139,13 @@ Help. Deliberately short: the full explanation, including which files are forced
 >
 > Some files cannot be written for Viewing and are written for Analysis instead. The tool says why when that happens. See the panel on the right for which files and why.
 >
-> If you are not sure, choose Analysis. It costs disk space and nothing else.
+> If you are not sure, choose Analysis. It is the safest option: your file still ends up smaller and faster, just not as small as Viewing would make it.
 
 ---
 
-### Optimised raster (Output)
+### Save optimised raster as (Output)
 
-Label: **Optimised raster**
+Label: **Save optimised raster as**
 
 Help:
 > Where to save the result. Always written as a Cloud Optimized GeoTIFF (COG), tiled with pyramids built in.
@@ -182,7 +185,7 @@ Help. Paragraph breaks are `<br><br>` in the code, not blank lines (same tooltip
 >
 > A file that's tiled with pyramids but still on a less efficient compression is reprocessed regardless of this setting, since there's real file size to save. So is a file that's tiled, pyramided and already correctly compressed but isn't a valid COG yet - the case for every file written by an earlier version of this plugin.
 >
-> Tick this to convert an already-valid file anyway, to change how NoData is handled.
+> Tick this to convert an already-valid file again, to change how NoData is handled.
 
 ---
 
