@@ -875,8 +875,8 @@ def _format_bytes(n: int) -> str:
 # in that case - Viewing compression is dramatically smaller than nearly
 # any source, so this fires almost exclusively there. A source that
 # arrives already compressed (DEFLATE is Metashape/Terra's typical
-# default) can be close enough to ZSTD's size that seven fresh overview
-# levels - which add roughly a third back on top of the base image,
+# default) can be close enough to ZSTD's size that the fresh overview
+# levels - which add roughly a third on top of the base image,
 # regardless of profile - push the total past the original. That is a
 # real, expected outcome, not a failure: this plugin trades file size for
 # pan/zoom speed on the base image, and pyramids are an unavoidable part
@@ -889,8 +889,8 @@ def _format_bytes(n: int) -> str:
 # the profile decision was already consequential (see convert()'s
 # `result.decisions.profile_consequential` check) - a JPEG-source
 # profile_reason warning already explains the increase in that case, and
-# this note's own "pyramids add back roughly a third" claim can be wrong
-# in cause AND magnitude for it: confirmed live on a JPEG source with NO
+# this note's own "roughly a third on top of the base image" claim can be
+# wrong in cause AND magnitude for it: confirmed live on a JPEG source with NO
 # existing pyramids, re-run through Analysis - this note still fired
 # (has_overviews was False, so the first condition alone didn't catch it)
 # and claimed "roughly a third" under a real +837% increase, while the
@@ -901,9 +901,9 @@ def _format_bytes(n: int) -> str:
 # first place - both are the same underlying mistake: this note firing
 # when something else already, correctly, accounts for the increase.
 _SIZE_INCREASE_EXPLANATION = (
-    "Output is larger than source. Expected when the source was already "
-    "compressed, since pyramids add back roughly a third. Not a failure: "
-    "the gain here is speed, not size."
+    "Output is larger than source. This run built pyramids for the "
+    "first time, and they add roughly a third on top of the base "
+    "image. Not a failure: the gain here is speed, not size."
 )
 
 # Growth on a file that already had pyramids before this run, below which
@@ -1523,7 +1523,7 @@ def convert(
             # confirmed live that has_overviews being False was not
             # enough on its own to route around this - a JPEG source
             # with no existing pyramids, re-run through Analysis, still
-            # got told "pyramids add back roughly a third" under a real
+            # got told the pyramids "add roughly a third" under a real
             # +837% increase, directly beneath the profile_reason warning
             # that had already correctly explained it two lines above.
             pass

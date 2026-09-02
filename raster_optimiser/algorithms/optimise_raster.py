@@ -379,15 +379,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
             "<p><b>Things that look wrong but are not</b></p>"
             "<p><b><i>Why does the zoomed-out view look slightly "
-            "different?</i></b> Flick between your source and the output "
-            "zoomed out and you may see pixels shift or shimmer "
-            "slightly. This is the pyramids. Your source has none, so "
-            "QGIS builds its zoomed-out view on the fly each time. The "
-            "output has real pyramids, built by averaging. Two different "
-            "ways of shrinking the same image, so they will not match "
-            "exactly. Zoom in to full resolution and the difference "
-            "goes. It happens on Analysis too, where every pixel value "
-            "is preserved.</p>"
+            "different?</i></b> Zoomed out, QGIS is not showing "
+            "full-resolution pixels but a shrunk copy: a pyramid if the "
+            "file has one, or one it builds on the fly if not. This "
+            "tool always builds its pyramids by averaging, down to a "
+            "fixed smallest size. If your source had no pyramids, QGIS "
+            "was shrinking it live, usually by nearest-neighbour, which "
+            "does not match averaging. If your source already had "
+            "pyramids, they may have been built with a different "
+            "method, or stop at a different level, so the two still "
+            "will not line up exactly. Either way, zoom in to full "
+            "resolution and the difference goes. It happens on Analysis "
+            "too, where every pixel value is preserved.</p>"
             "<p><b><i>Why do the colours look slightly different?</i></b> "
             "On 16-bit and multispectral imagery, QGIS works out its "
             "own contrast stretch for each layer, so two layers can "
@@ -922,29 +925,27 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                 "GeoTIFF (COG)..."
             ))
 
-        # The bar spends its first stretch barely moving: GDAL's first
-        # progress tick lands ~20ms after the gdal.Translate() call, but
-        # the COG driver then works through the full-resolution image
-        # before it builds the pyramids and counts that phase as almost
-        # no progress (complete 0.00-0.05), so on a large Viewing
-        # conversion the bar can sit near 10% for 20-30s (measured ~25s
-        # of an 84s run on a 1.66 GiB source; Analysis moves more
-        # evenly). Say so, so the wait reads as expected rather than
-        # hung. Pushed on every run, not just the lossy path: the
-        # wording itself distinguishes the two, and a Viewing request
-        # coerced to Analysis would get the wrong branch anyway. An
-        # earlier attempt to say this in the status text instead, swapped
-        # in on the first tick, was reverted - the first tick is too
-        # early for it to persist through the slow phase. See
-        # docs/plugin_design_notes.md "Progress bar sits near 10%".
-        feedback.pushInfo(self.tr(
-            "The bar climbs slowly at first. GDAL works through the "
-            "full-resolution image before it builds the pyramids, and "
-            "it counts that as very little progress even though it "
-            "takes a while. On a large raster written for Viewing this "
-            "can be 20 to 30 seconds near 10%. Analysis moves more "
-            "evenly."
-        ))
+        # GDAL's first progress tick lands ~20ms after the
+        # gdal.Translate() call, but the COG driver then works through
+        # the full-resolution image before building the pyramids and
+        # counts that phase as almost no progress (complete 0.00-0.05),
+        # so the bar can sit near 10% for 20-30s early on (measured ~25s
+        # of an 84s run on a 1.66 GiB source). Gated to a RESOLVED lossy
+        # profile: Analysis climbs fairly evenly (worst inter-tick gap
+        # 1.7s, not near 10%), and resolving the profile here - rather
+        # than reading the raw request - is what makes the gate correct
+        # now: a Viewing request coerced to Analysis (elevation,
+        # 16-bit, NoData-only RGB) resolves to lossless and rightly
+        # doesn't get the message. An earlier attempt to carry this in
+        # the status text, swapped in on the first tick, was reverted -
+        # the first tick is too early to persist through the slow phase.
+        # See docs/plugin_design_notes.md "Progress bar sits near 10%".
+        if _resolved_profile_for_target(detection, purpose_choice) == "lossy":
+            feedback.pushInfo(self.tr(
+                "At the start of a large conversion the bar can sit near "
+                "10% for 20 to 30 seconds while GDAL works through the "
+                "full-resolution image before building the pyramids."
+            ))
         feedback.setProgressText(self.tr("Translating (tiling, compressing, pyramids)..."))
         result = convert(
             source_path, detection=detection, chosen_profile=requested_profile,

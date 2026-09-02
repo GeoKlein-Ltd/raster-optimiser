@@ -91,13 +91,15 @@ This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`
 
 **Things that look wrong but are not**
 
-***Why does the zoomed-out view look slightly different?*** Flick between your source and the output zoomed out and you may see pixels shift or shimmer slightly. This is the pyramids. Your source has none, so QGIS builds its zoomed-out view on the fly each time. The output has real pyramids, built by averaging. Two different ways of shrinking the same image, so they will not match exactly. Zoom in to full resolution and the difference goes. It happens on Analysis too, where every pixel value is preserved.
+***Why does the zoomed-out view look slightly different?*** Zoomed out, QGIS is not showing full-resolution pixels but a shrunk copy: a pyramid if the file has one, or one it builds on the fly if not. This tool always builds its pyramids by averaging, down to a fixed smallest size. If your source had no pyramids, QGIS was shrinking it live, usually by nearest-neighbour, which does not match averaging. If your source already had pyramids, they may have been built with a different method, or stop at a different level, so the two still will not line up exactly. Either way, zoom in to full resolution and the difference goes. It happens on Analysis too, where every pixel value is preserved.
 
 ***Why do the colours look slightly different?*** On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
 
 ***Why is the output larger than the source?*** This happens when the source was already compressed. Pyramids and the COG structure add bytes back. The file is faster to pan, not smaller.
 
-The first item's claim checks out against the code: detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS decimates on the fly for the zoomed-out view, nearest-neighbour by its default layer resampling), and all three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`. Different algorithms, so the low-zoom views differ; independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
+The first item's claims check out against the code. Detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS shrinks the source live for the zoomed-out view, nearest-neighbour by its default layer resampling). All three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`, and the count comes from `_default_overview_levels()` (successive halving until the larger side is <= 256 px). So when the source already has pyramids, what can differ is the **resampling method** (this tool always AVERAGE; a source's own pyramids may be nearest, gauss, cubic) and the **level count / stopping point** (a source built by another tool may stop sooner or later). All of this is independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
+
+What does *not* differ is per-level resolution: COG and non-COG overviews are both a successive power-of-two decimation chain, same maths. An earlier note that said the resolutions differed between COG and non-COG was wrong. The one concrete case behind it - a smallest level of 347x267 from this tool versus 348x268 from an older build - was that older build rounding to nearest where `_default_overview_levels()` floor-divides, a change in this tool's own loop, nothing to do with COG.
 
 **Glossary**
 
@@ -227,15 +229,15 @@ Set by `processAlgorithm()` as the run moves through its phases. One continuous 
 | When | `setProgressText()` | Also pushed to the log |
 | --- | --- | --- |
 | Detection starts | `Detecting raster type...` | `Detection finished in {n}s` on completion |
-| Detection done, before `convert()` | `Translating (tiling, compressing, pyramids)...` | the slow-start note (below) |
+| Detection done, before `convert()` | `Translating (tiling, compressing, pyramids)...` | the slow-start note (below), on a resolved lossy run only |
 | Translate finishes | (unchanged) | `Translate finished in {n}s` |
 | Before `_verify()` | `Checking the output is a valid Cloud Optimized GeoTIFF (COG)...` | - |
 
-Slow-start log line, pushed once before `convert()`:
+Slow-start log line, pushed once before `convert()` and only when `_resolved_profile_for_target(detection, purpose_choice) == "lossy"`:
 
-> The bar climbs slowly at first. GDAL works through the full-resolution image before it builds the pyramids, and it counts that as very little progress even though it takes a while. On a large raster written for Viewing this can be 20 to 30 seconds near 10%. Analysis moves more evenly.
+> At the start of a large conversion the bar can sit near 10% for 20 to 30 seconds while GDAL works through the full-resolution image before building the pyramids.
 
-The bar genuinely does move during this stretch, just slowly, so `setProgressText()` stays on "Translating..." throughout - it is not frozen, and there is no separate "reading the source" phase to name. The rough 20 to 30 second figure is deliberate: "slowly" alone leaves someone guessing whether it has hung, a number lets them wait. It is hedged by "on a large raster" and matches the measured ~25 seconds on a 1.66 GiB Viewing conversion (see `plugin_design_notes.md`, "Progress bar sits near 10%"). Pushed on every run, not just Viewing, because the wording distinguishes the two paths itself and a Viewing request coerced to Analysis would otherwise get the wrong branch. An earlier version set a "Reading the source before conversion starts..." status text before `convert()` and swapped in "Translating..." on GDAL's first callback tick via a `first_tick_text` argument to `make_progress_cb`; both were reverted once instrumentation showed the first tick lands at ~20ms, far too early to carry a message through the slow phase.
+The bar genuinely does move during this stretch, just slowly, so `setProgressText()` stays on "Translating..." throughout - it is not frozen, and there is no separate "reading the source" phase to name. The rough 20 to 30 second figure is deliberate: "slowly" alone leaves someone guessing whether it has hung, a number lets them wait. It is hedged by "large conversion" and matches the measured ~25 seconds on a 1.66 GiB Viewing conversion (see `plugin_design_notes.md`, "Progress bar sits near 10%"). Gated on the **resolved** profile, not the requested one: Analysis climbs fairly evenly (worst inter-tick gap 1.7s, not near 10%), and resolving the profile means a Viewing request coerced to Analysis (elevation, 16-bit, NoData-only RGB) correctly does not get the message. An earlier version was pushed on every run and set a "Reading the source before conversion starts..." status text before `convert()`, swapped for "Translating..." on GDAL's first callback tick via a `first_tick_text` argument to `make_progress_cb`; both were reverted once instrumentation showed the first tick lands at ~20ms, far too early to carry a message through the slow phase.
 
 ---
 

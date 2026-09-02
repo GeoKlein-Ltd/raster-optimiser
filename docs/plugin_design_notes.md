@@ -544,12 +544,18 @@ that does not exist.
 
 **What was done about it:** a `processAlgorithm()` log line before
 `convert()` explains the slow start and names a rough 20 to 30 second
-figure for a large Viewing run, so the wait reads as expected rather than
-hung. It is pushed on every run, since its wording distinguishes Viewing
-from Analysis on its own. An earlier attempt to carry the message in the
-status text instead, swapped in on GDAL's first callback tick, was
-reverted: the first tick lands at about 20ms, so the message flashed and
-vanished before the slow phase it described.
+figure, so the wait reads as expected rather than hung. It is gated to
+`_resolved_profile_for_target(detection, purpose_choice) == "lossy"`:
+Analysis climbs fairly evenly, and gating on the *resolved* profile
+means a Viewing request coerced to Analysis (elevation, 16-bit,
+NoData-only RGB) does not get a message about a slowdown it will not
+see. A first version pushed the line on every run and phrased it to
+distinguish the two paths in prose; that read as a warning about
+something that was not happening on Analysis runs. An earlier attempt
+still, to carry the message in the status text and swap it for
+"Translating..." on GDAL's first callback tick, was reverted too: the
+first tick lands at about 20ms, so the message flashed and vanished
+before the slow phase it described.
 
 ---
 
