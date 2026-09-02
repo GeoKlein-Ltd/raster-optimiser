@@ -49,7 +49,7 @@ This section covers Input layer, What will you use this file for, and the three 
 
 *Analysis* compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
 
-*Viewing* compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic can come out around 80% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
+*Viewing* compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic comes out 80 to 90% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
 
 Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values are preserved.
 
@@ -143,7 +143,7 @@ Options:
 Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR).
 > Analysis keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
 >
-> Viewing discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out around 80% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
+> Viewing discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out 80 to 90% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 >
 > Both load and pan at the same speed, and both are written as a Cloud Optimized GeoTIFF (COG).
 >

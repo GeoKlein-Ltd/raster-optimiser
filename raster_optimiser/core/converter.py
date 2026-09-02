@@ -490,15 +490,16 @@ def _estimate_output_ceiling_bytes(
     differently:
 
     Lossy always writes JPEG at quality 90 on RGB imagery, and this
-    codebase already has a real, measured figure for what that does in
-    practice - shortHelpString()/README's "What to expect" report a
-    typical drone orthomosaic coming out around 80% smaller than
-    source (roughly a fifth). This uses half that shrinkage (50%
-    smaller, not 80%) rather than the full documented figure: it's a
-    typical result from real testing, not a guaranteed worst case, and
-    halving it builds in margin against less-compressible content
-    without pretending to a precision this can't actually have before
-    Translate runs.
+    codebase already has real, measured figures for what that does in
+    practice - shortHelpString() and PURPOSE's help report a typical
+    drone orthomosaic coming out 80 to 90% smaller than source (a fifth
+    to a tenth of its size), from testing on a 1.66 GiB and an 8 GB
+    ortho. This estimate uses only a 50% reduction, well short of even
+    the low end of that range: the measured figures are typical
+    results, not a guaranteed worst case, and staying conservative
+    builds in margin against less-compressible content without
+    pretending to a precision this can't actually have before Translate
+    runs.
 
     That 50% assumption only holds when there's real compression left
     to gain, which fails for a source that's already JPEG-compressed -
