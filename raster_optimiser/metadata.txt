@@ -7,7 +7,12 @@ qgisMinimumVersion=3.34
 # profile install. Raise this only when a real incompatibility with a newer
 # QGIS major version is found, not preemptively.
 qgisMaximumVersion=4.99
-description=Converts slow, unoptimised orthomosaics and elevation rasters into fast-panning Cloud Optimized GeoTIFFs (COGs).
+# Deliberately near-identical to the GitHub repository description, not
+# identical: that one adds "A QGIS Processing plugin." as a second
+# sentence, which is redundant here since the Plugin Manager listing is
+# already a QGIS plugin context. Keep the first sentence in sync with
+# GitHub; the trailing sentence is GitHub-only on purpose.
+description=Converts slow, unoptimised orthomosaics, elevation and multispectral rasters into fast-panning Cloud Optimized GeoTIFFs (COGs).
 version=1.0.0
 author=GeoKlein
 email=mail@geoklein.com
