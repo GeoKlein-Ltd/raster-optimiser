@@ -729,6 +729,79 @@ machinery.
 
 ---
 
+## Performance knobs deliberately left unset
+
+**Status:** investigated, 2026-09-03. Two GDAL performance settings were
+weighed against the 170-510 MP knee documented in "Progress bar sits
+near 10%" above. Neither is used.
+
+### `GDAL_CACHEMAX` is not set
+
+The plugin never calls `gdal.SetCacheMax()` and never sets the
+`GDAL_CACHEMAX` config option, so GDAL's block cache stays at whatever
+the process inherits. GDAL's own default is 5% of physical RAM; inside a
+QGIS process the effective value can differ, and would have to be read
+at runtime with `gdal.GetCacheMax()` to be known rather than assumed.
+
+Raising it for the duration of the Translate call was considered and
+rejected:
+
+- **It can only help one of the knee's three candidate causes.** The
+  step between 170 and 510 MP is the full-resolution working set
+  crossing a memory boundary, but that boundary could be (a)
+  block-cache-bound re-reads during the COG full-resolution pass and the
+  overview read-back, (b) the first-time decode of the compressed
+  source, or (c) OS page-cache pressure. A larger GDAL block cache helps
+  only (a). It cannot help (b) - a first read is never already in cache
+  - and for (c) it makes things worse, because the block cache then
+  competes with the OS page cache for the same RAM and can move the knee
+  the wrong way.
+- **It is process-global in a long-lived session.** `SetCacheMax()`
+  changes the cache for the whole QGIS process, and layer rendering on
+  worker threads shares that same block cache. Raising it around one
+  Translate changes cache pressure for concurrent rendering; restoring
+  it afterwards evicts blocks other layers were using and forces them to
+  re-read. Transient and non-corrupting, but a real side effect that a
+  genuinely Translate-scoped knob would not have.
+- **A naive save-and-restore is unsafe.** The classic
+  `gdal.GetCacheMax()` binding returns a 32-bit int and overflows above
+  2 GiB, so reading the current value in order to restore it later
+  corrupts the value it means to preserve whenever the baseline is
+  already large. `GetCacheMaxAsInt64()` avoids that, but the obvious
+  implementation is wrong.
+
+Not worth the side effects for a gain that is unconfirmed and, on two of
+the three candidate causes, absent or negative.
+
+### `NUM_THREADS` covers the overview build
+
+`NUM_THREADS=ALL_CPUS` is set once in each profile's `creation_options`
+(`core/detector.py`'s `RECOMMENDED_SETTINGS`). It covers base-image tile
+compression for certain. Whether it also covers the overview build rests
+on the COG driver reusing the setting internally.
+
+The GDAL COG driver documentation answers this with no measurement
+needed. The `NUM_THREADS` creation option is described - verbatim in
+both the release-3.9 and the current docs - as: "Enable multi-threaded
+compression by specifying the number of worker threads. Default is
+compression in the main thread. This also determines the number of
+threads used when reprojection is done with the TILING_SCHEME or
+TARGET_SRS creation options. (Overview generation is also multithreaded
+since GDAL 3.2)". That parenthetical is present continuously across the
+3.8 to 3.13 range, so on the bundled GDAL 3.13.2 the single
+`NUM_THREADS` creation option this plugin sets is documented to drive
+base-image compression, overview generation, and - if ever used -
+reprojection.
+
+This is the documentation, not a repository measurement: the overview
+phase has not been independently timed here with and without threading.
+It does close the open question, and it is worth noting that if the
+overview build ever did prove serial there is no additional knob to
+reach for - `NUM_THREADS` is the only control the COG driver exposes for
+this - so such a finding would be a documentation note, not a fix.
+
+---
+
 ## Bold headings in shortHelpString() render low-contrast on dark themes
 
 **Status:** known and accepted, 2026-09-02. `shortHelpString()` uses real
