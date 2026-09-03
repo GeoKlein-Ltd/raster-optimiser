@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Plugin lifecycle: register/deregister the Processing provider, and add
 a toolbar button + Raster-menu entry as one-click entry points into the
 same algorithm dialog the Processing Toolbox already opens.

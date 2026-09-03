@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Processing provider registration.
 
 icon() overrides the base class default so the toolbox group ("GeoKlein")

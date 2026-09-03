@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Release proof, not the install method.
 
 Development install is tools/qgis-ltr-dev.bat and tools/qgis-4-dev.bat,
@@ -51,7 +52,11 @@ ALLOWLIST_DIRS = ["core", "algorithms", "icons"]
 # PACKAGE_ROOT, but the QGIS plugin repository requires a LICENSE file
 # inside the uploaded plugin itself - so it's deployed to the package
 # root alongside metadata.txt even though it isn't sourced from there.
-ROOT_FILES = ["LICENSE"]
+# NOTICE ships beside it: it carries the copyright line and the
+# name/logo carve-out that LICENSE (kept byte-identical to the canonical
+# GPL-3.0) deliberately doesn't, so a redistributor working from the zip
+# still sees them.
+ROOT_FILES = ["LICENSE", "NOTICE"]
 
 PYQT_DIRECT_IMPORT_RE = re.compile(r"^\s*(from|import)\s+PyQt[56]\b", re.MULTILINE)
 

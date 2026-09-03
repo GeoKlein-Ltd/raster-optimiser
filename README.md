@@ -99,7 +99,9 @@ use.
 Not required, but very welcome: a credit back to GeoKlein, and a message
 telling me what you're building. I'd genuinely like to see where this ends up.
 
-Full license text: `LICENSE`.
+Full license text: `LICENSE`. The name and logo carve-out is also recorded
+in `NOTICE`, which ships alongside `LICENSE` in the plugin package. Keep the
+two in step if either changes.
 
 ## Contact
 

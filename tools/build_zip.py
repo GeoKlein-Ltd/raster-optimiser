@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Build the plugins.qgis.org submission zip.
 
 Reuses deploy.py's file allowlist (_iter_source_files) rather than

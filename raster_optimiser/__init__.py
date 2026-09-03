@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """QGIS plugin entry point.
 
 Deferred import inside classFactory is deliberate, standard QGIS plugin

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Raster Optimiser detection module.
 
 Pure GDAL/Python, no QGIS imports. Classifies a raster against the v1

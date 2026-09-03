@@ -14,7 +14,7 @@ qgisMaximumVersion=4.99
 # GitHub; the trailing sentence is GitHub-only on purpose.
 description=Converts slow, unoptimised orthomosaics, elevation and multispectral rasters into fast-panning Cloud Optimized GeoTIFFs (COGs).
 version=1.0.0
-author=GeoKlein
+author=GeoKlein Ltd
 email=mail@geoklein.com
 about=Large orthomosaics and elevation rasters from drone photogrammetry or LiDAR are technically correct but practically unusable: no tiling, no pyramids, often no compression, so QGIS or QField crawl trying to pan around them. GeoKlein Raster Optimiser detects what a raster actually is and applies the correct tiling, pyramid and compression settings automatically, with no GDAL flags to memorise: 8-bit RGB imagery gets a real choice between lossless and lossy, and everything else it trusts (Float32 elevation, 16-bit imagery, multispectral) is processed losslessly. It refuses cleanly, with a clear reason, on classified/categorical rasters rather than risk silently corrupting them. A file that is already a valid Cloud Optimized GeoTIFF at the target compression is left as it is; one that is only part-way there, tiled and pyramided but not a COG, is rebuilt.
 icon=icons/icon_64.png

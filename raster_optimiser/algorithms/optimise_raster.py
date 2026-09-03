@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """QGIS Processing algorithm wrapping the Raster Optimiser engine.
 
 Thin wrapper only. All detection and conversion logic lives in core/

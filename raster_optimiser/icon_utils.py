@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Shared plugin icon loading.
 
 One QIcon built from all three exported sizes via addFile(), so Qt picks

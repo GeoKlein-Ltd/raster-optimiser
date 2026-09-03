@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Raster Optimiser conversion module.
 
 Pure GDAL/Python, no QGIS imports. Takes an already-classified
