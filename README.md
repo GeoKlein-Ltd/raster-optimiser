@@ -10,21 +10,25 @@ design notes.
 
 ## How to use it
 
-Install it from the QGIS Plugin Manager: Plugins, then Manage and Install
-Plugins, then search for GeoKlein Raster Optimiser and install it.
+**Install.** Once the plugin is listed on plugins.qgis.org: Plugins, Manage
+and Install Plugins, then search for GeoKlein Raster Optimiser. Until then,
+install from the zip: Plugins, Manage and Install Plugins, Install from ZIP.
 
-It runs as a Processing algorithm. Open it from the Processing Toolbox, under
-GeoKlein, Optimise raster, or from the Raster menu. Pick the input raster,
-choose Analysis or Viewing, choose where to save the output, and run.
+**Run.** Processing, Toolbox, GeoKlein, Optimise raster. Or the Raster menu,
+GeoKlein Raster Optimiser, Optimise raster. Pick the input raster, choose
+Analysis or Viewing, choose where to save the output, and run.
 
 The output is a standalone file. It is not a working file and it is not
 something held inside QGIS. It is an ordinary Cloud Optimized GeoTIFF, written
 to a path you choose, that opens in any GIS. You can send it to a client or
-put it on a server exactly as it is, with no separate export step.
+put it on a server exactly as it is, with no separate export step. The output
+field defaults to a temporary location that QGIS may clear later, so set a
+proper path before you run.
 
-One thing to watch: the Optimised raster field defaults to "Save to temporary
-file", which still writes a real file but to a location QGIS may clear later.
-To keep the result, set it to a proper path before you run.
+Use that Processing algorithm, not the right-click Export, Save As in the
+Layers panel. Save As is a separate QGIS tool that writes a plain GeoTIFF
+with none of the tiling, pyramids or compression this plugin adds, so its
+result is not the plugin's output and should not be judged as such.
 
 ## What to expect
 
