@@ -77,12 +77,20 @@ Either way, this is the cost of the speed improvement: the file is faster to
 pan, not smaller.
 
 **The output has slightly different georeferencing text.** Some files store
-their CRS as a BOUNDCRS, an EPSG code wrapped in a datum transformation. GDAL
-does not preserve that wrapper when writing, so the output carries the bare
-EPSG code instead. The origin, pixel size and extent are byte-identical, and
-the difference in where QGIS draws the two files is under two centimetres. This
-is GDAL's behaviour rather than this plugin's, and the bare EPSG code is
-arguably the more accurate of the two.
+their CRS as a BOUNDCRS: an EPSG code wrapped in a particular datum
+transformation to WGS 84. GDAL does not keep that wrapper when it writes a
+GeoTIFF, so the output carries the bare EPSG code instead. This is GDAL's
+behaviour, not this plugin's: a plain gdal_translate with no options does the
+same thing. The origin, pixel size and extent are byte-identical between
+source and output. What changes is the datum transformation a later consumer
+uses when it reprojects, because it now picks one itself rather than following
+the one named in the file. That shift is usually small, but how small depends
+entirely on which transformation was dropped, and for some files it is larger.
+To check your own case, open the source and the output together, reproject
+both to WGS 84 or a web basemap, and zoom in on a known point: any gap between
+them is the difference between the two transformations. The bare EPSG code is
+often the better default, since it lets PROJ choose the best transformation
+for the area rather than a fixed one from the source software.
 
 **Running the plugin on its own output.** If you take a file written for
 viewing and run it again for analysis, the result will be substantially larger
