@@ -380,13 +380,24 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
 # below, so GEOKLEIN_4_DECISION and the end-of-run summary read
 # identical text to what a mismatch would have produced via
 # forced_reason - one mechanism covering every case.
+#
+# Timeless present tense, deliberately: _log_profile_decision() pushes
+# these into the run log BEFORE Translate runs, and the same string is
+# later embedded as GEOKLEIN_4_DECISION once the file exists, so any
+# tense anchored to the write ("was written", "will be written") is
+# wrong at one of the two moments. Every clause describing what was
+# written is phrased as a property that holds whenever it is read.
+# Source-history clauses stay past ("was already compressed for
+# viewing") since they are genuinely past at both moments. See
+# docs/plugin_design_notes.md, "The profile-decision message is logged
+# before Translate".
 PROFILE_REASON_ANALYSIS_HONOURED = (
-    "Analysis, as asked. The file was written losslessly, so no pixel "
-    "value was changed."
+    "Analysis, as asked. Lossless compression preserves every pixel "
+    "value."
 )
 PROFILE_REASON_VIEWING_HONOURED_RGB = (
-    "Viewing, as asked. The file was written with lossy compression, "
-    "for the smallest possible file."
+    "Viewing, as asked. Lossy compression discards detail the eye will "
+    "not notice."
 )
 
 # Distinct from PROFILE_REASON_ANALYSIS_HONOURED: this is also a
@@ -896,12 +907,12 @@ def _finish_rgb_8bit(result: DetectionResult, band1: "gdal.Band", has_alpha: boo
         result.profile_mode = "forced"
         result.forced_profile = "lossless"
         result.forced_reason = (
-            "Written for analysis instead. This file marks its "
-            "transparent collar with a NoData value and has no alpha "
+            "The file is written for analysis instead. This file marks "
+            "its transparent collar with a NoData value and has no alpha "
             "band. Compressing for viewing shifts pixel values "
             "slightly, so a collar marked by value rather than by "
             "position stops being reliable, and the border would "
-            "render as solid black. The pixel values were preserved "
+            "render as solid black. The pixel values are preserved "
             "instead. The file still loads and pans at full speed - "
             "Viewing would only have made it smaller, not faster.\n"
             "\n"
@@ -988,12 +999,12 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         result.profile_mode = "forced"
         result.forced_profile = "lossless"
         result.forced_reason = (
-            "Written for analysis instead. This is elevation data, a "
-            "DSM, DTM or CHM. Compressing for viewing works by "
+            "The file is written for analysis instead. This is elevation "
+            "data, a DSM, DTM or CHM. Compressing for viewing works by "
             "discarding detail the eye won't notice, but these "
             "pixels are height measurements rather than colours, so "
             "discarding detail would change the actual heights. "
-            "The pixel values were preserved instead. The file still "
+            "The pixel values are preserved instead. The file still "
             "loads and pans at full speed - Viewing would only have "
             "made it smaller, not faster."
         )
@@ -1081,12 +1092,12 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     # first reads as "this plugin might output a .jpg file", which it
     # never does (always GeoTIFF, whichever profile is used).
     result.forced_reason = (
-        "Written for analysis instead. Compressing for viewing works "
-        "on colour photographs, so it needs exactly three 8-bit colour "
-        f"bands. This file has {band_count} bands at {dtype}, so the "
-        "pixel values were preserved instead. The file still loads and "
-        "pans at full speed - Viewing would only have made it smaller, "
-        "not faster.\n"
+        "The file is written for analysis instead. Compressing for "
+        "viewing works on colour photographs, so it needs exactly three "
+        f"8-bit colour bands. This file has {band_count} bands at "
+        f"{dtype}, so the pixel values are preserved instead. The file "
+        "still loads and pans at full speed - Viewing would only have "
+        "made it smaller, not faster.\n"
         "\n"
         "If a small visual copy is genuinely wanted, export an 8-bit "
         "RGB composite of the bands you want to see, then run this "

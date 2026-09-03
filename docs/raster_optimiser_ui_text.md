@@ -283,17 +283,19 @@ Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (s
 
 Analysis:
 
-> Analysis, as asked. The file was written losslessly, so no pixel value was changed.
+> Analysis, as asked. Lossless compression preserves every pixel value.
 
 Viewing (only 8-bit RGB reaches this - every other content type is forced to Analysis):
 
-> Viewing, as asked. The file was written with lossy compression, for the smallest possible file.
+> Viewing, as asked. Lossy compression discards detail the eye will not notice.
+
+Both are timeless present tense on purpose - the line is logged before Translate runs and then embedded in the finished file as `GEOKLEIN_4_DECISION`, so a tense anchored to the write would be wrong in one place or the other. See "The profile-decision message is logged before Translate" in `docs/plugin_design_notes.md`.
 
 ### Viewing requested on elevation data
 
 `detection.forced_reason` when `content_type == "FLOAT32_CONTINUOUS"` and Viewing was requested but Analysis was used.
 
-> Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 
 ---
 
@@ -301,7 +303,7 @@ Viewing (only 8-bit RGB reaches this - every other content type is forced to Ana
 
 `detection.forced_reason` when `content_type == "CONTINUOUS"` and Viewing was requested but Analysis was used. `{n}` and `{dtype}` are the file's actual band count and pixel type. Ends by naming the actual route to a small visual copy, since none of this bucket's files can get one from this tool directly.
 
-> Written for analysis instead. Compressing for viewing works on colour photographs, so it needs exactly three 8-bit colour bands. This file has {n} bands at {dtype}, so the pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. Compressing for viewing works on colour photographs, so it needs exactly three 8-bit colour bands. This file has {n} bands at {dtype}, so the pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 >
 > If a small visual copy is genuinely wanted, export an 8-bit RGB composite of the bands you want to see, then run this tool on that file with Viewing.
 
@@ -311,7 +313,7 @@ Viewing (only 8-bit RGB reaches this - every other content type is forced to Ana
 
 `detection.forced_reason` for an `RGB_8BIT` file whose collar is marked by a NoData value with no alpha band, when Viewing was requested but Analysis was used. Unlike the two entries above, this is a fact about this specific file, not its whole content type - a different RGB_8BIT file with a real alpha band gets a genuine Viewing/Analysis choice, never this message.
 
-> Written for analysis instead. This file marks its transparent collar with a NoData value and has no alpha band. Compressing for viewing shifts pixel values slightly, so a collar marked by value rather than by position stops being reliable, and the border would render as solid black. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. This file marks its transparent collar with a NoData value and has no alpha band. Compressing for viewing shifts pixel values slightly, so a collar marked by value rather than by position stops being reliable, and the border would render as solid black. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 >
 > To get the smaller file, re-export with an alpha band and run this again.
 
@@ -485,14 +487,14 @@ Two full worked examples, both taken from a real run against the current code (e
 > GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder until the plugins.qgis.org listing exists)
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
-> GEOKLEIN_4_DECISION = Written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values were preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> GEOKLEIN_4_DECISION = The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=3 -co OVERVIEW_COUNT=1 "input.tif" "output.tif"
 > Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
 
 > GEOKLEIN_2_DETECTED = Source file was 8-bit RGB imagery, 3 bands plus alpha, tiled, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
-> GEOKLEIN_4_DECISION = Viewing, as asked. The file was written with lossy compression, for the smallest possible file.
+> GEOKLEIN_4_DECISION = Viewing, as asked. Lossy compression discards detail the eye will not notice.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=8 -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"

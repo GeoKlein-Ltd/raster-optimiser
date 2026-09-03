@@ -275,6 +275,52 @@ way this one now has.
 
 ---
 
+## The profile-decision message is logged before Translate
+
+**Status:** implemented, 2026-09-03.
+
+`_log_profile_decision()` (`algorithms/optimise_raster.py`) pushes the
+profile-decision string - `resolve_profile_reason()`'s return value, one
+of the `PROFILE_REASON_*` honoured constants or a per-file
+`forced_reason` - into the run log immediately after detection, *before*
+`convert()` runs. The same string is then embedded in the output file as
+`GEOKLEIN_4_DECISION` once the file exists.
+
+**Why the push stays before Translate.** The placement is deliberate:
+the user sees which profile was used, and why, before waiting through a
+conversion that can take minutes on a large file. For the two
+consequential JPEG-source cases the timing matters more than
+convenience - those strings end "run this tool on the original file
+instead", and a user who reads that mid-run can still Cancel before the
+expensive Translate has run. Moving the push to after `convert()`
+returns would make a past tense ("the file *was* written...") literally
+true, but it would close that cancel window exactly where cancelling
+before the expensive work is the response the warning invites. The
+tense is the smaller problem, and it was solved in the wording instead.
+
+**Why the strings are timeless present tense.** Because each is shown at
+two moments - pre-Translate in the log, post-write in the file's
+metadata - any tense anchored to the write is wrong at one of them.
+"The file was written losslessly" is false in the log (nothing written
+yet); "will be written" would be false in the metadata. So every clause
+describing what was written is phrased as a property that holds whenever
+it is read: "Lossless compression preserves every pixel value", "Lossy
+compression discards detail the eye will not notice", "The file is
+written for analysis instead. ... The pixel values are preserved
+instead." Clauses about the *source's* history stay past ("This file
+was already compressed for viewing before it reached this tool" is
+genuinely past at both moments), and counterfactual clauses stay
+conditional ("Viewing would only have made it smaller, not faster"). All
+seven strings were brought into line in one pass, 2026-09-03: three of
+them (the `forced_reason` set) had been left in write-anchored past
+tense a round earlier, before the tense problem was identified - leaving
+part of a set in the wrong tense while the rest was fixed is the drift
+these notes exist to catch. `GEOKLEIN_5_APPLIED` follows the same rule
+for the same reason: it states decisions made before Translate ran,
+never an outcome that might not happen.
+
+---
+
 ## Comments go stale in the same rounds the design changes
 
 **Status:** audit done, 2026-08-24. Five stale comments/docstrings found
