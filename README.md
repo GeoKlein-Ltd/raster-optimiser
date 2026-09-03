@@ -92,8 +92,9 @@ the byte layout changes.
 ## Licence
 
 The source code is licensed under the GPL. The GeoKlein name and the cheetah
-logo are not covered by that licence and remain the property of GeoKlein. If
-you fork this plugin, please replace the branding - the code is yours to use.
+logo are not covered by that licence and remain the property of GeoKlein Ltd.
+If you fork this plugin, please replace the branding - the code is yours to
+use.
 
 Not required, but very welcome: a credit back to GeoKlein, and a message
 telling me what you're building. I'd genuinely like to see where this ends up.
