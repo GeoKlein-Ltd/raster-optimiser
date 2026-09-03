@@ -201,7 +201,7 @@ def _auto_cleared_message(nodata_risk: "NoDataRisk") -> str:
         "Cleared NoData: around {} of this image's interior was pure "
         "black and hidden behind a NoData value of 0, real content, "
         "usually shadow or water, not just the transparent collar. "
-        "Those pixels are now visible in the output."
+        "Those pixels should now be visible in the output."
     ).format(nodata_pct_phrase(pct))
 
 

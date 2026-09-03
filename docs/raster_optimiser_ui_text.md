@@ -68,7 +68,7 @@ The three settings below are under **Advanced parameters**.
 ***Hidden pixels (NoData)***: what to do when a file marks transparency with a NoData value of 0. On 8-bit imagery that is unsafe, because 0 is also the value of a black pixel, so deep shadow and dark water can be treated as empty and punched out as holes.
 
 - ***Automatic*** checks each file and only clears NoData where real content is hidden behind it.
-- ***Reveal hidden pixels*** always clears it, which brings the content back but can render the collar as a solid black border.
+- ***Reveal hidden pixels*** always clears it, which should bring the content back but can render the collar as a solid black border.
 - ***Keep as-is*** leaves the file's NoData setting untouched.
 
 **Note:** even though it may appear that way, this operation does not fill holes. It uncovers hidden pixels that were already there. It does not interpolate or create data. Where a raster has holes because the data is genuinely missing rather than hidden, this plugin cannot fill them.
@@ -186,7 +186,7 @@ Help. Paragraph breaks are `<br><br>` in the code (same tooltip rich-text constr
 >
 > 'Automatic' checks each file and only clears NoData when real content is hidden behind it. Files where NoData marks nothing but the transparent collar are left alone.
 >
-> 'Reveal hidden pixels' always clears NoData. Hidden content comes back, but the collar may render as a solid black border rather than transparent.
+> 'Reveal hidden pixels' always clears NoData. Hidden content should come back, but the collar may render as a solid black border rather than transparent.
 >
 > 'Keep as-is' leaves the file's NoData setting untouched.
 >
@@ -419,7 +419,7 @@ An 8-bit RGB file with no alpha band, whose collar is marked by a NoData value o
 
 Not a warning: informational, but should stand out. This is the most educational thing the plugin says. `processAlgorithm()`, not `checkParameterValues()` - see the note above on why NoData never blocks execution.
 
-> Cleared NoData: around **{pct}** of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
+> Cleared NoData: around **{pct}** of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels should now be visible in the output.
 
 ---
 
@@ -496,7 +496,7 @@ Two full worked examples, both taken from a real run against the current code (e
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
 > GEOKLEIN_4_DECISION = Viewing, as asked. Lossy compression discards detail the eye will not notice.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
-> GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
+> GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels should now be visible in the output.
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=8 -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"
 > Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
 
