@@ -281,13 +281,15 @@ Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (s
 
 The parameter tooltips already quote every value the user picks from a control - `'Analysis'`, `'Viewing'`, `'Automatic'`, `'Reveal hidden pixels'`, `'Keep as-is'`, `'Ticked'`, `'Unticked'` - because a tooltip is plain text with no bold or italic available, and a quote is the only mark that says "this is the thing in the dropdown" rather than a common noun. The log messages and the file metadata are the same plain text, so the same rule applies there.
 
-The rule: quote the capitalised token, which is the dropdown value; never quote the lowercase mechanism phrasing, which is the purpose. "`'Analysis'`, as asked" is the value. "compressed for viewing", "written for analysis instead", "Compressing for viewing works on colour photographs" describe what a profile does and are not the control - capitalisation already carries that distinction and the quotes reinforce it.
+The rule: quote every capitalised `Analysis` or `Viewing` token, wherever it appears - in the run log, the end-of-run summary, and the `GEOKLEIN_*` metadata. It is the option the user picked from the dropdown, and a bare "Viewing" reads as an ordinary English word that invites "viewing what?". Quoted, it is unmistakably the choice that was made. Never quote the lowercase mechanism phrasing: "compressed for viewing", "written for analysis instead", "Compressing for viewing works on colour photographs" describe what is being done, not which button was pressed, and capitalisation already carries that distinction.
 
-Where it is applied, and where not:
+The apostrophe is a straight ASCII `'` (U+0027), never a curly one - `GEOKLEIN_*` values are read back by tools parsing TIFF metadata, and a non-ASCII quote can mangle there.
 
-- The honoured pair below (`PROFILE_REASON_ANALYSIS_HONOURED`, `PROFILE_REASON_VIEWING_HONOURED_RGB`) quotes its opening value token.
-- The JPEG-source strings (`PROFILE_REASON_JPEG_SOURCE_ANALYSIS`, `PROFILE_REASON_JPEG_SOURCE_VIEWING`) quote only their first value token, not the later mechanism phrasing.
-- The three `forced_reason` strings quote nothing. Each opens with an unquoted lowercase "written for analysis instead" and carries a single capitalised "Viewing" late in the paragraph; quoting that lone token while the opening stays bare reads worse than no quotes at all.
+Where it is applied:
+
+- The honoured pair below (`PROFILE_REASON_ANALYSIS_HONOURED`, `PROFILE_REASON_VIEWING_HONOURED_RGB`) quotes its one value token.
+- The JPEG-source strings (`PROFILE_REASON_JPEG_SOURCE_ANALYSIS`, `PROFILE_REASON_JPEG_SOURCE_VIEWING`) quote their capitalised value token; the lowercase "compressed for viewing" is left bare.
+- The three `forced_reason` strings quote the capitalised "`'Viewing'` would only have made it smaller" near the end, and the multispectral one also quotes the closing "run this tool on that file with `'Viewing'`". Their opening "written for analysis instead" and "Compressing for viewing" stay bare as mechanism phrasing.
 - `GEOKLEIN_3_REQUESTED` quotes all three of its value names. It sits directly above `GEOKLEIN_4_DECISION` in Layer Properties, and one line quoting a value while the line above leaves the same word bare would read like a mistake.
 
 ### Request honoured, nothing to flag
@@ -308,7 +310,7 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 `detection.forced_reason` when `content_type == "FLOAT32_CONTINUOUS"` and Viewing was requested but Analysis was used.
 
-> The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 
 ---
 
@@ -316,9 +318,9 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 `detection.forced_reason` when `content_type == "CONTINUOUS"` and Viewing was requested but Analysis was used. `{n}` and `{dtype}` are the file's actual band count and pixel type. Ends by naming the actual route to a small visual copy, since none of this bucket's files can get one from this tool directly.
 
-> The file is written for analysis instead. Compressing for viewing works on colour photographs, so it needs exactly three 8-bit colour bands. This file has {n} bands at {dtype}, so the pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. Compressing for viewing works on colour photographs, so it needs exactly three 8-bit colour bands. This file has {n} bands at {dtype}, so the pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 >
-> If a small visual copy is genuinely wanted, export an 8-bit RGB composite of the bands you want to see, then run this tool on that file with Viewing.
+> If a small visual copy is genuinely wanted, export an 8-bit RGB composite of the bands you want to see, then run this tool on that file with 'Viewing'.
 
 ---
 
@@ -326,7 +328,7 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 `detection.forced_reason` for an `RGB_8BIT` file whose collar is marked by a NoData value with no alpha band, when Viewing was requested but Analysis was used. Unlike the two entries above, this is a fact about this specific file, not its whole content type - a different RGB_8BIT file with a real alpha band gets a genuine Viewing/Analysis choice, never this message.
 
-> The file is written for analysis instead. This file marks its transparent collar with a NoData value and has no alpha band. Compressing for viewing shifts pixel values slightly, so a collar marked by value rather than by position stops being reliable, and the border would render as solid black. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> The file is written for analysis instead. This file marks its transparent collar with a NoData value and has no alpha band. Compressing for viewing shifts pixel values slightly, so a collar marked by value rather than by position stops being reliable, and the border would render as solid black. The pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 >
 > To get the smaller file, re-export with an alpha band and run this again.
 
@@ -500,7 +502,7 @@ Two full worked examples, both taken from a real run against the current code (e
 > GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
 > GEOKLEIN_3_REQUESTED = 'Viewing'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).
-> GEOKLEIN_4_DECISION = The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
+> GEOKLEIN_4_DECISION = The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=3 -co OVERVIEW_COUNT=1 "input.tif" "output.tif"
 > Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: https://github.com/GeoKlein-Ltd/raster-optimiser/blob/main/docs/GeoKlein_raster_optimisation_workflow.md

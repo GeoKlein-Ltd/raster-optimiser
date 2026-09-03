@@ -393,17 +393,16 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
 # docs/plugin_design_notes.md, "The profile-decision message is logged
 # before Translate".
 #
-# Quoting rule: the capitalised token 'Analysis' / 'Viewing' is the
-# dropdown value the user picked and is quoted so the log (plain text,
-# no formatting) marks it as a value rather than a common noun. The
-# lowercase mechanism phrasing ("compressed for viewing", "written for
-# analysis instead") is the purpose, never the control, and is never
-# quoted - capitalisation already carries that distinction and the
-# quotes reinforce it. The honoured pair below quotes its opening
-# token; the JPEG-source strings quote only their first value token;
-# the forced_reason strings quote nothing, because a lone quoted
-# 'Viewing' late in a paragraph that opens with an unquoted lowercase
-# "analysis" reads worse than no quotes at all. See
+# Quoting rule: every capitalised Analysis / Viewing token in these
+# strings, and in forced_reason below, is quoted with a straight ASCII
+# apostrophe - it is the value the user picked from the dropdown, and a
+# bare "Viewing" reads as an ordinary English word that invites "viewing
+# what?". The log and the end-of-run summary are plain text with no
+# formatting, so the quote is the only mark available. The lowercase
+# mechanism phrasing ("compressed for viewing", "written for analysis
+# instead", "Compressing for viewing works on colour photographs") is
+# left unquoted: it describes what is being done, not which button was
+# pressed, and capitalisation already carries that distinction. See
 # docs/raster_optimiser_ui_text.md, "Quoting selectable values".
 PROFILE_REASON_ANALYSIS_HONOURED = (
     "'Analysis', as asked. Lossless compression preserves every pixel "
@@ -928,7 +927,7 @@ def _finish_rgb_8bit(result: DetectionResult, band1: "gdal.Band", has_alpha: boo
             "position stops being reliable, and the border would "
             "render as solid black. The pixel values are preserved "
             "instead. The file still loads and pans at full speed - "
-            "Viewing would only have made it smaller, not faster.\n"
+            "'Viewing' would only have made it smaller, not faster.\n"
             "\n"
             "To get the smaller file, re-export with an alpha band "
             "and run this again."
@@ -1019,7 +1018,7 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
             "pixels are height measurements rather than colours, so "
             "discarding detail would change the actual heights. "
             "The pixel values are preserved instead. The file still "
-            "loads and pans at full speed - Viewing would only have "
+            "loads and pans at full speed - 'Viewing' would only have "
             "made it smaller, not faster."
         )
         settings = RECOMMENDED_SETTINGS["lossless_float"]
@@ -1110,12 +1109,12 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         "viewing works on colour photographs, so it needs exactly three "
         f"8-bit colour bands. This file has {band_count} bands at "
         f"{dtype}, so the pixel values are preserved instead. The file "
-        "still loads and pans at full speed - Viewing would only have "
+        "still loads and pans at full speed - 'Viewing' would only have "
         "made it smaller, not faster.\n"
         "\n"
         "If a small visual copy is genuinely wanted, export an 8-bit "
         "RGB composite of the bands you want to see, then run this "
-        "tool on that file with Viewing."
+        "tool on that file with 'Viewing'."
     )
     settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
     result.profile_options = [
