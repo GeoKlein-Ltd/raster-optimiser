@@ -255,7 +255,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "tiles", "geotiff", "cog", "cloud optimised geotiff",
             "cloud optimized geotiff", "jpeg", "zstd", "performance",
             "speed", "speed up", "basemap", "drone", "photogrammetry",
-            "lidar", "dsm", "dtm", "chm", "elevation", "qfield",
+            "lidar", "dsm", "dtm", "chm", "elevation", "multispectral",
+            "16-bit", "qfield",
         ]
 
     def shortHelpString(self):
