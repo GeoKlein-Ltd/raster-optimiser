@@ -1,5 +1,9 @@
 # Raster Optimiser
 
+![A large raster panning jerkily in QGIS, then the Optimise raster algorithm running on it, then the same file panning smoothly](docs/images/raster-optimiser_gif.gif)
+
+*Before, during and after: a slow raster, the plugin run, and the same file panning smoothly.*
+
 ![Poster: large orthomosaics, elevation models and multispectral rasters pan slowly in QGIS until they are rewritten as Cloud Optimized GeoTIFFs](docs/images/poster.png)
 
 *Why the tool exists: field and survey rasters are often slow to pan in
