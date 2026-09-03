@@ -27,12 +27,12 @@ install from the zip: Plugins, Manage and Install Plugins, Install from ZIP.
 
 **Run.** Processing, Toolbox, GeoKlein, Optimise raster. Or the Raster menu,
 GeoKlein Raster Optimiser, Optimise raster. Pick the input raster, choose
-Analysis or Viewing, choose where to save the output, and run.
+'Analysis' or 'Viewing', choose where to save the output, and run.
 
-![The Optimise raster algorithm open in the QGIS Processing Toolbox, with the input raster, the Analysis or Viewing choice and the output path fields](docs/images/plugin_dialog.png)
+![The Optimise raster algorithm open in the QGIS Processing Toolbox, with the input raster, the 'Analysis' or 'Viewing' choice and the output path fields](docs/images/plugin_dialog.png)
 
 *The Optimise raster algorithm in the Processing Toolbox, with the input
-raster, the Analysis or Viewing choice, and the output path.*
+raster, the 'Analysis' or 'Viewing' choice, and the output path.*
 
 ![The QGIS Processing log after a completed run, with the detection, profile decision and end-of-run summary lines marked](docs/images/log_after_run.png)
 
@@ -45,12 +45,11 @@ end-of-run summary lines marked.*
 what was detected, what was decided, and the command that reproduces the
 file.*
 
-The output is a standalone file. It is not a working file and it is not
-something held inside QGIS. It is an ordinary Cloud Optimized GeoTIFF, written
-to a path you choose, that opens in any GIS. You can send it to a client or
-put it on a server exactly as it is, with no separate export step. The output
-field defaults to a temporary location that QGIS may clear later, so set a
-proper path before you run.
+The output is always a real file on disk: an ordinary Cloud Optimized GeoTIFF
+that opens in any software that can read GeoTIFFs. You can send it to a client
+or put it on a server exactly as it is, with no separate export step. By
+default it is written to a temporary location that QGIS may clear later, which
+is why you should set a proper output path before you run.
 
 Use that Processing algorithm, not the right-click Export, Save As in the
 Layers panel. Save As is a separate QGIS tool that writes a plain GeoTIFF
@@ -65,12 +64,12 @@ Six things that look like problems and aren't.
 imagery, QGIS calculates its own contrast stretch for each layer, and two
 layers can end up with slightly different minimum and maximum values even when
 their pixels are identical. Copy the symbology from one layer to the other and
-the difference disappears. To confirm the data is unchanged, compare the band
-statistics in Layer Properties: they will match exactly.
+the difference should disappear. To confirm the data is unchanged, compare the
+band statistics in Layer Properties: they will match exactly.
 
 **The output is larger than the source.** This happens when the source file
-was already compressed and you chose Analysis, or when you chose Viewing on a
-file that was already compressed for viewing. If the source did not already
+was already compressed and you chose 'Analysis', or when you chose 'Viewing'
+on a file that was already compressed for viewing. If the source did not already
 have pyramids, building them adds roughly a third to the base image size. If
 it already had pyramids, the increase instead comes from the compression
 change or from restructuring the file into a valid Cloud Optimized GeoTIFF.
