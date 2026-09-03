@@ -380,8 +380,14 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
 # below, so GEOKLEIN_4_DECISION and the end-of-run summary read
 # identical text to what a mismatch would have produced via
 # forced_reason - one mechanism covering every case.
-PROFILE_REASON_ANALYSIS_HONOURED = "Every pixel value was preserved, as asked."
-PROFILE_REASON_VIEWING_HONOURED_RGB = "Lossy compression suits this data, so it was used as asked."
+PROFILE_REASON_ANALYSIS_HONOURED = (
+    "Analysis, as asked. The file was written losslessly, so no pixel "
+    "value was changed."
+)
+PROFILE_REASON_VIEWING_HONOURED_RGB = (
+    "Viewing, as asked. The file was written with lossy compression, "
+    "for the smallest possible file."
+)
 
 # Distinct from PROFILE_REASON_ANALYSIS_HONOURED: this is also a
 # genuinely-honoured Analysis request (nothing was overridden), but a
@@ -390,12 +396,12 @@ PROFILE_REASON_VIEWING_HONOURED_RGB = "Lossy compression suits this data, so it 
 # docs/plugin_design_notes.md). Surfaced via consequential=True below,
 # not honoured=False: the mechanism did match what was asked for.
 PROFILE_REASON_JPEG_SOURCE_ANALYSIS = (
-    "This file was already compressed for viewing, so some pixel "
-    "values were changed before it reached this tool. Preserving them "
-    "now keeps those changed values rather than recovering the "
-    "originals, and the file will be substantially larger for no gain "
-    "in accuracy. For measurement work, run this tool on the original "
-    "file instead."
+    "Analysis, as asked. This file was already compressed for viewing "
+    "before it reached this tool, so some pixel values were changed. "
+    "Preserving them now keeps those changed values rather than "
+    "recovering the originals, and the file will be substantially "
+    "larger for no gain in accuracy. For measurement work, run this "
+    "tool on the original file instead."
 )
 
 # Counterpart to PROFILE_REASON_JPEG_SOURCE_ANALYSIS for the other

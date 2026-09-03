@@ -277,6 +277,18 @@ Blocks execution. Not escapable by any parameter - the fix is external (free up 
 
 Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (set at detection time) or `resolve_profile_reason()` (the honoured-but-worth-flagging case below), or in `core/converter.py` (the compression-not-yet-at-target case, resolved once conversion settings are known), and reused verbatim wherever it's shown: the log during the run (`feedback.pushWarning()`), the end-of-run summary, and the file's own embedded metadata (`GEOKLEIN_4_DECISION`) all read the identical text - none of them reword it.
 
+### Request honoured, nothing to flag
+
+`resolve_profile_reason()` when the profile ran exactly as chosen and nothing about the file makes that worth a warning - `consequential` is `False`, so this is a single `pushInfo()` line during the run and does not reappear in the end-of-run summary. It is still the `GEOKLEIN_4_DECISION` value in the output file. Each names the purpose first, then the mechanism, then the outcome, so it reads as an answer to "What will you use this file for" rather than a compression note the user never asked about.
+
+Analysis:
+
+> Analysis, as asked. The file was written losslessly, so no pixel value was changed.
+
+Viewing (only 8-bit RGB reaches this - every other content type is forced to Analysis):
+
+> Viewing, as asked. The file was written with lossy compression, for the smallest possible file.
+
 ### Viewing requested on elevation data
 
 `detection.forced_reason` when `content_type == "FLOAT32_CONTINUOUS"` and Viewing was requested but Analysis was used.
@@ -309,7 +321,7 @@ Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (s
 
 `resolve_profile_reason()` when Analysis is requested (or forced) and the source file's `IMAGE_STRUCTURE` `COMPRESSION` tag names a JPEG variant - most commonly a prior Viewing-profile output from this same tool, re-run through Analysis. Unlike the three entries above, the request here genuinely is honoured exactly as asked: nothing is overridden, lossless ZSTD is applied. It is flagged anyway because the source pixels are not what they were before that earlier JPEG pass, so preserving them losslessly now preserves already-altered values rather than recovering the originals - see `docs/plugin_design_notes.md` for why this needed a new category of rule. Confirmed on a real file: 367MiB in, 1.55GiB out (4.41x), the "compression not yet the target" message below suppressed in favour of this one.
 
-> This file was already compressed for viewing, so some pixel values were changed before it reached this tool. Preserving them now keeps those changed values rather than recovering the originals, and the file will be substantially larger for no gain in accuracy. For measurement work, run this tool on the original file instead.
+> Analysis, as asked. This file was already compressed for viewing before it reached this tool, so some pixel values were changed. Preserving them now keeps those changed values rather than recovering the originals, and the file will be substantially larger for no gain in accuracy. For measurement work, run this tool on the original file instead.
 
 ---
 
@@ -439,7 +451,7 @@ If `{pct}` would round to 0.00% in any of the messages above, write "a small but
 
 ## End-of-run summary
 
-The last thing logged before a successful run completes, at warning severity (`feedback.pushWarning()`) so it carries colour. Re-states the consequential decisions from the run, which otherwise scroll away behind Translate's own progress output - not every decision, only the ones worth repeating: a plain file with nothing surprising (Viewing honoured on an RGB file, no NoData finding) gets just the closing line below, not a restatement of "used as asked", which would be noise on every run.
+The last thing logged before a successful run completes, at warning severity (`feedback.pushWarning()`) so it carries colour. Re-states the consequential decisions from the run, which otherwise scroll away behind Translate's own progress output - not every decision, only the ones worth repeating: a plain file with nothing surprising (Viewing honoured on an RGB file, no NoData finding) gets just the closing line below, not a restatement of the "as asked" line, which would be noise on every run.
 
 A decision line is also dropped if it would sit immediately under the message it's restating, with nothing genuinely buried in between - the summary exists to resurface a decision that's scrolled out of view, not to echo the line directly above it. In practice this only ever affects the NoData line: the NoData dispatch is always the last thing logged before the summary starts, so that line is always adjacent to its own original and is dropped every time it would otherwise appear. The profile-decision line doesn't have this problem - it's logged in `_log_profile_decision()`, well before Translate's own progress output, so real content genuinely separates it from the summary. The location line always stays, even when both decision lines are dropped.
 
@@ -480,7 +492,7 @@ Two full worked examples, both taken from a real run against the current code (e
 
 > GEOKLEIN_2_DETECTED = Source file was 8-bit RGB imagery, 3 bands plus alpha, tiled, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
-> GEOKLEIN_4_DECISION = Lossy compression suits this data, so it was used as asked.
+> GEOKLEIN_4_DECISION = Viewing, as asked. The file was written with lossy compression, for the smallest possible file.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels are now visible in the output.
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=8 -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"
