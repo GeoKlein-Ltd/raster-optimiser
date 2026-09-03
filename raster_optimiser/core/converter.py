@@ -211,8 +211,8 @@ def _keep_meaningful_message(nodata_risk: "NoDataRisk") -> str:
         "NoData handling: kept, as requested. Around {} of this "
         "image's interior is pure black and hidden behind a NoData "
         "value of 0, usually shadow or water, not the transparent "
-        "collar. Those pixels stay hidden in this output. Run again "
-        "with Reveal hidden pixels or Automatic to bring them back."
+        "collar. Those pixels should stay hidden in this output. Run "
+        "again with Reveal hidden pixels or Automatic to bring them back."
     ).format(nodata_pct_phrase(pct))
 
 
@@ -716,7 +716,8 @@ def _format_reproduce_commands(full_args: list) -> str:
         f"{translate_cmd}\n"
         "Same operation in QGIS: Raster > Conversion > Translate, with "
         "the output format set to COG. Full manual workflow: "
-        "docs/GeoKlein_raster_optimisation_workflow.md."
+        "https://github.com/GeoKlein-Ltd/raster-optimiser/blob/main/docs/"
+        "GeoKlein_raster_optimisation_workflow.md"
     )
 
 
@@ -795,8 +796,7 @@ def _build_decision_metadata(
     items = {
         "GEOKLEIN_1_TOOL": (
             f"GeoKlein Raster Optimiser {version}, a QGIS plugin, {date_str}. "
-            "https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder "
-            "until the plugins.qgis.org listing exists)"
+            "https://github.com/GeoKlein-Ltd/raster-optimiser"
         ),
         "GEOKLEIN_2_DETECTED": describe_detection(detection),
         "GEOKLEIN_3_REQUESTED": requested_label,

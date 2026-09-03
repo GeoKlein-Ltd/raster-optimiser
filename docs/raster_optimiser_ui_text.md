@@ -427,7 +427,7 @@ Not a warning: informational, but should stand out. This is the most educational
 
 Not a warning either, for the same reason: `checkParameterValues()` can only refuse, never accept-with-acknowledgement, and Keep as-is is a legitimate choice, not a mistake. Gating this in `checkParameterValues()` was tried twice and produced an unclosable modal loop both times (OK dismisses it, Run fires it again). Given the same emphasis as the message above: the finding is exactly as consequential either way, only the outcome (kept vs cleared) differs.
 
-> NoData handling: kept, as requested. Around **{pct}** of this image's interior is pure black and hidden behind a NoData value of 0, usually shadow or water, not the transparent collar. Those pixels stay hidden in this output. Run again with Reveal hidden pixels or Automatic to bring them back.
+> NoData handling: kept, as requested. Around **{pct}** of this image's interior is pure black and hidden behind a NoData value of 0, usually shadow or water, not the transparent collar. Those pixels should stay hidden in this output. Run again with Reveal hidden pixels or Automatic to bring them back.
 
 ---
 
@@ -474,7 +474,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 
 | Key | Content |
 |---|---|
-| `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is the GitHub repo (`https://github.com/GeoKlein-Ltd/raster-optimiser`), standing in for the plugins.qgis.org listing until that exists, marked as such in the text itself. |
+| `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is the GitHub repository (`https://github.com/GeoKlein-Ltd/raster-optimiser`), the plugin's canonical home. A plugins.qgis.org listing URL, once one exists, would be worth adding alongside it rather than replacing it. |
 | `GEOKLEIN_2_DETECTED` | What was detected before conversion ran - content type, band count, tiled/stripped, pyramids or not. Leads with an explicit subject ("Source file was...") rather than a bare comma list: this key is only ever read on the OUTPUT file, so "tiled, without pyramids" on its own would read as a claim about the file in front of the reader, not the source it was made from. See `describe_detection()` in `core/detector.py`. |
 | `GEOKLEIN_3_REQUESTED` | `{Analysis or Viewing}. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
@@ -484,13 +484,13 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 
 Two full worked examples, both taken from a real run against the current code (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding):
 
-> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser (placeholder until the plugins.qgis.org listing exists)
+> GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
 > GEOKLEIN_4_DECISION = The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=3 -co OVERVIEW_COUNT=1 "input.tif" "output.tif"
-> Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
+> Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: https://github.com/GeoKlein-Ltd/raster-optimiser/blob/main/docs/GeoKlein_raster_optimisation_workflow.md
 
 > GEOKLEIN_2_DETECTED = Source file was 8-bit RGB imagery, 3 bands plus alpha, tiled, without pyramids.
 > GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
@@ -498,7 +498,7 @@ Two full worked examples, both taken from a real run against the current code (e
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels should now be visible in the output.
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=8 -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"
-> Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: docs/GeoKlein_raster_optimisation_workflow.md.
+> Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: https://github.com/GeoKlein-Ltd/raster-optimiser/blob/main/docs/GeoKlein_raster_optimisation_workflow.md
 
 Also set, the standard TIFF tag other tools (ArcGIS, ExifTool, Photoshop) read where GDAL's own metadata domain is ignored. Deliberately NOT the full `GEOKLEIN_2_DETECTED`/`GEOKLEIN_4_DECISION` text concatenated - that produced the same paragraph appearing twice in Layer Properties. One short sentence instead: tool and version, what the file is (`content_label()`, the same short phrase `GEOKLEIN_2_DETECTED`'s longer sentence is built from), and what compression was applied:
 
