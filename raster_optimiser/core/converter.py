@@ -789,9 +789,16 @@ def _build_decision_metadata(
     # X" clause: whichever name is chosen would otherwise appear twice
     # in the same breath (once naming the choice, once in the "or"
     # list), which read as a stutter rather than a record.
+    #
+    # All three value names quoted: this sits directly above
+    # GEOKLEIN_4_DECISION in Layer Properties, whose honoured-case text
+    # now quotes 'Analysis' / 'Viewing', and one line quoting the value
+    # while the line above it left the same word bare would read like a
+    # mistake. See docs/raster_optimiser_ui_text.md, "Quoting selectable
+    # values".
     requested_label = (
-        f"{requested_name}. The options were Analysis (every pixel "
-        "value preserved) and Viewing (smallest possible file)."
+        f"'{requested_name}'. The options were 'Analysis' (every pixel "
+        "value preserved) and 'Viewing' (smallest possible file)."
     )
 
     items = {

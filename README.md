@@ -1,5 +1,11 @@
 # Raster Optimiser
 
+![Poster: large orthomosaics, elevation models and multispectral rasters pan slowly in QGIS until they are rewritten as Cloud Optimized GeoTIFFs](docs/images/poster.png)
+
+*Why the tool exists: field and survey rasters are often slow to pan in
+QGIS, and the fix is a set of GDAL settings that are easy to get wrong by
+hand.*
+
 A QGIS Processing plugin that converts slow, unoptimised orthomosaics,
 elevation and multispectral rasters into fast-panning Cloud Optimized
 GeoTIFFs (COGs) - the right tiling, pyramid and compression settings
@@ -7,6 +13,11 @@ applied automatically, no GDAL flags to memorise.
 
 See `docs/GeoKlein_raster_optimisation_workflow.md` for the full workflow and
 design notes.
+
+![Layer Properties for the source raster and the optimised output side by side, with the file size and compression fields marked](docs/images/before_and_after.png)
+
+*Source on the left and optimised output on the right, with the size and
+compression fields marked.*
 
 ## How to use it
 
@@ -17,6 +28,22 @@ install from the zip: Plugins, Manage and Install Plugins, Install from ZIP.
 **Run.** Processing, Toolbox, GeoKlein, Optimise raster. Or the Raster menu,
 GeoKlein Raster Optimiser, Optimise raster. Pick the input raster, choose
 Analysis or Viewing, choose where to save the output, and run.
+
+![The Optimise raster algorithm open in the QGIS Processing Toolbox, with the input raster, the Analysis or Viewing choice and the output path fields](docs/images/plugin_dialog.png)
+
+*The Optimise raster algorithm in the Processing Toolbox, with the input
+raster, the Analysis or Viewing choice, and the output path.*
+
+![The QGIS Processing log after a completed run, with the detection, profile decision and end-of-run summary lines marked](docs/images/log_after_run.png)
+
+*The Log tab after a run, with the detection, profile decision and
+end-of-run summary lines marked.*
+
+![Layer Properties, Information tab, for the output file, listing the GEOKLEIN_1 to GEOKLEIN_7 metadata keys](docs/images/file_metadata.png)
+
+*Layer Properties, Information: the GEOKLEIN_1 to GEOKLEIN_7 keys record
+what was detected, what was decided, and the command that reproduces the
+file.*
 
 The output is a standalone file. It is not a working file and it is not
 something held inside QGIS. It is an ordinary Cloud Optimized GeoTIFF, written

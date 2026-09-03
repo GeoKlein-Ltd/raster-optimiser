@@ -277,17 +277,30 @@ Blocks execution. Not escapable by any parameter - the fix is external (free up 
 
 Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (set at detection time) or `resolve_profile_reason()` (the honoured-but-worth-flagging case below), or in `core/converter.py` (the compression-not-yet-at-target case, resolved once conversion settings are known), and reused verbatim wherever it's shown: the log during the run (`feedback.pushWarning()`), the end-of-run summary, and the file's own embedded metadata (`GEOKLEIN_4_DECISION`) all read the identical text - none of them reword it.
 
+### Quoting selectable values
+
+The parameter tooltips already quote every value the user picks from a control - `'Analysis'`, `'Viewing'`, `'Automatic'`, `'Reveal hidden pixels'`, `'Keep as-is'`, `'Ticked'`, `'Unticked'` - because a tooltip is plain text with no bold or italic available, and a quote is the only mark that says "this is the thing in the dropdown" rather than a common noun. The log messages and the file metadata are the same plain text, so the same rule applies there.
+
+The rule: quote the capitalised token, which is the dropdown value; never quote the lowercase mechanism phrasing, which is the purpose. "`'Analysis'`, as asked" is the value. "compressed for viewing", "written for analysis instead", "Compressing for viewing works on colour photographs" describe what a profile does and are not the control - capitalisation already carries that distinction and the quotes reinforce it.
+
+Where it is applied, and where not:
+
+- The honoured pair below (`PROFILE_REASON_ANALYSIS_HONOURED`, `PROFILE_REASON_VIEWING_HONOURED_RGB`) quotes its opening value token.
+- The JPEG-source strings (`PROFILE_REASON_JPEG_SOURCE_ANALYSIS`, `PROFILE_REASON_JPEG_SOURCE_VIEWING`) quote only their first value token, not the later mechanism phrasing.
+- The three `forced_reason` strings quote nothing. Each opens with an unquoted lowercase "written for analysis instead" and carries a single capitalised "Viewing" late in the paragraph; quoting that lone token while the opening stays bare reads worse than no quotes at all.
+- `GEOKLEIN_3_REQUESTED` quotes all three of its value names. It sits directly above `GEOKLEIN_4_DECISION` in Layer Properties, and one line quoting a value while the line above leaves the same word bare would read like a mistake.
+
 ### Request honoured, nothing to flag
 
 `resolve_profile_reason()` when the profile ran exactly as chosen and nothing about the file makes that worth a warning - `consequential` is `False`, so this is a single `pushInfo()` line during the run and does not reappear in the end-of-run summary. It is still the `GEOKLEIN_4_DECISION` value in the output file. Each names the purpose first, then the mechanism, then the outcome, so it reads as an answer to "What will you use this file for" rather than a compression note the user never asked about.
 
 Analysis:
 
-> Analysis, as asked. Lossless compression preserves every pixel value.
+> 'Analysis', as asked. Lossless compression preserves every pixel value.
 
 Viewing (only 8-bit RGB reaches this - every other content type is forced to Analysis):
 
-> Viewing, as asked. Lossy compression discards detail the eye will not notice.
+> 'Viewing', as asked. Lossy compression discards detail the eye will not notice.
 
 Both are timeless present tense on purpose - the line is logged before Translate runs and then embedded in the finished file as `GEOKLEIN_4_DECISION`, so a tense anchored to the write would be wrong in one place or the other. See "The profile-decision message is logged before Translate" in `docs/plugin_design_notes.md`.
 
@@ -323,7 +336,7 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 `resolve_profile_reason()` when Analysis is requested (or forced) and the source file's `IMAGE_STRUCTURE` `COMPRESSION` tag names a JPEG variant - most commonly a prior Viewing-profile output from this same tool, re-run through Analysis. Unlike the three entries above, the request here genuinely is honoured exactly as asked: nothing is overridden, lossless ZSTD is applied. It is flagged anyway because the source pixels are not what they were before that earlier JPEG pass, so preserving them losslessly now preserves already-altered values rather than recovering the originals - see `docs/plugin_design_notes.md` for why this needed a new category of rule. Confirmed on a real file: 367MiB in, 1.55GiB out (4.41x), the "compression not yet the target" message below suppressed in favour of this one.
 
-> Analysis, as asked. This file was already compressed for viewing before it reached this tool, so some pixel values were changed. Preserving them now keeps those changed values rather than recovering the originals, and the file will be substantially larger for no gain in accuracy. For measurement work, run this tool on the original file instead.
+> 'Analysis', as asked. This file was already compressed for viewing before it reached this tool, so some pixel values were changed. Preserving them now keeps those changed values rather than recovering the originals, and the file will be substantially larger for no gain in accuracy. For measurement work, run this tool on the original file instead.
 
 ---
 
@@ -333,7 +346,7 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 No size claim: measured directly on real files, re-encoding at this tool's fixed `QUALITY=90` came out +0.04%/+0.039% on two sources this tool itself had written at quality 90, but +21% on a source built at a different JPEG quality (GDAL's own default, 75) then re-encoded at 90. That's a real difference driven by the gap between the source's original quality and this tool's fixed one, which isn't known up front - true only for this tool's own prior output, false in general, so dropped rather than caveated. What's actually guaranteed regardless of the source's original quality is pan/zoom speed, since the file was already optimised for that before this run.
 
-> This file was already compressed for viewing, so re-running Viewing on it discards detail a second time rather than the first. Pan and zoom speed isn't affected either way. For a clean copy, run this tool on the original file instead.
+> This file was already compressed for viewing, so re-running 'Viewing' on it discards detail a second time rather than the first. Pan and zoom speed isn't affected either way. For a clean copy, run this tool on the original file instead.
 
 ---
 
@@ -476,7 +489,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 |---|---|
 | `GEOKLEIN_1_TOOL` | `GeoKlein Raster Optimiser {version}, a QGIS plugin, {D Month YYYY}. {URL}` - version read from `metadata.txt`, never hardcoded; date is the day the conversion ran. The URL is the GitHub repository (`https://github.com/GeoKlein-Ltd/raster-optimiser`), the plugin's canonical home. A plugins.qgis.org listing URL, once one exists, would be worth adding alongside it rather than replacing it. |
 | `GEOKLEIN_2_DETECTED` | What was detected before conversion ran - content type, band count, tiled/stripped, pyramids or not. Leads with an explicit subject ("Source file was...") rather than a bare comma list: this key is only ever read on the OUTPUT file, so "tiled, without pyramids" on its own would read as a claim about the file in front of the reader, not the source it was made from. See `describe_detection()` in `core/detector.py`. |
-| `GEOKLEIN_3_REQUESTED` | `{Analysis or Viewing}. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. |
+| `GEOKLEIN_3_REQUESTED` | `'{Analysis or Viewing}'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. All three value names quoted, matching `GEOKLEIN_4_DECISION` directly below it - see "Quoting selectable values" above. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
 | `GEOKLEIN_5_APPLIED` | Leads with "Cloud Optimized GeoTIFF (COG)", then the compression, predictor, tiling and overview resampling actually applied - see `_format_applied_settings()`. The COG prefix states a fact true of every run now, not a decision that varies, so a reader with only this file's metadata open (not the plugin's docs) knows it's COG-compliant without inferring it from tiling plus pyramids plus compression. Otherwise unchanged: states decisions made before Translate ran, never an outcome that might not happen - it does not say whether pyramids exist, since that's directly observable from the file itself; it names the resampling method used to build them instead, which is a real decision and isn't recoverable from the file afterwards. |
 | `GEOKLEIN_6_HIDDEN_PIXELS` | The current NoData-handling message. Passed on every run now (see the note above the table), but only ever visible in the file when there's an actual message: the routine "nothing hidden" and "kept as requested" outcomes are recorded, same as before, but an empty value (nothing to report) writes no visible tag at all, so the key still reads as absent to anyone looking at the file, exactly as it did before this run always passed it. Visibly absent in the same two cases as before: the file has no NoData=0 condition at all, or NoData marks only the collar with no alpha band and nothing was asked that would surface that fact. |
@@ -486,15 +499,15 @@ Two full worked examples, both taken from a real run against the current code (e
 
 > GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. https://github.com/GeoKlein-Ltd/raster-optimiser
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
-> GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
+> GEOKLEIN_3_REQUESTED = 'Viewing'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).
 > GEOKLEIN_4_DECISION = The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - Viewing would only have made it smaller, not faster.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=3 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=3 -co OVERVIEW_COUNT=1 "input.tif" "output.tif"
 > Same operation in QGIS: Raster > Conversion > Translate, with the output format set to COG. Full manual workflow: https://github.com/GeoKlein-Ltd/raster-optimiser/blob/main/docs/GeoKlein_raster_optimisation_workflow.md
 
 > GEOKLEIN_2_DETECTED = Source file was 8-bit RGB imagery, 3 bands plus alpha, tiled, without pyramids.
-> GEOKLEIN_3_REQUESTED = Viewing. The options were Analysis (every pixel value preserved) and Viewing (smallest possible file).
-> GEOKLEIN_4_DECISION = Viewing, as asked. Lossy compression discards detail the eye will not notice.
+> GEOKLEIN_3_REQUESTED = 'Viewing'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).
+> GEOKLEIN_4_DECISION = 'Viewing', as asked. Lossy compression discards detail the eye will not notice.
 > GEOKLEIN_5_APPLIED = Cloud Optimized GeoTIFF (COG), JPEG quality 90 with YCbCr, alpha reattached as mask, tiled 512x512, pyramids resampled with AVERAGE
 > GEOKLEIN_6_HIDDEN_PIXELS = Cleared NoData: around 0.55% of this image's interior was pure black and hidden behind a NoData value of 0, real content, usually shadow or water, not just the transparent collar. Those pixels should now be visible in the output.
 > GEOKLEIN_7_REPRODUCE = gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=JPEG -co QUALITY=90 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=JPEG -co OVERVIEW_QUALITY=90 -co OVERVIEW_COUNT=8 -b 1 -b 2 -b 3 -mask 4 -a_nodata none "input.tif" "output.tif"

@@ -392,12 +392,25 @@ def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult
 # viewing") since they are genuinely past at both moments. See
 # docs/plugin_design_notes.md, "The profile-decision message is logged
 # before Translate".
+#
+# Quoting rule: the capitalised token 'Analysis' / 'Viewing' is the
+# dropdown value the user picked and is quoted so the log (plain text,
+# no formatting) marks it as a value rather than a common noun. The
+# lowercase mechanism phrasing ("compressed for viewing", "written for
+# analysis instead") is the purpose, never the control, and is never
+# quoted - capitalisation already carries that distinction and the
+# quotes reinforce it. The honoured pair below quotes its opening
+# token; the JPEG-source strings quote only their first value token;
+# the forced_reason strings quote nothing, because a lone quoted
+# 'Viewing' late in a paragraph that opens with an unquoted lowercase
+# "analysis" reads worse than no quotes at all. See
+# docs/raster_optimiser_ui_text.md, "Quoting selectable values".
 PROFILE_REASON_ANALYSIS_HONOURED = (
-    "Analysis, as asked. Lossless compression preserves every pixel "
+    "'Analysis', as asked. Lossless compression preserves every pixel "
     "value."
 )
 PROFILE_REASON_VIEWING_HONOURED_RGB = (
-    "Viewing, as asked. Lossy compression discards detail the eye will "
+    "'Viewing', as asked. Lossy compression discards detail the eye will "
     "not notice."
 )
 
@@ -408,7 +421,7 @@ PROFILE_REASON_VIEWING_HONOURED_RGB = (
 # docs/plugin_design_notes.md). Surfaced via consequential=True below,
 # not honoured=False: the mechanism did match what was asked for.
 PROFILE_REASON_JPEG_SOURCE_ANALYSIS = (
-    "Analysis, as asked. This file was already compressed for viewing "
+    "'Analysis', as asked. This file was already compressed for viewing "
     "before it reached this tool, so some pixel values were changed. "
     "Preserving them now keeps those changed values rather than "
     "recovering the originals, and the file will be substantially "
@@ -439,7 +452,7 @@ PROFILE_REASON_JPEG_SOURCE_ANALYSIS = (
 # which this file already had before this run and keeps either way.
 PROFILE_REASON_JPEG_SOURCE_VIEWING = (
     "This file was already compressed for viewing, so re-running "
-    "Viewing on it discards detail a second time rather than the "
+    "'Viewing' on it discards detail a second time rather than the "
     "first. Pan and zoom speed isn't affected either way. For a clean "
     "copy, run this tool on the original file instead."
 )
