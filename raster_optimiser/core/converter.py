@@ -57,12 +57,12 @@ from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _va
 
 try:
     from .detector import (
-        detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
+        detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
         describe_detection, content_label, is_jpeg_compression,
     )
 except ImportError:  # running as a plain script, not as part of the core package
     from detector import (
-        detect, DetectionResult, RECOMMENDED_SETTINGS, resolve_profile_reason,
+        detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
         describe_detection, content_label, is_jpeg_compression,
     )
 

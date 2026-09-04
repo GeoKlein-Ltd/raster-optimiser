@@ -732,7 +732,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             options=nodata_options,
             defaultValue=NODATA_AUTO,
         )
-        nodata_param.setFlags(nodata_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        nodata_param.setFlags(nodata_param.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced)
         # Automatic by default - see this module's docstring for why
         # that's no longer the rejected design it once was. Meaningless
         # on elevation and on RGB files without a NoData=0 condition,
@@ -781,7 +781,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             defaultValue=False,
         )
         force_reprocess_param.setFlags(
-            force_reprocess_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced
+            force_reprocess_param.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced
         )
         # Unticked by default: redoing an already-optimised file is
         # normally exactly the wasted work this plugin exists to avoid
@@ -823,7 +823,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             self.OVERWRITE, self.tr("Replace existing output file"),
             defaultValue=False,
         )
-        overwrite_param.setFlags(overwrite_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        overwrite_param.setFlags(overwrite_param.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced)
         # Label alone doesn't say what happens when left unticked - fixed
         # via setHelp() rather than lengthening the label itself.
         # Paragraph break is "<br><br>", not "\n\n": QGIS renders this
