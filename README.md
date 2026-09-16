@@ -25,10 +25,12 @@ compression fields marked.*
 
 ## How to use it
 
-**Install.** From the QGIS Plugin Manager, once the plugin is listed on
-plugins.qgis.org: Plugins, Manage and Install Plugins, then search for
-GeoKlein Raster Optimiser. Until then, download the release zip
-`raster_optimiser-1.0.0.zip` from
+**Install.** From the QGIS Plugin Manager: Plugins, Manage and Install
+Plugins, then search for GeoKlein Raster Optimiser. This is the primary
+install path now that the plugin is listed on
+https://plugins.qgis.org/plugins/raster_optimiser/.
+
+Alternatively, download the release zip `raster_optimiser-1.0.1.zip` from
 https://github.com/GeoKlein-Ltd/raster-optimiser/releases, then Plugins,
 Manage and Install Plugins, Install from ZIP.
 

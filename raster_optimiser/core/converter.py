@@ -804,7 +804,8 @@ def _build_decision_metadata(
     items = {
         "GEOKLEIN_1_TOOL": (
             f"GeoKlein Raster Optimiser {version}, a QGIS plugin, {date_str}. "
-            "https://github.com/GeoKlein-Ltd/raster-optimiser"
+            "Source: https://github.com/GeoKlein-Ltd/raster-optimiser. "
+            "Listing: https://plugins.qgis.org/plugins/raster_optimiser/"
         ),
         "GEOKLEIN_2_DETECTED": describe_detection(detection),
         "GEOKLEIN_3_REQUESTED": requested_label,

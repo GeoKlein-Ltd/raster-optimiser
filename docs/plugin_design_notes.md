@@ -817,3 +817,28 @@ exactly this reason. Bold is kept anyway: the default light theme is
 where most users are, and the heading/parameter structure earns its keep
 there. Reverting is mechanical - swap each `<b>...</b>` back to a plain
 `<p>` heading (and drop the `<b>` from the `<b><i>` parameter names).
+
+---
+
+## Deferred: forced_reason fallback names the internal token, not the user's choice
+
+**Status:** known, deferred, 2026-09-16, found during the 1.0.1 full-read
+review. `_log_profile_decision()`'s defensive fallback
+(`algorithms/optimise_raster.py:1144-1149`, itself documented as "should
+be unreachable in practice") raises
+`QgsProcessingException(opt.reason_blocked or self.tr("The {} option is
+not available for this file.").format(requested))`. Two problems, not
+one: `requested` is the raw internal identifier (`"lossy"` or
+`"lossless"`), spliced untranslated into an otherwise-translated
+template; and even translated, it would be the wrong label regardless -
+the user's actual choice is `'Analysis'` or `'Viewing'`, never "lossy"
+or "lossless", so a reader would see an internal token they never
+selected.
+
+Left as-is for 1.0.1: every choice-mode `ProfileOption` is currently
+`available=True`, so this branch cannot be reached today, and this
+release is scoped to the plugins.qgis.org scanner fixes and the
+`GEOKLEIN_1_TOOL` URL, not a general cleanup pass. Fix, when made: map
+`requested` through the same `"lossy" -> 'Viewing'` / `"lossless" ->
+'Analysis'` naming used by `_log_profile_decision()`'s non-fallback
+branches, and translate the substituted label along with the template.

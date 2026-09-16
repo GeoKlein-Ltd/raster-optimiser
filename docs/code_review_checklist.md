@@ -309,16 +309,17 @@ before every submission. (Folded in from `pre_submission_checklist.md` on
 2026-08-25, once most of its items were done: the repo is public and the
 placeholder URLs are filled in.)
 
-- [x] `GEOKLEIN_1_TOOL`'s URL: settled 2026-09-03. The GitHub repository
-  (`https://github.com/GeoKlein-Ltd/raster-optimiser`) is the plugin's
-  canonical home and is embedded as-is; the earlier "(placeholder until the
-  plugins.qgis.org listing exists)" note has been removed. A plugins.qgis.org
-  listing URL, if one is ever wanted, belongs *alongside* the repository URL
-  in `_build_decision_metadata()`, not as a replacement for it. Files
-  produced before this change still carry the old parenthetical in their
-  embedded metadata - fixable only going forward, not in files already
-  handed to a client.
-- [ ] A changelog entry has been added to `metadata.txt` for this release.
+- [x] `GEOKLEIN_1_TOOL`'s URL: settled 2026-09-03, updated 2026-09-16 now
+  that a plugins.qgis.org listing exists (1.0.0 went live there). The string
+  now carries both, labelled: `Source: https://github.com/GeoKlein-Ltd/
+  raster-optimiser. Listing: https://plugins.qgis.org/plugins/raster_optimiser/`
+  - the plugins.qgis.org URL was added *alongside* the repository URL in
+  `_build_decision_metadata()`, not as a replacement, per the 2026-09-03
+  decision recorded here. Files produced before this change still carry only
+  the GitHub URL in their embedded metadata - fixable only going forward, not
+  in files already handed to a client.
+- [x] A changelog entry has been added to `metadata.txt` for this release:
+  1.0.1, added 2026-09-16.
 - [ ] The zip has been rebuilt (`python tools/build_zip.py`) after either of
   the above.
 
