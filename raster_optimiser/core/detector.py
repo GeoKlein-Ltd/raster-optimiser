@@ -564,6 +564,30 @@ PROFILE_REASON_ANALYSIS_HONOURED = (
     "'Analysis', as asked. Lossless compression preserves every pixel "
     "value."
 )
+
+# The same honoured-Analysis case, but on a run where the caller also
+# asked for Float32 storage and got it. PROFILE_REASON_ANALYSIS_HONOURED
+# cannot be reused there: "preserves every pixel value" is then false,
+# and it is the first thing both the log and GEOKLEIN_4_DECISION say
+# about the file. The distinction this draws instead - the COMPRESSION
+# is lossless, and the only change to the data is the rounding stated
+# further down the same record - is the one a later reader actually
+# needs, because "lossless" on its own invites the conclusion that
+# nothing changed at all.
+PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32 = (
+    "'Analysis', as asked, with heights stored as Float32 at your "
+    "request. Compression is lossless, so the only change to the data "
+    "is the Float32 rounding below."
+)
+
+# The sentence inside the three forced_reason strings that claims
+# preservation, and what it becomes when Float32 storage was applied.
+# Substituted rather than duplicating all three strings: only this one
+# sentence is affected, the rest of each coercion reason is still
+# exactly right, and keeping three near-identical copies of a long
+# string is how they drift apart.
+_PRESERVED_SENTENCE = "The pixel values are preserved instead."
+_PRESERVED_SENTENCE_FLOAT32 = "Lossless compression is used instead."
 PROFILE_REASON_VIEWING_HONOURED_RGB = (
     "'Viewing', as asked. Lossy compression discards detail the eye will "
     "not notice."
@@ -632,7 +656,10 @@ def is_jpeg_compression(compression: Optional[str]) -> bool:
     return compression is not None and "JPEG" in compression.upper()
 
 
-def resolve_profile_reason(detection: DetectionResult, requested: Optional[str]) -> tuple:
+def resolve_profile_reason(
+    detection: DetectionResult, requested: Optional[str],
+    stored_as_float32: bool = False,
+) -> tuple:
     """Returns (reason: str, consequential: bool) explaining what profile
     was used and why - covering every case a run can produce: forced and
     matched, forced and overridden, and choice (RGB_8BIT only, always
@@ -665,12 +692,36 @@ def resolve_profile_reason(detection: DetectionResult, requested: Optional[str])
     requested may be None (a caller that never expressed a preference,
     e.g. the CLI's --profile is optional) - never a mismatch on its
     own, since nothing was denied.
+
+    stored_as_float32 says whether this run also changed the data type
+    on request. It only ever removes a preservation claim; it never
+    changes which profile was used or why. Two shapes are affected:
+    the honoured-Analysis opening gets its own string, and a coercion
+    reason gets its one preservation sentence swapped. Every other case
+    - RGB, integer, multispectral, and any Float64 run where the box
+    was clear or refused - is untouched, which is what keeps today's
+    wording byte-identical wherever Float32 was not applied.
     """
     if detection.profile_mode == "forced":
         actual = detection.forced_profile
         if requested is not None and requested != actual:
-            return detection.forced_reason, True
+            reason = detection.forced_reason
+            if stored_as_float32:
+                reason = reason.replace(
+                    _PRESERVED_SENTENCE, _PRESERVED_SENTENCE_FLOAT32,
+                )
+            return reason, True
         if actual == "lossless":
+            if stored_as_float32:
+                # Checked before the JPEG-source variant below, which
+                # also claims preservation ("Preserving them now keeps
+                # those changed values"). That combination needs a
+                # Float64 source carrying a JPEG compression tag, which
+                # JPEG cannot hold, so it is not reachable in practice -
+                # but ordering it this way means no reachable path can
+                # produce a preservation claim on a run that rounded,
+                # rather than relying on that unreachability.
+                return PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32, True
             if requested == "lossless" and is_jpeg_compression(detection.compression):
                 return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
             return PROFILE_REASON_ANALYSIS_HONOURED, False

@@ -126,6 +126,9 @@ class AppliedSettings:
     # source's type - which is the part a later reader needs, since every
     # other output this tool writes keeps its source's type.
     stored_as_float32: bool = False
+    # The guaranteed bound, ready to splice, so _format_applied_settings
+    # can state it without reaching back into the DetectionResult.
+    float32_bound_phrase: Optional[str] = None
 
 
 @dataclass
@@ -156,6 +159,15 @@ class DecisionSummary:
     # once - same contract as nodata_message above.
     float32_storage_message: Optional[str] = None
     float32_storage_consequential: bool = False
+    # The one-line form for the end-of-run summary, set only when the
+    # type was actually changed. The full float32_storage_message above
+    # is three or four sentences and belongs in the log and the file;
+    # the summary exists to re-surface decisions that changed pixel
+    # values after Translate's output has scrolled past, and wants the
+    # figures, not the explanation. None whenever nothing was changed -
+    # a request that was ignored or refused changed no values, so it has
+    # nothing to re-surface.
+    float32_summary_line: Optional[str] = None
 
 
 @dataclass
@@ -402,12 +414,15 @@ def _float32_volume_phrase(storage: "Float32Storage", valid_pixels: int) -> Opti
     negligible, and on one pixel it is, but someone taking a stockpile
     or earthworks quantity off a DSM is integrating it over millions of
     pixels, and the only figure that answers "does this matter for my
-    volume" is the volume. Measured: 1.9 m3 across the PDAL test DSM
-    (7,841,625 valid pixels at 0.25 m2), 0.37 m3 across the 16000x16000
-    Hamilton DSM (153,589,056 valid pixels at 0.000625 m2). Both are
-    the worst case, not an estimate of the error.
+    volume" is the volume. Measured: 1.9 m³ across the PDAL test DSM
+    (7,841,625 valid pixels at 0.25 m²), 0.37 m³ across the
+    16000x16000 Hamilton DSM (153,589,056 valid pixels at 0.000625 m²).
+    Both are the worst case, not an estimate of the error.
 
-    Stated in cubic metres at two significant figures. An earlier
+    Stated in cubic metres at two significant figures, written with a
+    real superscript (m³, not m3): this string is read in a log panel
+    and in Layer Properties, both of which render UTF-8, and "m3" in a
+    volume figure reads as a quantity rather than a unit. An earlier
     version converted to cubic millimetres, which rendered the first
     real figure as "1869589090 cubic millimetres" - ten digits of
     precision a worst-case bound has not earned, in a unit nobody reads
@@ -431,8 +446,9 @@ def _float32_volume_phrase(storage: "Float32Storage", valid_pixels: int) -> Opti
     volume_m3 = valid_pixels * storage.pixel_area * storage.bound_native
     return (
         f"Across all {valid_pixels:,} valid pixels, at "
-        f"{storage.pixel_area:g} m2 each, that bound accounts for at most "
-        f"{_format_quantity_phrase(volume_m3, 'm3')} of volume in total."
+        f"{storage.pixel_area:g} m² each, that bound accounts for at "
+        f"most {_format_quantity_phrase(volume_m3, 'm³')} of volume in "
+        "total."
     )
 
 
@@ -574,6 +590,33 @@ def _float32_applied_message(
         "No pixel changed between data and NoData in either direction."
     )
     return " ".join(parts)
+
+
+def _float32_summary_line(
+    storage: "Float32Storage", measured_max: Optional[float],
+) -> str:
+    """The end-of-run summary's one line about a type change that was
+    actually made.
+
+    The summary's rule is "decisions worth repeating", which has always
+    meant decisions that changed the data. A type change qualifies
+    whether or not the user asked for it: a thing they chose is still a
+    thing they need to see confirmed at the end of a run, and reading
+    "the heights were rounded" only in the middle of the log, above
+    Translate's progress output, is how it gets missed. Same figures as
+    the full message, without the explanation around them.
+    """
+    measured_phrase = "not measured"
+    if measured_max is not None:
+        if _is_metre_unit(storage.vertical_unit) or storage.vertical_unit is None:
+            measured_phrase = _format_quantity_phrase(measured_max * 1000.0, "mm")
+        else:
+            measured_phrase = _format_quantity_phrase(
+                measured_max, storage.vertical_unit)
+    return (
+        f"Heights stored as Float32 at your request: largest change "
+        f"{measured_phrase} (guaranteed at most {storage.bound_phrase})."
+    )
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -973,17 +1016,23 @@ def _format_applied_settings(applied: "AppliedSettings") -> str:
     metadata open but not the plugin's docs shouldn't have to infer COG
     compliance from tiling plus pyramids plus compression on their own.
     """
-    parts = ["Cloud Optimized GeoTIFF (COG)",
-             f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
+    # The type change goes FIRST when there was one, ahead of
+    # "Lossless ZSTD": in a comma list, a reader takes "lossless" to
+    # cover everything after it, so the rounding has to be read before
+    # the word lossless rather than several items later. It also means
+    # the one setting that changed pixel values is the first thing on
+    # the line rather than buried mid-list.
+    parts = []
+    if applied.stored_as_float32:
+        rounding = (
+            f" (heights rounded by at most {applied.float32_bound_phrase})"
+            if applied.float32_bound_phrase else ""
+        )
+        parts.append(f"Stored as Float32 at the user's request{rounding}")
+    parts += ["Cloud Optimized GeoTIFF (COG)",
+              f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
     if applied.predictor:
         parts.append(f"predictor {applied.predictor}")
-    if applied.stored_as_float32:
-        # Named in the applied list as well as spelled out in
-        # GEOKLEIN_4_DECISION, because this is the one setting that
-        # changed the pixel values: a reader scanning the applied line
-        # for what was done to the file must not have to open the
-        # decision line to find that out.
-        parts.append("stored as Float32 at the user's request")
     if applied.alpha_reattached:
         parts.append("alpha reattached as mask")
     parts.append(f"tiled {applied.block_size[0]}x{applied.block_size[1]}")
@@ -1024,9 +1073,45 @@ def _format_reproduce_commands(full_args: list) -> str:
     )
 
 
+def requested_label(purpose, store_float32_requested: bool) -> str:
+    """What the caller asked for, as one sentence - the value of
+    GEOKLEIN_3_REQUESTED and of the log line that reports the request.
+
+    One function because those two must not drift: the file and the log
+    answering "what did I ask for" differently is the kind of
+    disagreement this codebase has already had to fix five times over
+    in one claim (see docs/code_review_checklist.md, Section 1).
+
+    purpose is either the display name ("Analysis"/"Viewing") or the
+    QGIS wrapper's dropdown index, which is 1 for Viewing and 0 for
+    Analysis. Accepting both is what lets the wrapper call this without
+    importing the converter's naming or the converter importing the
+    wrapper's indices.
+
+    The checkbox is named whenever it was TICKED, not only when it was
+    applied: this records what was asked for, and the answer to "what
+    did I ask this tool to do" does not change because the tool then
+    declined. What HAPPENED to the request is GEOKLEIN_4_DECISION's
+    job, and it covers all three outcomes.
+    """
+    if isinstance(purpose, str):
+        name = purpose
+    else:
+        name = "Viewing" if purpose == 1 else "Analysis"
+    ticked = (
+        ", with 'Store Float64 elevation as Float32' ticked"
+        if store_float32_requested else ""
+    )
+    return (
+        f"'{name}'{ticked}. The options were 'Analysis' (every pixel "
+        "value preserved) and 'Viewing' (smallest possible file)."
+    )
+
+
 def _build_decision_metadata(
     path: str, detection: "DetectionResult", requested_profile: Optional[str],
     profile_used: str, decisions: "DecisionSummary", full_args: list,
+    store_float32_requested: bool = False,
 ) -> dict:
     """Builds the GEOKLEIN_* decision chain and TIFFTAG_IMAGEDESCRIPTION
     as a plain {key: value} dict - Phase 5 of the purpose-question
@@ -1083,6 +1168,14 @@ def _build_decision_metadata(
     today = datetime.date.today()
     date_str = f"{today.day} {today.strftime('%B')} {today.year}"
 
+    # Read once here: three of the items below branch on whether the
+    # type was actually changed, and the bound is quoted in two of them.
+    stored_as_float32 = bool(
+        decisions.applied is not None and decisions.applied.stored_as_float32
+    )
+    storage = detection.float32_storage
+    bound_phrase = storage.bound_phrase if storage is not None else "an unknown amount"
+
     requested_name = "Viewing" if (requested_profile or profile_used) == "lossy" else "Analysis"
     # Names both options and what each does, chosen one first, so a
     # later reader (client, auditor) knows what the alternative would
@@ -1098,9 +1191,8 @@ def _build_decision_metadata(
     # while the line above it left the same word bare would read like a
     # mistake. See docs/raster_optimiser_ui_text.md, "Quoting selectable
     # values".
-    requested_label = (
-        f"'{requested_name}'. The options were 'Analysis' (every pixel "
-        "value preserved) and 'Viewing' (smallest possible file)."
+    request_label = requested_label(
+        requested_name, store_float32_requested,
     )
 
     items = {
@@ -1110,17 +1202,22 @@ def _build_decision_metadata(
             "Listing: https://plugins.qgis.org/plugins/raster_optimiser/"
         ),
         "GEOKLEIN_2_DETECTED": describe_detection(detection),
-        "GEOKLEIN_3_REQUESTED": requested_label,
-        # The profile reason, plus the Float64-storage sentence when
-        # this run actually changed the type. Only the applied case is
-        # appended: the advisory and the ignored/kept-Float64
-        # explanations are log-only, because they describe what did NOT
-        # happen to the file and would read as a claim about the file
-        # they are embedded in.
+        "GEOKLEIN_3_REQUESTED": request_label,
+        # The profile reason, plus the Float64-storage sentence whenever
+        # the caller ASKED for the type change - applied, ignored as out
+        # of scope, or refused by a gate. All three belong in the file:
+        # someone who ticked the box and later finds a Float64 output
+        # needs the file itself to say why it was not honoured, and the
+        # log that said so has long since gone.
+        #
+        # The advisory (box clear) is still log-only. It describes
+        # something that did not happen and was never asked for, and
+        # embedding "ticking this box would store it smaller" in the
+        # file would read as a claim about the file rather than a note
+        # to whoever is at the dialog.
         "GEOKLEIN_4_DECISION": (
             f"{decisions.profile_reason} {decisions.float32_storage_message}"
-            if (decisions.applied is not None and decisions.applied.stored_as_float32
-                and decisions.float32_storage_message)
+            if (store_float32_requested and decisions.float32_storage_message)
             else decisions.profile_reason
         ),
         "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
@@ -1132,7 +1229,16 @@ def _build_decision_metadata(
         # short line, not the same paragraph repeated a second time in
         # Layer Properties. One sentence: tool and version, what the
         # file is, what compression was applied.
+        # Other GIS software shows this tag and nothing else of ours, so
+        # it must not say "Lossless ZSTD" without also saying the type
+        # was changed - read alone, "lossless" would be taken to mean
+        # the heights are the source's.
         "TIFFTAG_IMAGEDESCRIPTION": (
+            f"Optimised by GeoKlein Raster Optimiser {version}. "
+            f"{content_label(detection)}, stored as Float32 (heights "
+            f"rounded by at most {bound_phrase}), written as "
+            f"{_compression_display_label(decisions.applied.compression)}."
+            if stored_as_float32 else
             f"Optimised by GeoKlein Raster Optimiser {version}. "
             f"{content_label(detection)}, written as "
             f"{_compression_display_label(decisions.applied.compression)}."
@@ -1757,24 +1863,16 @@ def convert(
 
     result.profile_used = profile
 
-    # ---- assemble the decision record (Phase 4/5 of the purpose-
-    # question rework) - profile_reason/consequential set now since both
-    # are already fully known; nodata_message/applied filled in further
-    # down as each becomes known.
-    # resolve_profile_reason() is the one place this text is produced,
-    # in detector.py - see its docstring.
-    profile_reason, profile_consequential = resolve_profile_reason(detection, chosen_profile)
-    result.decisions = DecisionSummary(
-        profile_reason=profile_reason, profile_consequential=profile_consequential,
-    )
-
     # ---- resolve the Float64-as-Float32 request ----
-    # Resolved BEFORE the already-optimised comparison below, because a
-    # requested type change is work to do and has to be able to override
-    # "nothing left to gain" - see already_optimised_at_target()'s
-    # type_change_pending parameter. The message for the applied case is
-    # filled in after verification, which is the only point the measured
-    # maximum exists; every other case is final here.
+    # Resolved before BOTH the profile reason and the already-optimised
+    # comparison below, because both now depend on it: the profile
+    # reason must not claim every value was preserved on a run that
+    # rounded (see resolve_profile_reason's stored_as_float32), and a
+    # requested type change is work to do and has to override "nothing
+    # left to gain" (see already_optimised_at_target's
+    # type_change_pending). The message for the applied case is filled
+    # in after verification, the only point the measured maximum
+    # exists; every other case is final here.
     store_float32_apply, float32_message, float32_severity = (
         _resolve_float32_storage(detection, store_float32)
     )
@@ -1782,6 +1880,19 @@ def convert(
     result.stored_as_float32 = store_float32_apply
     result.float32_storage_message = float32_message
     result.float32_storage_severity = float32_severity
+
+    # ---- assemble the decision record (Phase 4/5 of the purpose-
+    # question rework) - profile_reason/consequential set now since both
+    # are already fully known; nodata_message/applied filled in further
+    # down as each becomes known.
+    # resolve_profile_reason() is the one place this text is produced,
+    # in detector.py - see its docstring.
+    profile_reason, profile_consequential = resolve_profile_reason(
+        detection, chosen_profile, stored_as_float32=store_float32_apply,
+    )
+    result.decisions = DecisionSummary(
+        profile_reason=profile_reason, profile_consequential=profile_consequential,
+    )
     result.decisions.float32_storage_message = float32_message
     result.decisions.float32_storage_consequential = float32_severity != "routine"
 
@@ -1996,6 +2107,10 @@ def convert(
     result.decisions.applied = _build_applied_settings(creation_options, overview_config)
     result.decisions.applied.alpha_reattached = bool(profile == "lossy" and detection.has_alpha)
     result.decisions.applied.stored_as_float32 = store_float32_apply
+    if store_float32_apply:
+        result.decisions.applied.float32_bound_phrase = (
+            detection.float32_storage.bound_phrase
+        )
 
     # Measured here, before Translate, because the metadata that records
     # it is passed into Translate - see _measure_float32_cast(). The
@@ -2011,6 +2126,9 @@ def convert(
         )
         result.float32_storage_message = applied_message
         result.decisions.float32_storage_message = applied_message
+        result.decisions.float32_summary_line = _float32_summary_line(
+            detection.float32_storage, predicted_cast["max_delta"],
+        )
 
     # ---- resolve NoData handling (profile-independent - see
     # _resolve_nodata_handling and convert()'s own docstring) ----
@@ -2033,6 +2151,7 @@ def convert(
     # command doesn't re-include the metadata that describes it.
     metadata_items = _build_decision_metadata(
         path, detection, chosen_profile, profile, result.decisions, full_args,
+        store_float32_requested=store_float32,
     )
     translate_args = full_args + _metadata_mo_args(metadata_items)
 

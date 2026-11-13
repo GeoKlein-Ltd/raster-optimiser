@@ -80,6 +80,7 @@ from qgis.PyQt.QtCore import QCoreApplication
 from ..core.converter import (
     convert, output_exists_message, output_same_as_source_message,
     _same_file, already_optimised_at_target, float32_storage_would_apply,
+    requested_label,
 )
 from ..core.detector import detect, detect_metadata_only, resolve_profile_reason
 from ..icon_utils import plugin_icon
@@ -338,7 +339,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<p>One exception, opt-in only: <b><i>Store Float64 "
             "elevation as Float32</i></b> under Advanced parameters "
             "rounds heights by a stated fraction of a millimetre in "
-            "exchange for about two thirds of the file size. With that "
+            "exchange for a file about a third of the size. With that "
             "box clear, the default, Analysis preserves every value "
             "exactly.</p>"
             "<p><b><i>Viewing</i></b> compresses the raster and discards "
@@ -746,9 +747,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "<br><br>"
             "One exception, and only if you tick it yourself: 'Store "
             "Float64 elevation as Float32' under Advanced parameters "
-            "rounds heights by a stated fraction of a millimetre to "
-            "save about two thirds of the file size. Leave it clear and "
-            "'Analysis' preserves every value exactly."
+            "rounds heights by a stated fraction of a millimetre in "
+            "exchange for a file about a third of the size. Leave it "
+            "clear and 'Analysis' preserves every value exactly."
             "<br><br>"
             "'Viewing' discards detail the eye will not notice, which "
             "makes the file much smaller. A typical drone orthomosaic "
@@ -1101,6 +1102,16 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             ):
                 feedback.pushWarning(self._already_optimised_message())
 
+        # What was asked for, before what was decided about it. The log
+        # never stated the request at all until now - it went straight
+        # to the decision, which reads oddly on a coerced run ("written
+        # for analysis instead" instead of what?) and left no record of
+        # the checkbox on a run where the box was ticked and the
+        # decision line did not mention it. Same string as
+        # GEOKLEIN_3_REQUESTED carries into the file, produced once in
+        # core/converter.py's requested_label and not reworded here.
+        feedback.pushInfo(requested_label(purpose_choice, store_float32))
+
         # _log_profile_decision() only pushes feedback (pushWarning on a
         # coercion, pushInfo otherwise) - see its own docstring.
         # requested_profile below is computed independently, not derived
@@ -1110,7 +1121,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # already ignores this value entirely for a forced file's actual
         # conversion (detection.forced_profile always wins there), so
         # passing the raw request through is safe either way.
-        self._log_profile_decision(detection, purpose_choice, feedback)
+        self._log_profile_decision(
+            detection, purpose_choice, feedback,
+            stored_as_float32=float32_storage_would_apply(
+                detection, store_float32,
+            ),
+        )
         requested_profile = "lossy" if purpose_choice == PURPOSE_VIEWING else "lossless"
 
         def log_cb(phase, elapsed_seconds):
@@ -1319,12 +1335,16 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             # Subject to the same immediate-repeat guard - on a run
             # where no NoData message was pushed, the storage message
             # IS the last line before the summary.
-            if (
-                dec.float32_storage_consequential
-                and dec.float32_storage_message
-                and dec.float32_storage_message != last_pushed_message
-            ):
-                summary_lines.append(dec.float32_storage_message)
+            # The short form, not the full message: see
+            # _float32_summary_line(). Set only when the type actually
+            # changed, which is also the only case the summary needs -
+            # a request that was ignored or refused changed no pixel
+            # values, and its own log line already explained itself.
+            # No immediate-repeat guard needed, unlike the NoData line:
+            # this is a different, shorter string from the one pushed
+            # above, so it cannot sit directly under its own duplicate.
+            if dec.float32_summary_line:
+                summary_lines.append(dec.float32_summary_line)
         summary_lines.append(self.tr(
             "These decisions are also recorded in the file, under "
             "Layer Properties > Information > More information."
@@ -1333,7 +1353,8 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
 
         return {self.OUTPUT: result.output_path}
 
-    def _log_profile_decision(self, detection, purpose_choice, feedback):
+    def _log_profile_decision(self, detection, purpose_choice, feedback,
+                              stored_as_float32=False):
         # PURPOSE always has a genuine value now (defaulted to Analysis
         # if untouched - see the PURPOSE_ANALYSIS comment), so this is
         # an unconditional mapping onto detector.py's "lossy"/"lossless"
@@ -1363,13 +1384,23 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # of the purpose-question rework: coerce, never block, so an
         # unhonoured request is a warning, not an exception.
         #
+        # stored_as_float32 is passed so this line and
+        # GEOKLEIN_4_DECISION say the same thing on a run that rounded
+        # the heights. Without it the log claimed "Lossless compression
+        # preserves every pixel value" while the file's own metadata
+        # correctly said the heights had been stored as Float32 - the
+        # two records of one run disagreeing, in the direction that
+        # overstates what was preserved.
+        #
         # consequential (not honoured) drives the severity: a request
         # can be genuinely honoured and still worth a warning - Analysis
         # requested on a JPEG source is applied exactly as asked, but
         # the file's history makes it worth flagging anyway. See
         # resolve_profile_reason()'s docstring for why honoured isn't a
         # separate returned value.
-        reason, consequential = resolve_profile_reason(detection, requested)
+        reason, consequential = resolve_profile_reason(
+            detection, requested, stored_as_float32=stored_as_float32,
+        )
         if consequential:
             feedback.pushWarning(reason)
         else:

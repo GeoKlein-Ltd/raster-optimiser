@@ -49,7 +49,7 @@ This section covers every parameter. "Your source file is never modified" sits o
 
 ***Analysis*** compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
 
-One exception, opt-in only: ***Store Float64 elevation as Float32*** under Advanced parameters rounds heights by a stated fraction of a millimetre in exchange for about two thirds of the file size. With that box clear - the default - Analysis preserves every value exactly, and the promise above holds without qualification.
+One exception, opt-in only: ***Store Float64 elevation as Float32*** under Advanced parameters rounds heights by a stated fraction of a millimetre in exchange for a file about a third of the size. With that box clear - the default - Analysis preserves every value exactly, and the promise above holds without qualification.
 
 ***Viewing*** compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic comes out 80 to 90% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
 
@@ -159,7 +159,7 @@ Options:
 Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR). The option values are single-quoted (as in NODATA_MODE) since a tooltip has no bold or italic; the info panel uses `<b><i>` instead.
 > 'Analysis' keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
 >
-> One exception, and only if you tick it yourself: 'Store Float64 elevation as Float32' under Advanced parameters rounds heights by a stated fraction of a millimetre to save about two thirds of the file size. Leave it clear and 'Analysis' preserves every value exactly.
+> One exception, and only if you tick it yourself: 'Store Float64 elevation as Float32' under Advanced parameters rounds heights by a stated fraction of a millimetre in exchange for a file about a third of the size. Leave it clear and 'Analysis' preserves every value exactly.
 >
 > 'Viewing' discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out 80 to 90% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 >
@@ -285,6 +285,32 @@ Blocks execution. Not escapable by any parameter - the fix is external (free up 
 
 ---
 
+## Log messages: what was asked for
+
+New in 1.1.0, and the first line the log has ever carried about the
+request itself - it previously went straight to the decision, which
+reads oddly on a coerced run ("written for analysis instead" instead of
+what?) and left no record at all of the checkbox on a run where the
+decision line did not mention it. Routine, a plain `pushInfo()`.
+
+Produced once, by `core/converter.py`'s `requested_label()`, which is
+also the value of `GEOKLEIN_3_REQUESTED` in the output file - one
+function, because the log and the file answering "what did I ask for"
+differently is the kind of disagreement this codebase has already had
+to fix five times over in one claim.
+
+Box clear:
+
+> 'Analysis'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).
+
+Box ticked - named whether or not it was then applied, because this
+records what was ASKED for and that does not change because the tool
+declined. What happened to the request is `GEOKLEIN_4_DECISION`'s job:
+
+> 'Analysis', with 'Store Float64 elevation as Float32' ticked. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).
+
+---
+
 ## Log messages: what was used and why
 
 Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (set at detection time) or `resolve_profile_reason()` (the honoured-but-worth-flagging case below), or in `core/converter.py` (the compression-not-yet-at-target case, resolved once conversion settings are known), and reused verbatim wherever it's shown: the log during the run (`feedback.pushWarning()`), the end-of-run summary, and the file's own embedded metadata (`GEOKLEIN_4_DECISION`) all read the identical text - none of them reword it.
@@ -312,6 +338,21 @@ Analysis:
 
 > 'Analysis', as asked. Lossless compression preserves every pixel value.
 
+On a run where Float32 storage was applied, that string would be false -
+and it is the first thing both the log and `GEOKLEIN_4_DECISION` say
+about the file - so it is replaced rather than qualified.
+`consequential` is `True` for this variant, unlike the one above, so it
+is a `pushWarning()` and it reappears in the end-of-run summary: pixel
+values changed, which is what consequential has always meant here.
+
+> 'Analysis', as asked, with heights stored as Float32 at your request. Compression is lossless, so the only change to the data is the Float32 rounding below.
+
+The distinction it draws - the *compression* is lossless, and the only
+change to the data is the rounding stated further down the same record -
+is the one a later reader needs, because "lossless" alone invites the
+conclusion that nothing changed at all. "below" refers to the Float32
+paragraph that follows it in both the log and the metadata value.
+
 Viewing (only 8-bit RGB reaches this - every other content type is forced to Analysis):
 
 > 'Viewing', as asked. Lossy compression discards detail the eye will not notice.
@@ -323,6 +364,17 @@ Both are timeless present tense on purpose - the line is logged before Translate
 `detection.forced_reason` when `content_type == "FLOAT_CONTINUOUS"` (single-band Float32 **or** Float64 - the sentinel was renamed from `FLOAT32_CONTINUOUS` when Float64 joined the path, since it no longer describes only one width) and Viewing was requested but Analysis was used. The text itself is dtype-agnostic and unchanged: it talks about height measurements, not about how many bits hold them.
 
 > The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
+
+When Float32 storage was also applied, one sentence of that is replaced
+and the rest is left exactly as it is - the coercion reason is still
+entirely correct about why Viewing was refused, and only its
+preservation claim is not:
+
+> ... so discarding detail would change the actual heights. **Lossless compression is used instead.** The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
+
+The Float32 paragraph then follows it. The substitution is done once, in
+`resolve_profile_reason()`, on the one sentence shared by all three
+`forced_reason` strings, rather than by keeping a second copy of each.
 
 ---
 
@@ -501,7 +553,26 @@ volume sentence appears only when the units allow it; the NoData
 sentence is unconditional, because the verification that backs it always
 runs.
 
-> Stored as Float32 at the user's request. The source is Float64 elevation; the output holds the same heights at Float32, which is about a third of the size. Guaranteed worst-case rounding for this file's value range: {bound}. Largest change actually measured, across every valid pixel: {measured} ({share}% of that bound). Across all {n} valid pixels, at {area} m2 each, that bound accounts for at most {volume} m3 of volume in total. No pixel changed between data and NoData in either direction.
+> Stored as Float32 at the user's request. The source is Float64 elevation; the output holds the same heights at Float32, which is about a third of the size. Guaranteed worst-case rounding for this file's value range: {bound}. Largest change actually measured, across every valid pixel: {measured} ({share}% of that bound). Across all {n} valid pixels, at {area} m² each, that bound accounts for at most {volume} m³ of volume in total. No pixel changed between data and NoData in either direction.
+
+Real superscripts, m² and m³, not "m2" and "m3": this string is read in
+the log panel and in Layer Properties, both of which render UTF-8, and
+"m3" in a volume figure reads as a quantity rather than a unit.
+Confirmed to round-trip - the characters are written as `-mo` values
+into the TIFF, read back from the file as `m²`/`m³` with no mojibake,
+and the only non-ASCII codepoints in the value are U+00B2 and U+00B3.
+
+The end-of-run summary gets a shorter form of the same figures, since
+the summary exists to re-surface decisions that changed pixel values
+after Translate's output has scrolled past and wants the numbers rather
+than the explanation:
+
+> Heights stored as Float32 at your request: largest change {measured} (guaranteed at most {bound}).
+
+That line appears only when the type was actually changed. A request
+that was ignored or refused changed no values, so it has nothing to
+re-surface; its own log line already explained itself, and
+`GEOKLEIN_4_DECISION` records it in the file.
 
 The bound and the measured maximum are two different numbers on
 purpose: the bound is what Float32's arithmetic promises for this file's
@@ -639,6 +710,30 @@ The location line's exact wording was verified against the running application i
 ---
 
 ## Embedded metadata (output file)
+
+Three of these change shape when Float32 storage is involved, and the
+rules are worth stating together because they were all wrong in 1.1.0's
+first build:
+
+- `GEOKLEIN_3_REQUESTED` names the checkbox whenever it was **ticked**,
+  applied or not.
+- `GEOKLEIN_4_DECISION` appends the storage sentence whenever the box
+  was **ticked** - applied, ignored as out of scope, or refused by a
+  gate. All three belong in the file: someone who ticked the box and
+  later finds a Float64 output needs the file itself to say why. The
+  advisory (box clear) stays log-only, because it describes something
+  that did not happen and was never asked for.
+- `GEOKLEIN_5_APPLIED` puts the type change **first**, ahead of
+  "Lossless ZSTD": in a comma list a reader takes "lossless" to cover
+  everything after it, so the rounding has to be read before that word
+  rather than several items later.
+- `TIFFTAG_IMAGEDESCRIPTION` names the type change too. Other GIS
+  software shows this tag and nothing else of ours, so it must not say
+  "Lossless ZSTD" without also saying the heights were rounded.
+
+> Optimised by GeoKlein Raster Optimiser 1.1.0. Float64 elevation (DSM, DTM or CHM), stored as Float32 (heights rounded by at most {bound}), written as Lossless ZSTD.
+
+> Stored as Float32 at the user's request (heights rounded by at most {bound}), Cloud Optimized GeoTIFF (COG), Lossless ZSTD level 9, predictor 3, tiled 512x512, pyramids resampled with AVERAGE
 
 Seven items in the output file's own metadata, plus the standard TIFF description tag, passed as `-mo KEY=VALUE` arguments INTO the same `gdal.Translate()` call that creates the file, not written afterwards with `SetMetadataItem()`. This is not just a style choice: tested directly, calling `SetMetadataItem()` on an already-created Cloud Optimized GeoTIFF and closing it moves the main IFD to the end of the file to fit the grown tag data, breaking the "IFDs before data" byte ordering a COG's entire validity rests on - a file built that way can carry `LAYOUT=COG` in its own metadata and still fail COG validation. See `docs/plugin_design_notes.md` for the full finding. Keys are numbered because QGIS renders the key verbatim as the visible label, and the number keeps the sequence readable regardless of display order. `GEOKLEIN_6_HIDDEN_PIXELS` is always passed as a `-mo` argument now, even when there's no NoData message this run (an empty value) - purely a mechanism change, not a visible one: confirmed directly that `-mo KEY=` (empty) removes an inherited value with that key rather than writing a blank one, so GDAL doesn't write a visible tag at all in that case. The file's own visible behaviour is unchanged from before - the key is still simply absent when there's nothing to report - but re-running this tool on a file it already produced (with a message that run, none this run) can no longer leave that stale record sitting next to a current one.
 

@@ -1061,6 +1061,49 @@ this - so such a finding would be a documentation note, not a fix.
 
 ---
 
+## Dark-theme colours for the help panel: not done, and why
+
+**Status:** investigated and skipped, 2026-11-13. Asked for as
+"keep the current light-theme colours exactly as they are, add
+dark-theme variants chosen at render time from the panel background's
+lightness, use lighter versions of the same colours". Half of that is
+straightforwardly available and the other half has no defined input.
+
+What IS available: `shortHelpString()` runs when the panel renders, so
+`QgsApplication.palette()` is readable from it, and
+`QPalette.ColorRole.Base` gives the text panel's own background. On
+this machine it read `#2d2d2d`, lightness 45 of 255, which a
+`lightness() < 128` test classifies as dark correctly. A light/dark
+decision at render time is therefore perfectly possible.
+
+What is NOT available is the thing to vary. Checked directly against
+the rendered string: it contains **41** `<b>` tags and **zero** colour
+declarations - no `color:`, no `color=`, no `<font>`, no `style=`. This
+plugin has never set a colour in the help panel. The colours are
+QGIS's own, applied by the C++ help-widget stylesheet, which Python
+cannot read. So "lighter versions of the same colours" has no input
+here: there is no colour of ours to lighten, and no way from Python to
+discover the one QGIS used in order to lighten it.
+
+Inventing colours instead would be a different change from the one
+asked for, and the wrong one: our bold text would then be styled by us
+while every other element in the panel stayed styled by QGIS, which
+looks inconsistent precisely on the themes it was meant to help.
+Verifying it would also need pixels sampled from a rendered C++ widget,
+which is not something this project can check headlessly, so the result
+would be asserted rather than measured - against this codebase's
+standing preference everywhere else.
+
+Recorded here as a known limitation rather than held against the
+release, per instruction. If it is wanted later, the shape that would
+work is QGIS-side: a theme-aware colour for `<b>` in the help panel's
+own stylesheet, which fixes it for every plugin at once rather than
+one plugin overriding it locally. See the entry below, which reached
+the same conclusion from the other direction before the storage option
+existed.
+
+---
+
 ## Bold headings in shortHelpString() render low-contrast on dark themes
 
 **Status:** known and accepted, 2026-09-02. `shortHelpString()` uses real
