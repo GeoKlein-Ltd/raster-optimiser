@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -150,6 +151,80 @@ INTEGER_DTYPES = {
     "Byte", "Int8", "UInt16", "Int16", "UInt32", "Int32", "UInt64", "Int64",
 }
 
+# The floating-point types this tool processes, both handled identically
+# everywhere: the same single-band elevation detection (Stage 1a), the
+# same CONTINUOUS bucket and classified-raster check for every other
+# band count, the same lossless_float codec and PREDICTOR=3 below, and
+# written out at their own type with no conversion. A Float64 source
+# stays Float64 in the output.
+#
+# PREDICTOR=3 is TIFF's floating-point predictor, not a 32-bit-only one.
+# Confirmed directly against the COG driver on real Float64 rasters
+# (GDAL 3.13.2): PREDICTOR=3 and OVERVIEW_PREDICTOR=3 are both accepted,
+# read back from the output's own IMAGE_STRUCTURE as "3", and the output
+# stays Float64. It is also the smallest of the three predictor options
+# on every REAL elevation file measured, at either width - 62.7% of
+# no-predictor on Float32 (dsm_nick.tif crop), 73.6% on that same crop
+# promoted to Float64, and 75.5% on a real 16000x16000 Float64 LiDAR DSM
+# (Hamilton Smeaton, 0.025m, where predictor 2 came second at 77.6%).
+#
+# One synthetic file bucks this: testdata/dsm_float64_pdal.tif, a
+# PDAL-rasterised DSM, where predictor 3 came out at 155% of
+# no-predictor. The cause is NOT established. Three candidates were
+# measured and all three fail to explain it - the real Hamilton file
+# that predictor 3 wins on has effectively no trailing zero mantissa
+# bits (mean 1.0, versus 30.2 on Float32-derived values), FEWER leading
+# bytes in common with the horizontal neighbour (2.34 of 8, versus 5.84
+# on the synthetic), and MORE NoData (40% versus 32%). Each of those
+# would predict the opposite of what was measured. Since the only file
+# predictor 3 loses on is synthetic, and no real product has reproduced
+# it, that outlier is recorded rather than designed around. See
+# docs/plugin_design_notes.md, "Float64 uses the Float32 predictor".
+#
+# Float16 is deliberately NOT here. GDAL 3.11 added it, but nothing in
+# this project has ever been handed one, so neither the predictor
+# behaviour nor the advisory arithmetic below has a real file to be
+# confirmed against - it stays an UNSUPPORTED_DTYPE refusal until there
+# is one.
+FLOAT_DTYPES = {"Float32", "Float64"}
+
+# Float32's significand is 24 bits including the implicit leading one,
+# so representable Float32 values at a magnitude of 2^e are spaced
+# 2^(e-23) apart, and the worst a round-to-nearest conversion from
+# Float64 can be out by is half of that: 2^(e-24). Used by
+# _float64_advisory() below with e = floor(log2(max_abs_valid)) - the
+# binade of the file's largest absolute valid value, which is where
+# Float32's spacing is coarsest anywhere in that file, so the figure is
+# a worst case for the whole raster rather than for one pixel.
+FLOAT32_HALF_ULP_SHIFT = 24
+
+# Largest guaranteed rounding, in METRES, that the opt-in "store Float64
+# elevation as Float32" option will accept before refusing to change the
+# type and keeping Float64 instead. 1 mm: below any survey's own vertical
+# accuracy, so a bound under it cannot be the thing that makes a dataset
+# unfit, while a bound over it is in the range where someone could
+# legitimately care.
+#
+# Where this actually bites, which is NOT where it first looks like it
+# should: the bound is a half-ULP, 2^(e-24) with e = floor(log2(
+# max_abs_valid)), so it steps by binade rather than smoothly. Heights up
+# to 32,767 m all land on e = 14 and a bound of 0.98 mm, which passes;
+# the first binade over 1 mm is e = 15, reached at 32,768 m. So every
+# real-world elevation dataset on Earth passes this gate - Everest is
+# 8,848 m, bound 0.49 mm - and it only engages on values no elevation
+# raster should hold. That is the intended outcome, not a slack
+# threshold: the gate exists to catch a Float64 raster that is not
+# really elevation (a value grid, an accumulated total) before its
+# values get quantised, and such a raster is exactly what carries
+# magnitudes above 32 km.
+#
+# Compared in metres, not in the display unit: the bound is computed in
+# whatever the band's vertical unit is, so comparing it against "1 mm"
+# requires converting it first (see Float32Storage.bound_metres).
+# Otherwise a raster in feet would be gated against a number in the
+# wrong unit.
+FLOAT32_MAX_BOUND_METRES = 0.001
+
 # COG creation-option names, not GTiff's. v1 always writes a Cloud
 # Optimized GeoTIFF (see docs/plugin_design_notes.md) - there is no
 # classic-GTiff code path left for these to serve, so the dicts hold the
@@ -234,7 +309,16 @@ RECOMMENDED_SETTINGS = {
             "BIGTIFF": "YES", "NUM_THREADS": "ALL_CPUS",
         },
         # OVERVIEW_PREDICTOR=3: same "documented intent, currently a
-        # no-op" reasoning as lossless_integer's above.
+        # no-op" reasoning as lossless_integer's above. Re-checked
+        # 2026-11-13 against GDAL 3.13.2 when Float64 joined this
+        # profile - the measurement behind that reasoning predated both
+        # the COG switch and Float64, so it no longer covered every file
+        # reaching here. Still exactly a no-op: the real 16000x16000
+        # Float64 Hamilton DSM came out byte-for-byte the same size
+        # (1,093,744,868) with this line and without it, and the output
+        # reports PREDICTOR=3 either way. The line stays for the same
+        # reason as before - explicit intent rather than reliance on
+        # GDAL continuing to inherit the base predictor.
         "overview_config": {
             "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEW_COMPRESS": "ZSTD",
             "OVERVIEW_PREDICTOR": "3",
@@ -290,6 +374,58 @@ class NoDataRisk:
 
 
 @dataclass
+class Float32Storage:
+    """Feasibility of storing a Float64 elevation raster as Float32,
+    assessed here and applied (or not) by core/converter.py - the same
+    split as NoDataRisk above, for the same reason: detection reads what
+    a file IS and what could safely be done with it, and the caller's
+    request is resolved in one place in convert(), not here. Nothing in
+    this class knows whether the user ticked the box.
+
+    `possible` is the single field converter.py needs to answer "can
+    this be done at all"; `in_scope` and the two reason strings exist to
+    say why not, in the three different ways it can fail.
+    """
+
+    # True only for the one shape the option applies to: a single-band
+    # Float64 raster detected as elevation (FLOAT_CONTINUOUS). Anything
+    # else - multi-band Float64, Float32, integer, RGB - is out of scope
+    # and the request is ignored with an explanation rather than
+    # refused, so a batch mixing file types still runs.
+    in_scope: bool = False
+    out_of_scope_reason: Optional[str] = None
+
+    # Only meaningful when in_scope.
+    max_abs_valid: Optional[float] = None
+    # The guaranteed worst-case rounding, in the band's OWN vertical
+    # unit (bound_native) and converted to metres for the gate
+    # (bound_metres). These are the same number whenever the vertical
+    # unit is metres or unknown, which is the overwhelmingly common case.
+    bound_native: Optional[float] = None
+    bound_metres: Optional[float] = None
+    # Ready-to-splice, e.g. "0.0038 mm" or "0.0000038 US survey foot" -
+    # see _format_quantity_phrase and _height_bound_phrase for the unit
+    # rules.
+    bound_phrase: Optional[str] = None
+    display_unit: Optional[str] = None
+
+    # None means the file declares no vertical unit, which is treated
+    # the same as metres for display (see _height_bound_phrase).
+    vertical_unit: Optional[str] = None
+    horizontal_is_metres: bool = False
+    pixel_area: Optional[float] = None  # in square horizontal units
+
+    nodata_value: Optional[float] = None
+    # NaN counts as round-tripping: it survives the cast as NaN, which
+    # is what matters - a NoData marker only has to keep marking the
+    # same pixels, not keep a particular bit pattern.
+    nodata_round_trips: bool = True
+
+    possible: bool = False
+    blocked_reason: Optional[str] = None
+
+
+@dataclass
 class DetectionResult:
     """Classification output for one file. `refused` MUST be checked
     before reading any other field.
@@ -324,7 +460,7 @@ class DetectionResult:
     # directly by detect_metadata_only() can still have it True.
     needs_pixel_sampling: bool = False
 
-    content_type: Optional[str] = None  # RGB_8BIT | FLOAT32_CONTINUOUS | CONTINUOUS
+    content_type: Optional[str] = None  # RGB_8BIT | FLOAT_CONTINUOUS | CONTINUOUS
     band_count: Optional[int] = None
     dtype: Optional[str] = None
     has_alpha: bool = False
@@ -340,7 +476,7 @@ class DetectionResult:
     # metadata (Phases 4/5 of the purpose-question rework) all read the
     # identical sentence rather than three independently-worded ones.
     # Only meaningful when profile_mode == "forced"; None otherwise.
-    # Set per file, not per content type: FLOAT32_CONTINUOUS and
+    # Set per file, not per content type: FLOAT_CONTINUOUS and
     # CONTINUOUS force every file in the bucket identically, but
     # RGB_8BIT can also force a specific file (nodata_only_transparency,
     # no alpha band) while other RGB_8BIT files stay "choice" - the
@@ -360,6 +496,26 @@ class DetectionResult:
     raster_size: Optional[tuple] = None
 
     warnings: list = field(default_factory=list)
+
+    # Float64 only, and only on a result from detect() (not
+    # detect_metadata_only, which reads no pixels and so has no
+    # max_abs_valid to work from): the plain-English note that the
+    # source is Float64, what re-exporting it as Float32 would save,
+    # and what the worst-case rounding of that conversion would be for
+    # THIS file. Advisory in the strict sense - nothing in the run
+    # reads it or acts on it, no setting changes because of it, and the
+    # output is written as Float64 either way. Built once here (see
+    # _float64_advisory) and shown verbatim by the QGIS wrapper's
+    # pushInfo and this module's own CLI report; None on every other
+    # dtype.
+    float64_advisory: Optional[str] = None
+
+    # Float64 only, and only on a result from detect(): whether this
+    # file could be stored as Float32 if asked, and what that would
+    # cost. Assessment only - nothing here applies anything, and a
+    # result with possible=True still writes Float64 unless the caller
+    # asks otherwise. None on every other dtype.
+    float32_storage: Optional["Float32Storage"] = None
 
 
 def _refuse(result: DetectionResult, code: str, message: str) -> DetectionResult:
@@ -544,8 +700,13 @@ def content_label(detection: DetectionResult) -> str:
     factored out so the two don't describe the same file two different
     ways.
     """
-    if detection.content_type == "FLOAT32_CONTINUOUS":
-        return "Float32 elevation (DSM, DTM or CHM)"
+    if detection.content_type == "FLOAT_CONTINUOUS":
+        # dtype rather than a literal "Float32": this content type
+        # covers Float64 elevation too, and the label is read on the
+        # output file (GEOKLEIN_2_DETECTED, TIFFTAG_IMAGEDESCRIPTION),
+        # where naming the wrong width would misdescribe the very file
+        # it is embedded in.
+        return f"{detection.dtype} elevation (DSM, DTM or CHM)"
     if detection.content_type == "RGB_8BIT":
         return "8-bit RGB imagery"
     return f"{detection.dtype} imagery"
@@ -615,6 +776,386 @@ def _classified_unique_count(ds: "gdal.Dataset", band: "gdal.Band") -> int:
     w, h = _sample_dims(ds.RasterXSize, ds.RasterYSize)
     arr = _read_sample(band, w, h)
     return int(np.unique(arr).size)
+
+
+def _max_abs_valid(ds: "gdal.Dataset") -> Optional[float]:
+    """The largest absolute valid pixel value across every non-alpha
+    band, or None if no band has a single valid pixel to measure.
+
+    ComputeRasterMinMax, not GetStatistics: GetStatistics(force=True)
+    persists what it computes into PAM, which would write a
+    "<source>.tif.aux.xml" sidecar next to a source file this tool
+    promises never to modify. ComputeRasterMinMax writes nothing.
+
+    Exact (bApproxOK=False), not approximate. The approximate form is
+    effectively free where overviews exist, but it can land in a
+    different binade from the true maximum (measured on
+    testdata/dsm_nick.tif: exact max 24.377, approximate 22.906 - the
+    same binade there, but nothing guarantees that), and the figure this
+    feeds is a power-of-two worst case, so one binade out is a factor of
+    two wrong in a number shown to the user as a fact about their file.
+    The cost is paid once, only on Float64 input, and is small against
+    the conversion of the same file. Measured: 3.9s on a 363 MP
+    no-overview ZSTD-compressed Float32 raster (dsm_nick.tif), and
+    1.1-2.1s on a 256 MP uncompressed Float64 one (Hamilton Smeaton
+    0.025m, 1.91 GiB - the spread is file-cache warmth between runs,
+    not measurement noise). The bigger file being the faster read is
+    not a contradiction: this is bound by decompression more than by
+    bytes moved, so an uncompressed source stays cheap to scan however
+    large it is. That same Hamilton file's Translate took 9.8s.
+
+    NoData is excluded by GDAL itself, including NaN: confirmed on
+    testdata/dsm_nick.tif, whose declared -9999 NoData and real NaN
+    pixels both stay out of the returned min/max.
+    """
+    best = None
+    for i in range(1, ds.RasterCount + 1):
+        band = ds.GetRasterBand(i)
+        if _is_alpha_band(band):
+            continue
+        try:
+            minimum, maximum = band.ComputeRasterMinMax(False)
+        except Exception:  # noqa: BLE001 - a band with no valid pixels at all
+            # GDAL raises rather than returning a sentinel when every
+            # pixel in the band is NoData. That is a real file shape (an
+            # empty tile, a fully-masked crop), and it is not a reason to
+            # fail a conversion over an advisory note - the band is
+            # skipped, and the caller reports that it could not measure
+            # if no band yields anything.
+            continue
+        for value in (minimum, maximum):
+            if value is None or not math.isfinite(value):
+                continue
+            magnitude = abs(value)
+            if best is None or magnitude > best:
+                best = magnitude
+    return best
+
+
+# Below this many display units the figure stops being a measurement
+# and becomes a column of zeros. The formatter reports a bound rather
+# than a value from here down - see _format_quantity_phrase.
+_QUANTITY_DISPLAY_FLOOR = 1e-6
+
+# Decimal places _format_quantity_phrase will go to before it gives up
+# and reports the floor instead. Six places is exactly enough to render
+# _QUANTITY_DISPLAY_FLOOR itself.
+_QUANTITY_MAX_DECIMALS = 6
+
+# Vertical/horizontal unit names GDAL reports that mean "metres".
+# "metre" is what OSR actually returns for every metric CRS tested
+# (EPSG:27700, and EPSG:27700+5701 for the vertical axis); "meter" and
+# "m" are accepted too because nothing in OSR's contract promises the
+# British spelling, and a unit name is a string from a file.
+_METRE_UNIT_NAMES = {"metre", "meter", "m", "metres", "meters"}
+
+
+def _is_metre_unit(name: Optional[str]) -> bool:
+    return name is not None and name.strip().lower() in _METRE_UNIT_NAMES
+
+
+def _horizontal_unit(srs) -> tuple:
+    """(unit name, is_metres) for the horizontal axes.
+
+    GetLinearUnitsName() is the right call and IsProjected() is required
+    alongside it: measured against GDAL 3.13.2, a geographic CRS
+    (EPSG:4326) returns "unknown" from GetLinearUnitsName() while its
+    UNIT attribute reads "degree", so the name alone would not reliably
+    exclude it, and a degree-based pixel area is not an area in any unit
+    this tool can report a volume in.
+    """
+    if srs is None:
+        return None, False
+    try:
+        name = srs.GetLinearUnitsName()
+        projected = bool(srs.IsProjected())
+    except Exception:  # noqa: BLE001 - a unit read is never worth failing a run for
+        return None, False
+    return name, projected and _is_metre_unit(name)
+
+
+def _vertical_unit(srs) -> tuple:
+    """(unit name or None, scale to metres).
+
+    Measured against GDAL 3.13.2: GetAttrValue("VERT_CS|UNIT") returns
+    "metre" for a compound CRS with ODN height, "US survey foot" for one
+    with NAVD88 height (ftUS), and None for a CRS with no vertical
+    component at all - which is the common case for a plain projected
+    GeoTIFF and is reported here as an unknown unit, not as metres.
+
+    The scale comes from the same attribute's second child, which is the
+    conversion factor to metres in the WKT. It is only used to put the
+    bound into metres for FLOAT32_MAX_BOUND_METRES' gate, never for
+    display - a file's own unit is what its own figures are quoted in.
+    Defaults to 1.0 when the unit is unknown, which treats an
+    undeclared vertical axis as metres for gating purposes: that is the
+    assumption every elevation product this tool targets satisfies, and
+    the alternative (refusing to gate at all) would be worse.
+    """
+    if srs is None:
+        return None, 1.0
+    try:
+        name = srs.GetAttrValue("VERT_CS|UNIT")
+    except Exception:  # noqa: BLE001
+        return None, 1.0
+    if name is None:
+        return None, 1.0
+    scale = 1.0
+    try:
+        raw = srs.GetAttrValue("VERT_CS|UNIT", 1)
+        if raw is not None:
+            scale = float(raw)
+    except (TypeError, ValueError, RuntimeError):
+        # A unit with no readable conversion factor: fall back to
+        # treating it as metres for the gate rather than discarding the
+        # gate. Display still uses the unit's own name.
+        scale = 1.0
+    if scale <= 0:
+        scale = 1.0
+    return name, scale
+
+
+def _format_quantity_phrase(value: float, unit: str) -> str:
+    """A measured quantity as a ready-to-splice phrase including its
+    unit: "0.0038 mm", or "under 0.000001 mm" when the value is too
+    small to state as one.
+
+    Two significant figures, never exponent notation. The values span
+    several orders of magnitude - 0.00095 mm on a site DSM topping out
+    at 24 m, 0.0038 mm on one topping out at 117 m, 0.49 mm on a
+    Himalayan one - so a fixed number of decimal places either rounds
+    the small end away to "0.00" or pads the large end with digits it
+    has not earned, and "%.2g" renders the small end as "9.5e-04",
+    which reads as a defect in a plain-English log line.
+
+    The floor exists because two significant figures with no exponent
+    has no lower bound on its own: measured across the range, a Float64
+    raster of values around 1e-6 (a normalised index, a product in
+    units smaller than metres) produced "0.000000000057", and one
+    around 1e-30 produced a 38-character string of zeros. Elevation
+    never reaches there - a raster of values 0 to 1 still formats as
+    "0.000060" - but nothing restricts a Float64 raster to elevation,
+    and this figure is only ever making the point that the rounding is
+    negligible. A stated bound makes that point; 38 characters of zeros
+    makes the log look broken.
+
+    The unit is a parameter rather than a hardcoded "mm" because the
+    same figure is quoted in millimetres for a file in metres (or one
+    that declares no vertical unit) and in the file's own unit
+    otherwise - see _height_bound_phrase.
+    """
+    if value < _QUANTITY_DISPLAY_FLOOR:
+        return f"under {_QUANTITY_DISPLAY_FLOOR:.{_QUANTITY_MAX_DECIMALS}f} {unit}"
+    decimals = min(_QUANTITY_MAX_DECIMALS,
+                   max(0, 1 - int(math.floor(math.log10(value)))))
+    return f"{value:.{decimals}f} {unit}"
+
+
+def _height_bound_phrase(bound_native: float, vertical_unit: Optional[str]) -> tuple:
+    """(phrase, display unit) for a height bound expressed in the
+    band's own vertical unit.
+
+    Millimetres when the vertical unit is metres OR undeclared, and the
+    file's own unit otherwise. The undeclared case going to millimetres
+    is deliberate and matches what the Float64 advisory has always done:
+    every elevation product this tool is aimed at is in metres, a plain
+    GeoTIFF band usually declares no vertical unit at all, and refusing
+    to quote a figure for the commonest case would make the advisory
+    useless. What changed when the storage option was added is that a
+    file which DOES declare feet is now quoted in feet instead of being
+    silently relabelled as millimetres - the advisory used to say "mm"
+    unconditionally, which was the right number under the wrong unit
+    name on such a file.
+    """
+    if _is_metre_unit(vertical_unit) or vertical_unit is None:
+        return _format_quantity_phrase(bound_native * 1000.0, "mm"), "mm"
+    return _format_quantity_phrase(bound_native, vertical_unit), vertical_unit
+
+
+def _nodata_round_trips(nodata_value: Optional[float]) -> bool:
+    """Does this NoData value survive a Float64 -> Float32 cast
+    unchanged?
+
+    NaN counts as round-tripping: it casts to NaN, and a NoData marker
+    only has to go on marking the same pixels, not keep a particular bit
+    pattern. No NoData at all also counts - there is nothing to preserve.
+
+    The case this exists to catch is a sentinel outside Float32's range,
+    which casts to +/-inf and stops being the value the file's own
+    header declares. -1.7976931348623157e308 (Float64's most negative
+    finite value, a real choice of sentinel for "impossible") is the
+    worked example: it becomes -inf, so every NoData pixel would be
+    written as -inf while the header still said -1.797...e308, and
+    nothing would read as NoData any more.
+
+    numpy's cast of an out-of-range double raises a RuntimeWarning
+    rather than returning quietly, so it is done under errstate - the
+    overflow is the answer here, not a problem.
+    """
+    import numpy as np
+
+    if nodata_value is None:
+        return True
+    if math.isnan(nodata_value):
+        return True
+    with np.errstate(over="ignore"):
+        cast_back = float(np.float32(nodata_value))
+    return cast_back == nodata_value
+
+
+def _assess_float32_storage(
+    ds: "gdal.Dataset", result: "DetectionResult", max_abs_valid: Optional[float],
+) -> "Float32Storage":
+    """Whether this file COULD be stored as Float32, and at what cost.
+    Reads no user preference - see Float32Storage's docstring.
+
+    Reuses max_abs_valid, already computed for the advisory, rather than
+    reading the pixels a second time: the bound and the advisory are the
+    same arithmetic on the same number.
+    """
+    storage = Float32Storage()
+
+    # ---- scope ----
+    # Single-band Float64 elevation only. Each other shape gets its own
+    # sentence, because "ignored" without a reason reads as a bug on a
+    # run where the user deliberately ticked the box.
+    if result.dtype != "Float64":
+        storage.out_of_scope_reason = (
+            f"this file is {result.dtype}, not Float64 - there is no "
+            "64-bit precision here to trade away"
+        )
+        return storage
+    if result.content_type != "FLOAT_CONTINUOUS":
+        storage.out_of_scope_reason = (
+            f"this file has {result.band_count} bands and is not single-band "
+            "elevation. Storing as Float32 is offered for elevation only, "
+            "where a height's worth-keeping precision is a known quantity; "
+            "on other continuous data the values could be anything and the "
+            "rounding cannot be judged safe here"
+        )
+        return storage
+
+    storage.in_scope = True
+    storage.max_abs_valid = max_abs_valid
+
+    srs = ds.GetSpatialRef()
+    _h_name, storage.horizontal_is_metres = _horizontal_unit(srs)
+    storage.vertical_unit, vertical_scale = _vertical_unit(srs)
+
+    gt = ds.GetGeoTransform()
+    # Determinant, not gt[1] * gt[5]: that is only the area for a
+    # north-up transform, and the rotation terms are part of the real
+    # pixel footprint on a rotated grid.
+    storage.pixel_area = abs(gt[1] * gt[5] - gt[2] * gt[4])
+
+    band = ds.GetRasterBand(1)
+    storage.nodata_value = band.GetNoDataValue()
+    storage.nodata_round_trips = _nodata_round_trips(storage.nodata_value)
+
+    # ---- the bound ----
+    if max_abs_valid is None or max_abs_valid == 0:
+        # Nothing to measure against: every pixel NoData, or a raster of
+        # nothing but zeros. Float32 would be exact on the zeros, but
+        # there is no evidence here on which to promise a bound, and a
+        # type change this tool cannot put a number on is one it should
+        # not make on request.
+        storage.blocked_reason = (
+            "this file has no non-zero valid pixel values, so there is "
+            "nothing to measure a worst-case rounding against"
+        )
+        return storage
+
+    exponent = math.floor(math.log2(max_abs_valid))
+    storage.bound_native = 2.0 ** (exponent - FLOAT32_HALF_ULP_SHIFT)
+    storage.bound_metres = storage.bound_native * vertical_scale
+    storage.bound_phrase, storage.display_unit = _height_bound_phrase(
+        storage.bound_native, storage.vertical_unit,
+    )
+
+    if storage.bound_metres > FLOAT32_MAX_BOUND_METRES:
+        storage.blocked_reason = (
+            f"the largest absolute value in this file is {max_abs_valid:,.0f}, "
+            f"which puts the guaranteed worst-case rounding at "
+            f"{storage.bound_phrase} - over the "
+            f"{FLOAT32_MAX_BOUND_METRES * 1000:.0f} mm this tool will accept "
+            "for a height. Values that large are a sign this is not "
+            "elevation in metres"
+        )
+        return storage
+
+    if not storage.nodata_round_trips:
+        storage.blocked_reason = (
+            f"this file's NoData value ({storage.nodata_value!r}) does not "
+            "survive a Float32 conversion - it falls outside the range "
+            "Float32 can hold, so the NoData pixels would stop matching "
+            "the value the file declares and would read as real data"
+        )
+        return storage
+
+    storage.possible = True
+    return storage
+
+
+def _float64_advisory(storage: "Float32Storage") -> str:
+    """The Float64 log line for a run that did NOT change the type - see
+    DetectionResult.float64_advisory. Three shapes, because there are
+    three genuinely different things to say:
+
+    - in scope and possible: point at the checkbox, with this file's own
+      bound. This replaced an earlier version that told the user to
+      re-export the source as Float32 in other software; the tool can
+      do it itself now, so sending them elsewhere would be wrong.
+    - in scope but blocked: say Float64 is being kept and why, so
+      nobody ticks the box expecting a change that will not happen.
+    - out of scope (multi-band Float64): the re-export suggestion still
+      stands, because the checkbox genuinely does not cover it.
+
+    Leads with the no-change statement in every shape. This fires on a
+    file that converted exactly as it should have, so a reader who meets
+    a size claim first reasonably wonders whether the tool has just done
+    that to their heights.
+    """
+    opening = (
+        "Source data type is Float64, and it is written out as Float64 - "
+        "every value is preserved exactly and nothing in this run changes "
+        "the data."
+    )
+
+    if not storage.in_scope:
+        return (
+            f"{opening} For information only, and needing no action: "
+            "re-exporting the source as Float32 would halve the pixel "
+            "data, and on the elevation rasters measured so far brought "
+            "the finished file down to about a third of its size. "
+            # str.capitalize() was wrong here and visibly so: it
+            # upper-cases the first character and LOWER-cases every
+            # other one, which turned "Storing as Float32 is offered
+            # for elevation only" into "storing as float32 is offered
+            # for elevation only" in the middle of the sentence. The
+            # reason strings are written lower-case-first so they read
+            # correctly after "ignored: "; only the first character
+            # needs changing to reuse one mid-sentence here.
+            f"{storage.out_of_scope_reason[0].upper()}"
+            f"{storage.out_of_scope_reason[1:]}, so this tool's "
+            "own 'Store Float64 elevation as Float32' option does not "
+            "apply to it."
+        )
+
+    if not storage.possible:
+        return (
+            f"{opening} Storing it as Float32 is not available for this "
+            f"file: {storage.blocked_reason}. Ticking 'Store Float64 "
+            "elevation as Float32' under Advanced parameters would make no "
+            "difference here."
+        )
+
+    return (
+        f"{opening} For information only, and needing no action: Float64 "
+        "records heights far more finely than any survey can measure them. "
+        "Ticking 'Store Float64 elevation as Float32' under Advanced "
+        "parameters would store this file at about a third of the size, "
+        f"changing no height by more than {storage.bound_phrase}."
+    )
 
 
 def _cell_window(c0: int, c1: int, sub_index: int, sub_count: int, win: int, axis_size: int):
@@ -1002,13 +1543,21 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
                 f"({dtype}). Detection uses band 1's type."
             )
 
-    # ---- Stage 1a: elevation - single-band Float32, unconditionally
-    # forced lossless. Kept as its own case, deliberately not folded into
-    # CONTINUOUS below: this forced-profile-plus-optional-warning
-    # behaviour was tuned deliberately over several rounds and must not
-    # change as a side effect of CONTINUOUS existing.
-    if band_count == 1 and dtype == "Float32":
-        result.content_type = "FLOAT32_CONTINUOUS"
+    # ---- Stage 1a: elevation - single-band floating point (Float32 or
+    # Float64, see FLOAT_DTYPES), unconditionally forced lossless. Kept
+    # as its own case, deliberately not folded into CONTINUOUS below:
+    # this forced-profile-plus-optional-warning behaviour was tuned
+    # deliberately over several rounds and must not change as a side
+    # effect of CONTINUOUS existing.
+    #
+    # Float64 reaches this branch on exactly the same terms as Float32,
+    # including skipping the classified-raster check entirely: that
+    # check is a property of the CONTINUOUS bucket, and single-band
+    # elevation has never gone through it at either width. A Float64
+    # file is as incapable of being a sensible category-code raster as a
+    # Float32 one, so nothing here needs widening to cover it.
+    if band_count == 1 and dtype in FLOAT_DTYPES:
+        result.content_type = "FLOAT_CONTINUOUS"
         result.profile_mode = "forced"
         result.forced_profile = "lossless"
         result.forced_reason = (
@@ -1068,7 +1617,8 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
 
     # ---- Stage 1d: CONTINUOUS - everything else this plugin already
     # trusts the dtype of: any other band count (1 without a colour
-    # table, 2, non-Byte 3-4, 5+) with integer or Float32 data. Absorbs
+    # table, 2, non-Byte 3-4, 5+) with integer or floating-point data
+    # (Float32 or Float64 alike - see FLOAT_DTYPES). Absorbs
     # what used to be three separate cases - unrecognised single-band
     # integer data, 16-bit RGB (whose "choice" was already a no-op, since
     # lossy was never actually available on it), and multispectral (5+
@@ -1079,19 +1629,20 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     # detect_metadata_only() can't do. detect() resolves it; see
     # CLASSIFIED_MAX_UNIQUE_VALUES's comment for the one known gap in
     # how it resolves it.
-    if dtype not in INTEGER_DTYPES and dtype != "Float32":
+    if dtype not in INTEGER_DTYPES and dtype not in FLOAT_DTYPES:
         return _refuse(
             result,
             "UNSUPPORTED_DTYPE",
             f"Data type {dtype} isn't supported in v1. Supported: 8-bit "
-            "RGB (3-4 band) for lossy/lossless, or Float32/integer data "
-            "elsewhere for lossless once it's confirmed not classified.",
+            "RGB (3-4 band) for lossy/lossless, or Float32, Float64 or "
+            "integer data elsewhere for lossless once it's confirmed not "
+            "classified.",
         )
 
     result.content_type = "CONTINUOUS"
     result.needs_pixel_sampling = True
     # Forced, not choice: every file that reaches here is content-type-
-    # wide forced to lossless, same as elevation (FLOAT32_CONTINUOUS)
+    # wide forced to lossless, same as elevation (FLOAT_CONTINUOUS)
     # above - lossy is never available for this bucket regardless of
     # this specific file's other properties, so "choice" with lossy
     # permanently unavailable was a vestigial state once
@@ -1116,7 +1667,7 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         "RGB composite of the bands you want to see, then run this "
         "tool on that file with 'Viewing'."
     )
-    settings_key = "lossless_float" if dtype == "Float32" else "lossless_integer"
+    settings_key = "lossless_float" if dtype in FLOAT_DTYPES else "lossless_integer"
     result.profile_options = [
         ProfileOption(
             profile="lossless",
@@ -1143,10 +1694,27 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
     cb_data) shape and is only meaningful for the RGB/NoData path (the
     classified-check path is a single cheap decimated read with nothing
     worth reporting progress on) - see _black_pixel_sample's docstring.
+
+    The Float64 advisory is resolved here too, and deliberately NOT in
+    detect_metadata_only(): it needs the file's largest absolute valid
+    pixel value, which is a pixel read, and that function's whole
+    contract is that it touches no pixels so the QGIS dialog can refuse
+    out-of-scope files instantly. It is kept out of
+    needs_pixel_sampling as well, which means "classification is not
+    resolved yet" - the Float64 advisory resolves nothing and gates
+    nothing, so folding it into that flag would report a fully
+    classified file as still unclassified.
     """
     result = detect_metadata_only(path)
 
-    if result.refused or not result.ok or not result.needs_pixel_sampling:
+    if result.refused or not result.ok:
+        return result
+
+    # Float64 is the one dtype that needs this function to open the file
+    # even when classification is already complete - single-band Float64
+    # elevation resolves fully in Stage 1a, exactly as Float32 does.
+    needs_float64_advisory = result.dtype == "Float64"
+    if not result.needs_pixel_sampling and not needs_float64_advisory:
         return result
 
     try:
@@ -1157,6 +1725,18 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
         return _refuse(result, "UNREADABLE", "Could not read this file.")
 
     try:
+        if needs_float64_advisory:
+            # One pixel read feeds both: the assessment's bound and the
+            # advisory's figure are the same arithmetic on the same
+            # max_abs_valid, so it is computed once here rather than
+            # inside each of them.
+            max_abs_valid = _max_abs_valid(ds)
+            result.float32_storage = _assess_float32_storage(
+                ds, result, max_abs_valid,
+            )
+            result.float64_advisory = _float64_advisory(result.float32_storage)
+        if not result.needs_pixel_sampling:
+            return result
         return _detect_body(result, ds, progress_cb, progress_cb_data)
     finally:
         # Explicit close, matching converter.py's discipline - see
@@ -1282,6 +1862,8 @@ def _print_report(result: DetectionResult) -> None:
         return
 
     print(f"  Bands: {result.band_count}  Type: {result.dtype}")
+    if result.float64_advisory:
+        print(f"  Advisory: {result.float64_advisory}")
     print(f"  Block size: {result.block_size[0]}x{result.block_size[1]}")
     print(f"  Overviews: {result.overview_count}")
     print(f"  Content type: {result.content_type}")

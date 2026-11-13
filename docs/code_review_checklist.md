@@ -319,9 +319,76 @@ placeholder URLs are filled in.)
   the GitHub URL in their embedded metadata - fixable only going forward, not
   in files already handed to a client.
 - [x] A changelog entry has been added to `metadata.txt` for this release:
-  1.0.1, added 2026-09-16.
-- [ ] The zip has been rebuilt (`python tools/build_zip.py`) after either of
-  the above.
+  1.1.0, added 2026-11-13 (Float64 elevation support, the Float64 advisory,
+  the CLI log-callback crash and the dropped detection warnings). 1.0.1 was
+  added 2026-09-16.
+- [x] The zip has been rebuilt (`python tools/build_zip.py`) after either of
+  the above: `raster_optimiser-1.1.0.zip`, 15 files, 109.3 KB, built
+  2026-11-13. Verified its internal layout is a single top-level
+  `raster_optimiser/` folder and that the `metadata.txt` inside it reads
+  `version=1.1.0`. The superseded `raster_optimiser-1.0.1.zip` is still in
+  the repo root; both are gitignored, so neither is tracked.
+- [x] `README.md`'s install section names the zip by filename, so it has to
+  follow every version bump. Updated to `raster_optimiser-1.1.0.zip` in the
+  same round. Checked 2026-11-13 by grepping every version string in the
+  repo: `README.md` is the only one that has to FOLLOW a bump. No code
+  hardcodes a version - `GEOKLEIN_1_TOOL` reads it from `metadata.txt` at
+  runtime via `_read_plugin_version()`. The rest are deliberately fixed to
+  a past version and must NOT be updated: `plugin_design_notes.md`'s dated
+  "found during the 1.0.1 full-read" entries, and
+  `raster_optimiser_ui_text.md`'s worked `GEOKLEIN_*` transcripts, which
+  are now labelled with the version they were captured on (see the next
+  box) rather than implying they came from the current build.
+
+---
+
+## Section 10: what a failure leaves behind
+
+- When a check fails, what is left on disk, and does it describe itself
+  honestly? Found 2026-11-13: the data-type-change verification set
+  `passed = False` and raised correctly, and left the output sitting at
+  its ordinary `.tif` path with `GEOKLEIN_4_DECISION` inside it stating
+  a worst-case height change as a measured fact - the exact claim the
+  check had just refuted. The run reported failure; the file did not.
+  Anyone who opened it later, or found it in a folder a week on, had
+  nothing to tell them it was the rejected one. Now renamed to
+  `<output>.failed` with the new path in the error.
+  - The question generalises past this one case: for each failure path,
+    ask not only "was the user told" but "will the artifact still say
+    so after the message has scrolled away". A file that outlives the
+    log needs to carry its own status.
+  - Note the distinction that keeps this from becoming "delete
+    everything on any failure": a file with exact pixel values and a
+    structural shortfall is disappointing, and a file with altered
+    values that advertises a bound it broke is misleading. Only the
+    second needs moving. Getting that backwards would mean discarding
+    recoverable outputs over a block-size mismatch.
+
+## Section 11: callbacks and the values they are passed
+
+- When a function documents that a callback parameter can be `None`, does
+  every implementation of that callback actually handle `None`? Found
+  2026-11-13: `convert()`'s docstring states plainly that `log_cb` is
+  called as `log_cb("verify", None)`, and the QGIS wrapper's
+  implementation handles it correctly - but `core/converter.py`'s own CLI
+  passed a one-line lambda that formatted the value with `":.1f"`
+  unconditionally, so every successful CLI run without `--quiet` ended in
+  `TypeError: unsupported format string passed to NoneType.__format__`
+  *after* writing and verifying a correct output file. The contract was
+  documented, the caller honoured it, and the only implementation that
+  did not was the one in the same file. A lambda is the warning sign
+  here: it has nowhere to put a branch, so a contract with two shapes
+  cannot be expressed in one.
+- For each list or dict a core module populates for the caller's benefit,
+  name the call site that reads it. Found 2026-11-13:
+  `DetectionResult.warnings` had exactly one producer (`detector.py`'s
+  band-dtype mismatch loop) and no consumer on any QGIS route - the
+  wrapper looped over `ConversionResult.warnings`, a different object on
+  a different class, which made the gap invisible to a reader checking
+  that warnings were "handled". Every warning that list ever carried was
+  silently dropped for GUI, batch, model and `processing.run()` users
+  alike. Two near-identical attribute names on two result classes, one
+  surfaced and one not, is the shape to look for.
 
 ---
 

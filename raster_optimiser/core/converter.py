@@ -37,6 +37,7 @@ import configparser
 import dataclasses
 import datetime
 import json
+import math
 import os
 import shutil
 import sys
@@ -58,12 +59,14 @@ from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _va
 try:
     from .detector import (
         detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
-        describe_detection, content_label, is_jpeg_compression,
+        describe_detection, content_label, is_jpeg_compression, FLOAT_DTYPES,
+        Float32Storage, _is_metre_unit, _format_quantity_phrase,
     )
 except ImportError:  # running as a plain script, not as part of the core package
     from detector import (
         detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
-        describe_detection, content_label, is_jpeg_compression,
+        describe_detection, content_label, is_jpeg_compression, FLOAT_DTYPES,
+        Float32Storage, _is_metre_unit, _format_quantity_phrase,
     )
 
 gdal.UseExceptions()
@@ -84,6 +87,17 @@ class VerificationResult:
     overviews_ok: bool = False
     compression_ok: bool = False
     cog_valid: bool = False
+    # The pixel-level check that only runs when the output's data type
+    # differs from the source's - see _verify_type_change(). type_change_ok
+    # stays True when no type change happened, so it can be ANDed into
+    # passed unconditionally without a second "was it checked" branch at
+    # the point of use.
+    type_change_checked: bool = False
+    type_change_ok: bool = True
+    measured_max_difference: Optional[float] = None
+    declared_bound: Optional[float] = None
+    valid_pixel_count: Optional[int] = None
+    mask_mismatches: Optional[int] = None
     passed: bool = False
     issues: list = field(default_factory=list)
 
@@ -106,6 +120,12 @@ class AppliedSettings:
     block_size: tuple = (512, 512)
     alpha_reattached: bool = False  # True only when the lossy profile dropped and remasked a real alpha band
     resampling: str = "AVERAGE"  # overview resampling method - a real decision, not recoverable from the file afterwards, unlike whether overviews exist at all
+    # True only when the caller asked for Float64 elevation to be stored
+    # as Float32 AND that was applied. The output's own data type records
+    # the same fact, but not that it was ASKED for rather than being the
+    # source's type - which is the part a later reader needs, since every
+    # other output this tool writes keeps its source's type.
+    stored_as_float32: bool = False
 
 
 @dataclass
@@ -128,6 +148,14 @@ class DecisionSummary:
     nodata_message: Optional[str] = None  # same object as ConversionResult.nodata_message, not duplicated text
     nodata_consequential: bool = False  # derived from nodata_message_severity != "routine"
     applied: Optional[AppliedSettings] = None  # None until creation_options are resolved; stays None for already_optimised (nothing written)
+    # The Float64-storage sentence for this run, whatever the outcome:
+    # the advisory when nothing was asked, the ignored-request
+    # explanation when the file was out of scope, the kept-Float64
+    # reason when a gate refused, or the full applied record with
+    # bound, measured maximum and volume. One message per run, produced
+    # once - same contract as nodata_message above.
+    float32_storage_message: Optional[str] = None
+    float32_storage_consequential: bool = False
 
 
 @dataclass
@@ -156,6 +184,10 @@ class ConversionResult:
     nodata_cleared: bool = False  # what actually happened
     nodata_message: Optional[str] = None  # human explanation of what happened and why
     nodata_message_severity: str = "routine"  # "routine" | "emphasis" | "warning" - see _resolve_nodata_handling
+    store_float32_requested: bool = False  # echoes the request
+    stored_as_float32: bool = False  # what actually happened
+    float32_storage_message: Optional[str] = None
+    float32_storage_severity: str = "routine"  # same three levels as nodata_message_severity
     warnings: list = field(default_factory=list)
     decisions: Optional[DecisionSummary] = None  # see DecisionSummary docstring - read by the end-of-run summary and output-file metadata
 
@@ -164,12 +196,19 @@ def _settings_key(detection: "DetectionResult", profile: str) -> str:
     if profile == "lossy":
         return "lossy"
     # Predictor by dtype, not by content type: checking dtype directly
-    # (rather than the FLOAT32_CONTINUOUS sentinel, which only ever
+    # (rather than the FLOAT_CONTINUOUS sentinel, which only ever
     # applied to single-band elevation) is what makes this correct for
-    # the CONTINUOUS bucket too - a multi-band Float32 file needs
+    # the CONTINUOUS bucket too - a multi-band float file needs
     # PREDICTOR=3 exactly the same way single-band elevation does, and a
     # content-type check alone would miss that.
-    return "lossless_float" if detection.dtype == "Float32" else "lossless_integer"
+    #
+    # FLOAT_DTYPES rather than a literal "Float32": Float64 takes the
+    # same lossless_float settings, PREDICTOR=3 included (see that set's
+    # own comment in detector.py). This membership test is the one line
+    # that decides it - a `== "Float32"` here would have quietly handed
+    # every Float64 file the integer predictor while detection reported
+    # it as float elevation.
+    return "lossless_float" if detection.dtype in FLOAT_DTYPES else "lossless_integer"
 
 
 # NoData mode identity strings - self-describing everywhere, same reason
@@ -289,7 +328,7 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     if nodata_risk is None or not nodata_risk.applies:
         # No NoData=0 condition on this file at all (elevation always
         # lands here, since detect_metadata_only never even creates a
-        # NoDataRisk for FLOAT32_CONTINUOUS - and plenty of RGB files
+        # NoDataRisk for FLOAT_CONTINUOUS - and plenty of RGB files
         # have no NoData=0 either). Neither case blocks execution any
         # more (Bucket A of the purpose-question rework, Phase 2) - this
         # is the ONLY place either message is produced now, run on every
@@ -298,7 +337,7 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
         # Automatic and Keep both stay quiet, since there's nothing to
         # report either way.
         if mode == NODATA_MODE_REVEAL:
-            if detection.content_type == "FLOAT32_CONTINUOUS":
+            if detection.content_type == "FLOAT_CONTINUOUS":
                 return False, _NODATA_REVEAL_NO_EFFECT_ELEVATION_MESSAGE, "warning"
             return False, _NODATA_REVEAL_NO_EFFECT_GENERIC_MESSAGE, "routine"
         return False, None, "routine"
@@ -352,6 +391,189 @@ def _resolve_nodata_handling(detection: "DetectionResult", mode: str):
     if nodata_risk.assessment == "insufficient_sample":
         return False, _AUTO_KEPT_INSUFFICIENT_SAMPLE_MESSAGE, "routine"
     return False, _AUTO_KEPT_COLLAR_ONLY_MESSAGE, "routine"
+
+
+def _float32_volume_phrase(storage: "Float32Storage", valid_pixels: int) -> Optional[str]:
+    """The worst-case volume the rounding could account for across the
+    whole raster: valid pixels x pixel area x the height bound. None
+    when it cannot honestly be stated.
+
+    Why a volume at all: a sub-millimetre height bound sounds
+    negligible, and on one pixel it is, but someone taking a stockpile
+    or earthworks quantity off a DSM is integrating it over millions of
+    pixels, and the only figure that answers "does this matter for my
+    volume" is the volume. Measured: 1.9 m3 across the PDAL test DSM
+    (7,841,625 valid pixels at 0.25 m2), 0.37 m3 across the 16000x16000
+    Hamilton DSM (153,589,056 valid pixels at 0.000625 m2). Both are
+    the worst case, not an estimate of the error.
+
+    Stated in cubic metres at two significant figures. An earlier
+    version converted to cubic millimetres, which rendered the first
+    real figure as "1869589090 cubic millimetres" - ten digits of
+    precision a worst-case bound has not earned, in a unit nobody reads
+    a cubic-metre quantity in.
+
+    Two conditions, not the one the specification named. Horizontal
+    units must be metres, so the pixel area really is square metres -
+    that is the stated condition. The vertical unit must ALSO be metres
+    or undeclared, which is an addition: the product of square metres
+    and a height in feet is arithmetically fine and physically
+    meaningless, and "m2.ft" in a log line is worse than no line. A
+    file in feet gets its bound and measured maximum in feet and no
+    volume, which is the honest subset of what can be said about it.
+    """
+    if not storage.horizontal_is_metres:
+        return None
+    if not (_is_metre_unit(storage.vertical_unit) or storage.vertical_unit is None):
+        return None
+    if not storage.pixel_area or storage.bound_native is None:
+        return None
+    volume_m3 = valid_pixels * storage.pixel_area * storage.bound_native
+    return (
+        f"Across all {valid_pixels:,} valid pixels, at "
+        f"{storage.pixel_area:g} m2 each, that bound accounts for at most "
+        f"{_format_quantity_phrase(volume_m3, 'm3')} of volume in total."
+    )
+
+
+def float32_storage_would_apply(detection: "DetectionResult", requested: bool) -> bool:
+    """True when a Float64-as-Float32 request would actually be acted on
+    for this file: asked for, in scope, and past both gates.
+
+    Public and the single source of this rule. Three readers need it and
+    they are in two modules: _resolve_float32_storage() below, which
+    turns it into a decision and a message; convert(), which gets it
+    from that resolution; and the QGIS wrapper's already-optimised
+    fallback, which needs to know whether a requested type change makes
+    a file worth reprocessing. It was briefly written out twice, which
+    is how the already-optimised rule itself ended up stated five
+    different ways across three sessions - see
+    docs/code_review_checklist.md, Section 1's enumerate-first entry.
+
+    Deliberately NOT what checkParameterValues() uses: that function
+    only has detect_metadata_only(), which reads no pixels and so has no
+    float32_storage assessment to consult at all. Its cheaper
+    approximation is documented at already_optimised_at_target().
+    """
+    storage = detection.float32_storage
+    return bool(requested and storage is not None and storage.possible)
+
+
+def _resolve_float32_storage(detection: "DetectionResult", requested: bool):
+    """Decide whether to write Float32 instead of Float64, and what to
+    tell the caller. Returns (apply: bool, message: Optional[str],
+    severity: str).
+
+    Mirrors _resolve_nodata_handling above deliberately: detection
+    assessed what is possible (detector.py's _assess_float32_storage),
+    this is the one place the caller's request meets that assessment,
+    and it runs on every entry route because every route goes through
+    convert().
+
+    message is None in exactly one case - the request was applied -
+    because the full sentence then needs the measured maximum, which
+    does not exist until the output has been written and compared. The
+    caller builds it after verification; everything else is final here.
+
+    Severity follows what the user has to do about it:
+      - nothing asked: the advisory, routine, a plain log line.
+      - asked but out of scope: routine. The run is correct and
+        complete, nothing was overridden, and the file simply was not
+        the kind the option covers. The specification calls for one INFO
+        line, which this is.
+      - asked but a gate refused: warning. The user asked for a smaller
+        file and did not get one, and the reason is a property of their
+        data they may want to act on.
+    """
+    storage = detection.float32_storage
+
+    if not requested:
+        # The advisory already covers this case in all its shapes,
+        # including the one where the file is out of scope - produced
+        # once in detector.py and not reworded here.
+        return False, detection.float64_advisory, "routine"
+
+    if storage is None:
+        # Not a Float64 file at all, so detection never assessed it.
+        return False, (
+            "'Store Float64 elevation as Float32' was ticked and has been "
+            f"ignored: this file is {detection.dtype}, not Float64, so there "
+            "is no 64-bit precision here to trade away. It is written at its "
+            "own data type, unchanged, exactly as it would have been with "
+            "the box clear."
+        ), "routine"
+
+    if not storage.in_scope:
+        return False, (
+            "'Store Float64 elevation as Float32' was ticked and has been "
+            f"ignored: {storage.out_of_scope_reason}. The file is written at "
+            "Float64, unchanged, exactly as it would have been with the box "
+            "clear."
+        ), "routine"
+
+    if not float32_storage_would_apply(detection, requested):
+        return False, (
+            "'Store Float64 elevation as Float32' was ticked, and this file "
+            f"is being kept at Float64 instead: {storage.blocked_reason}. "
+            "Every value is preserved exactly. Nothing else about the run "
+            "changes."
+        ), "warning"
+
+    return True, None, "emphasis"
+
+
+def _float32_applied_message(
+    storage: "Float32Storage", measured_max: Optional[float],
+    valid_pixels: int,
+) -> str:
+    """The sentence recorded in the log and in GEOKLEIN_4_DECISION once
+    a type change has actually been made and checked.
+
+    States the guaranteed bound and the measured maximum as two separate
+    numbers on purpose. The bound is what Float32's arithmetic promises
+    for this file's value range before anything is written; the measured
+    maximum is what this specific conversion actually did, found by
+    comparing every valid pixel. Quoting only the bound would overstate
+    the change on most files, and quoting only the measurement would
+    leave a later reader unable to tell whether a bigger change was ever
+    possible.
+
+    The measured figure carries its share of the bound as a percentage,
+    which is not decoration: at two significant figures the two numbers
+    frequently render identically - 9.4604e-07 and 9.5367e-07 both read
+    as "0.00095 mm" on the first real file this ran on - and two
+    different values printed as the same string reads as a fault rather
+    than as the tight bound it actually is. The percentage is what
+    distinguishes "the measurement reached the bound" from "the bound
+    was nowhere near".
+    """
+    measured_phrase = "not measured"
+    if measured_max is not None:
+        if _is_metre_unit(storage.vertical_unit) or storage.vertical_unit is None:
+            measured_phrase = _format_quantity_phrase(measured_max * 1000.0, "mm")
+        else:
+            measured_phrase = _format_quantity_phrase(
+                measured_max, storage.vertical_unit)
+        if storage.bound_native:
+            share = measured_max / storage.bound_native * 100.0
+            measured_phrase += f" ({share:.0f}% of that bound)"
+
+    parts = [
+        "Stored as Float32 at the user's request. The source is Float64 "
+        "elevation; the output holds the same heights at Float32, which is "
+        "about a third of the size.",
+        f"Guaranteed worst-case rounding for this file's value range: "
+        f"{storage.bound_phrase}.",
+        f"Largest change actually measured, across every valid pixel: "
+        f"{measured_phrase}.",
+    ]
+    volume = _float32_volume_phrase(storage, valid_pixels)
+    if volume:
+        parts.append(volume)
+    parts.append(
+        "No pixel changed between data and NoData in either direction."
+    )
+    return " ".join(parts)
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -424,6 +646,61 @@ def _safe_remove(path: Optional[str], warnings: list) -> None:
             f"{path}: {exc}. Delete it manually before re-running - it is "
             "NOT a valid result."
         )
+
+
+FAILED_OUTPUT_SUFFIX = ".failed"
+
+
+def _quarantine_failed_output(output_path: str, warnings: list) -> Optional[str]:
+    """Rename an output whose data-type change failed verification, so it
+    cannot be mistaken for a valid result. Returns the new path, or None
+    if the rename could not be done.
+
+    Renamed rather than deleted, which is this module's existing stance
+    on a file left behind by a failure (see the Translate except block:
+    "silently losing data is worse than leaving an orphan they've been
+    told about"). The user may want to look at it, and this module
+    deleting a multi-gigabyte file on its own judgement is the more
+    expensive mistake.
+
+    But renamed rather than LEFT, which is the part that is new, and the
+    reason is specific to this one failure. Every other verification
+    failure - wrong block size, wrong compression, not a valid COG -
+    leaves a file whose pixel values are still exactly the source's and
+    whose metadata claims nothing that has been disproved; it is a
+    structurally disappointing file, not a misleading one. A failed type
+    change is different in kind: the file holds deliberately altered
+    values, and GEOKLEIN_4_DECISION inside it states the worst-case
+    height change as a measured fact, which is precisely the claim
+    verification has just refuted. Left in place with a .tif name, that
+    file reads as an authoritative record of a bound it does not honour,
+    and nothing a later reader opens it with would say otherwise. The
+    suffix is the only thing that travels with the file itself.
+
+    An existing .failed file from an earlier attempt is removed first:
+    it was already established as invalid, so keeping it in preference
+    to the newer one serves nobody, and refusing to overwrite would
+    leave the newer invalid file sitting at the valid-looking path -
+    exactly what this function exists to prevent.
+    """
+    failed_path = output_path + FAILED_OUTPUT_SUFFIX
+    try:
+        if os.path.exists(failed_path):
+            os.remove(failed_path)
+        os.replace(output_path, failed_path)
+        return failed_path
+    except OSError as exc:
+        # Could not rename - a lock, a permissions problem, a full disk.
+        # The file stays where it is and the caller says so plainly
+        # rather than reporting a move that did not happen.
+        warnings.append(
+            f"Verification failed for this output AND it could not be "
+            f"renamed out of the way: {exc}. The file at {output_path} is "
+            "NOT a valid result - its embedded metadata states a "
+            "worst-case height change that the check against the source "
+            "disproved. Delete it manually before using that path again."
+        )
+        return None
 
 
 def _same_file(a: str, b: str) -> bool:
@@ -531,12 +808,30 @@ def _estimate_output_ceiling_bytes(
     has already measured the opposite failure: an already-JPEG-
     degraded source recompressed as lossless ZSTD came out 4.4x the
     SOURCE FILE's size (see _SIZE_INCREASE_EXPLANATION below). So
-    lossless uses a real, provable ceiling instead of a guess: no
-    codec this tool uses can write more base-image pixel data than the
-    raster's own uncompressed size, raster_size x band count x
-    bytes-per-sample - that 4.4x figure stays comfortably under this
-    ceiling, since it's 4.4x an already-heavily-compressed source, not
-    4.4x the raw pixel data.
+    lossless uses the raster's own uncompressed size instead of a
+    guess: raster_size x band count x bytes-per-sample. That 4.4x
+    figure stays comfortably under it, since it's 4.4x an
+    already-heavily-compressed source, not 4.4x the raw pixel data.
+
+    Measured 2026-11-13, and deliberately left as it is: this is NOT a
+    hard ceiling, because it accounts only for the base image while the
+    output also carries pyramids, which this codebase elsewhere puts at
+    roughly a third on top. On deliberately incompressible data - 2048x
+    2048 of uniform random doubles, where neither ZSTD nor the predictor
+    can find anything - the output came to 116.5% of this figure at
+    Float64 and 107.1% at Float32. PREDICTOR=3 is what makes Float64 the
+    worse of the two: on high-entropy data the byte shuffle can expand
+    the base image before compression rather than shrink it (see
+    detector.py's FLOAT_DTYPES comment).
+
+    _check_free_space()'s own 1.3x factor still covers both cases - 1.3x
+    this figure left 11.6% headroom over the real Float64 output - so
+    the guard does its job, and no real elevation raster comes near it:
+    the 16000x16000 Hamilton Float64 DSM came out at 53.4% of the
+    figure. Raising it would mean refusing runs on free-space grounds
+    that would actually have succeeded, the more expensive error of the
+    two. Recorded here rather than fixed, so the margin is known to be
+    partly spoken for rather than assumed intact.
     """
     if profile == "lossy":
         if is_jpeg_compression(detection.compression):
@@ -682,6 +977,13 @@ def _format_applied_settings(applied: "AppliedSettings") -> str:
              f"{_compression_display_label(applied.compression)} {applied.compression_detail}"]
     if applied.predictor:
         parts.append(f"predictor {applied.predictor}")
+    if applied.stored_as_float32:
+        # Named in the applied list as well as spelled out in
+        # GEOKLEIN_4_DECISION, because this is the one setting that
+        # changed the pixel values: a reader scanning the applied line
+        # for what was done to the file must not have to open the
+        # decision line to find that out.
+        parts.append("stored as Float32 at the user's request")
     if applied.alpha_reattached:
         parts.append("alpha reattached as mask")
     parts.append(f"tiled {applied.block_size[0]}x{applied.block_size[1]}")
@@ -809,7 +1111,18 @@ def _build_decision_metadata(
         ),
         "GEOKLEIN_2_DETECTED": describe_detection(detection),
         "GEOKLEIN_3_REQUESTED": requested_label,
-        "GEOKLEIN_4_DECISION": decisions.profile_reason,
+        # The profile reason, plus the Float64-storage sentence when
+        # this run actually changed the type. Only the applied case is
+        # appended: the advisory and the ignored/kept-Float64
+        # explanations are log-only, because they describe what did NOT
+        # happen to the file and would read as a claim about the file
+        # they are embedded in.
+        "GEOKLEIN_4_DECISION": (
+            f"{decisions.profile_reason} {decisions.float32_storage_message}"
+            if (decisions.applied is not None and decisions.applied.stored_as_float32
+                and decisions.float32_storage_message)
+            else decisions.profile_reason
+        ),
         "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
         "GEOKLEIN_6_HIDDEN_PIXELS": decisions.nodata_message or "",
         "GEOKLEIN_7_REPRODUCE": _format_reproduce_commands(full_args),
@@ -990,7 +1303,10 @@ def _is_tiled(block_size: tuple, raster_size: tuple) -> bool:
     return block_size[0] < raster_size[0] and block_size[1] < raster_size[1]
 
 
-def already_optimised_at_target(detection: "DetectionResult", resolved_profile: str) -> bool:
+def already_optimised_at_target(
+    detection: "DetectionResult", resolved_profile: str,
+    type_change_pending: bool = False,
+) -> bool:
     """True only when there's genuinely nothing left to gain: already a
     valid Cloud Optimized GeoTIFF, tiled, with overviews, AND already
     compressed with the target codec for the profile that would be
@@ -1016,12 +1332,36 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
     convert()'s own _verify() needs once a file is actually about to
     be skipped.
 
+    type_change_pending short-circuits the whole thing: a requested
+    data-type change is work to do, so a Float64 COG that is already
+    tiled, pyramided and at the target compression is NOT already
+    optimised when the caller has asked for it as Float32. Without
+    this, the one file most worth converting - this tool's own earlier
+    Float64 output - would be the one it refused to touch.
+
+    The two call sites compute that flag from different amounts of
+    information, deliberately. convert() has the full DetectionResult
+    including float32_storage, so it passes the precise answer (the
+    request AND every gate passing). The QGIS wrapper's
+    checkParameterValues() only has detect_metadata_only(), which reads
+    no pixels and so cannot know the bound, so it passes the cheap
+    answer: ticked, single-band, Float64. The two can disagree on one
+    file shape - box ticked on a Float64 COG whose bound later fails
+    the 1 mm gate - and the consequence is that the dialog lets the run
+    start and convert() then rewrites an identical file while logging
+    why the type was kept. That is a wasted run with a correct
+    explanation, which is the better failure than the alternative:
+    refusing to pixel-read in checkParameterValues() is what keeps the
+    dialog instant on a multi-gigapixel file, and that matters more.
+
     Public (no leading underscore) and imported by the QGIS wrapper's
     checkParameterValues() pre-flight block - this used to be a second,
     hand-mirrored copy of the rule living in algorithms/optimise_raster.py,
     with its own comment saying so. One function now, so the pre-flight
     block and convert()'s own decision below cannot drift apart.
     """
+    if type_change_pending:
+        return False
     if detection.layout != "COG":
         return False
     if not (
@@ -1041,6 +1381,147 @@ def already_optimised_at_target(detection: "DetectionResult", resolved_profile: 
     # Matches _verify()'s compression_ok check below, the one comparison
     # in this file that already guarded against this.
     return target_compression.upper() in (detection.compression or "").upper()
+
+
+def _valid_mask(arr, nodata: Optional[float]):
+    """Boolean mask of the pixels that hold real data.
+
+    NaN NoData needs isnan, not equality: NaN != NaN is True, so a plain
+    `arr != nodata` marks every NaN pixel as VALID - the exact inversion
+    of what it means. This project's own testdata has NaN-NoData
+    elevation files (the eddleston set), so this is a real shape, not a
+    defensive one.
+    """
+    import numpy as np
+
+    if nodata is None:
+        return np.ones(arr.shape, dtype=bool)
+    if math.isnan(nodata):
+        return ~np.isnan(arr)
+    return arr != nodata
+
+
+def _measure_float32_cast(source_path: str) -> dict:
+    """What a Float64 -> Float32 cast will do to THIS file, measured on
+    the source before anything is written: the largest absolute change
+    any valid pixel will see, and how many valid pixels there are.
+
+    Possible before the fact because -ot Float32 is a deterministic
+    round-to-nearest of each value independently - there is no
+    resampling, no neighbourhood, nothing that depends on the output's
+    layout - so casting each value here produces exactly the number the
+    output will hold. The post-write verification then confirms that
+    against the real file rather than trusting this.
+
+    This exists because of an ordering constraint, not for its own sake:
+    GEOKLEIN_4_DECISION has to record the measured maximum, and the
+    metadata is passed as -mo arguments INTO the Translate call that
+    creates the file (see _build_decision_metadata - writing it
+    afterwards with SetMetadataItem moves the main IFD past the pixel
+    data and breaks COG validity, which was confirmed directly). So
+    anything the metadata states has to be known before Translate runs.
+
+    Only called on the ticked path, where the user has already accepted
+    a longer run for a smaller file: one extra full read of the source,
+    measured at about 7s on a 256-megapixel Float64 raster. The
+    unticked path reads nothing extra.
+    """
+    import numpy as np
+
+    ds = gdal.Open(source_path, gdal.GA_ReadOnly)
+    try:
+        band = ds.GetRasterBand(1)
+        nodata = band.GetNoDataValue()
+        xsize, ysize = ds.RasterXSize, ds.RasterYSize
+        max_delta = 0.0
+        valid_pixels = 0
+        for y0 in range(0, ysize, 512):
+            rows = min(512, ysize - y0)
+            a = band.ReadAsArray(0, y0, xsize, rows).astype(np.float64)
+            valid = _valid_mask(a, nodata)
+            if not valid.any():
+                continue
+            values = a[valid]
+            valid_pixels += int(values.size)
+            with np.errstate(over="ignore"):
+                cast = values.astype(np.float32).astype(np.float64)
+            block_max = float(np.max(np.abs(values - cast)))
+            if block_max > max_delta:
+                max_delta = block_max
+        return {"max_delta": max_delta, "valid_pixels": valid_pixels}
+    finally:
+        ds = None
+
+
+def _verify_type_change(
+    source_path: str, output_path: str, bound_native: float,
+) -> dict:
+    """Compare every valid pixel of a type-changed output against its
+    source, in row blocks.
+
+    Always run when the output's data type differs from the source's.
+    This is the only check in this module that reads pixel data rather
+    than structure, and it exists because a type change is the only
+    thing this tool does that alters values on purpose: the promise made
+    to the user is a numeric bound, so the bound gets verified rather
+    than asserted.
+
+    Row blocks, not two whole arrays: at 16000x16000 Float64 the source
+    alone is 2.048 GB and holding source, output and a comparison
+    temporary at once is over 6 GB for a question that answers itself a
+    stripe at a time. Measured at 6.5s for 256 million pixels.
+
+    Returns a plain dict rather than a dataclass: it is consumed once,
+    immediately, by _verify()'s caller, and every value in it lands on
+    VerificationResult's own fields.
+
+    The difference is measured only where BOTH source and output are
+    valid. A pixel valid in one and NoData in the other is a mask
+    mismatch, counted separately and fatal on its own - subtracting a
+    NoData sentinel from a real height there would produce a
+    meaningless "difference" of thousands of metres and bury the real
+    finding.
+    """
+    import numpy as np
+
+    src_ds = gdal.Open(source_path, gdal.GA_ReadOnly)
+    out_ds = gdal.Open(output_path, gdal.GA_ReadOnly)
+    try:
+        src_band = src_ds.GetRasterBand(1)
+        out_band = out_ds.GetRasterBand(1)
+        src_nodata = src_band.GetNoDataValue()
+        out_nodata = out_band.GetNoDataValue()
+        xsize, ysize = src_ds.RasterXSize, src_ds.RasterYSize
+
+        measured_max = 0.0
+        valid_pixels = 0
+        mask_mismatches = 0
+        stripe = 512
+
+        for y0 in range(0, ysize, stripe):
+            rows = min(stripe, ysize - y0)
+            a = src_band.ReadAsArray(0, y0, xsize, rows).astype(np.float64)
+            b = out_band.ReadAsArray(0, y0, xsize, rows).astype(np.float64)
+            a_valid = _valid_mask(a, src_nodata)
+            b_valid = _valid_mask(b, out_nodata)
+            mask_mismatches += int(np.count_nonzero(a_valid != b_valid))
+            both = a_valid & b_valid
+            valid_pixels += int(np.count_nonzero(a_valid))
+            if both.any():
+                diff = np.abs(a[both] - b[both])
+                block_max = float(np.max(diff))
+                if block_max > measured_max:
+                    measured_max = block_max
+        return {
+            "measured_max": measured_max,
+            "valid_pixels": valid_pixels,
+            "mask_mismatches": mask_mismatches,
+            "bound": bound_native,
+            "within_bound": measured_max <= bound_native,
+        }
+    finally:
+        src_ds = None
+        out_ds = None
 
 
 def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> VerificationResult:
@@ -1102,8 +1583,71 @@ def _verify(output_path: str, expected_compress: str, expected_block: tuple) -> 
     # invalidating) deliberately don't affect vr.passed - only actual
     # errors do, matching how block/overview/compression checks above
     # only ever report hard mismatches, not advisories.
-    vr.passed = vr.block_size_ok and vr.overviews_ok and vr.compression_ok and vr.cog_valid
+    vr.passed = (
+        vr.block_size_ok and vr.overviews_ok and vr.compression_ok
+        and vr.cog_valid and vr.type_change_ok
+    )
     return vr
+
+
+def _apply_type_change_verification(
+    vr: "VerificationResult", source_path: str, output_path: str,
+    bound_native: float, predicted: Optional[dict] = None,
+) -> None:
+    """Run _verify_type_change() and fold its result into an existing
+    VerificationResult, including re-deriving passed.
+
+    Separate from _verify() rather than another parameter on it: _verify
+    is about the output's own structure and needs nothing but the output
+    path, while this needs the source too and only applies on the one
+    run shape that changed a data type. Keeping them apart means
+    _verify's contract does not grow a pair of arguments that are None
+    on almost every call.
+    """
+    stats = _verify_type_change(source_path, output_path, bound_native)
+    vr.type_change_checked = True
+    vr.measured_max_difference = stats["measured_max"]
+    vr.declared_bound = stats["bound"]
+    vr.valid_pixel_count = stats["valid_pixels"]
+    vr.mask_mismatches = stats["mask_mismatches"]
+    vr.type_change_ok = stats["within_bound"] and stats["mask_mismatches"] == 0
+    # The metadata embedded in the output states the figure predicted
+    # from the source before Translate ran (see _measure_float32_cast).
+    # If the file disagrees with that prediction, the metadata is
+    # describing a file that does not exist and the run must not report
+    # success - whatever Translate did to those values, it was not the
+    # plain round-to-nearest cast the prediction assumed.
+    if predicted is not None:
+        if stats["measured_max"] != predicted["max_delta"]:
+            vr.type_change_ok = False
+            vr.issues.append(
+                f"stored as Float32, and the measured height change "
+                f"({stats['measured_max']!r}) does not match the figure "
+                f"predicted from the source and recorded in this file's "
+                f"metadata ({predicted['max_delta']!r})"
+            )
+        if stats["valid_pixels"] != predicted["valid_pixels"]:
+            vr.type_change_ok = False
+            vr.issues.append(
+                f"stored as Float32, and the output has "
+                f"{stats['valid_pixels']:,} valid pixels where the source "
+                f"had {predicted['valid_pixels']:,}"
+            )
+    if not stats["within_bound"]:
+        vr.issues.append(
+            f"stored as Float32, but the largest measured height change "
+            f"({stats['measured_max']!r}) exceeds the guaranteed bound "
+            f"({stats['bound']!r})"
+        )
+    if stats["mask_mismatches"]:
+        vr.issues.append(
+            f"stored as Float32, and {stats['mask_mismatches']:,} pixels "
+            "changed between data and NoData in one direction or the other"
+        )
+    vr.passed = (
+        vr.block_size_ok and vr.overviews_ok and vr.compression_ok
+        and vr.cog_valid and vr.type_change_ok
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1117,6 +1661,7 @@ def convert(
     output_path: Optional[str] = None,
     force: bool = False,
     nodata_mode: str = NODATA_MODE_AUTO,
+    store_float32: bool = False,
     force_reprocess: bool = False,
     translate_progress_cb=None,
     translate_progress_cb_data=None,
@@ -1223,6 +1768,23 @@ def convert(
         profile_reason=profile_reason, profile_consequential=profile_consequential,
     )
 
+    # ---- resolve the Float64-as-Float32 request ----
+    # Resolved BEFORE the already-optimised comparison below, because a
+    # requested type change is work to do and has to be able to override
+    # "nothing left to gain" - see already_optimised_at_target()'s
+    # type_change_pending parameter. The message for the applied case is
+    # filled in after verification, which is the only point the measured
+    # maximum exists; every other case is final here.
+    store_float32_apply, float32_message, float32_severity = (
+        _resolve_float32_storage(detection, store_float32)
+    )
+    result.store_float32_requested = store_float32
+    result.stored_as_float32 = store_float32_apply
+    result.float32_storage_message = float32_message
+    result.float32_storage_severity = float32_severity
+    result.decisions.float32_storage_message = float32_message
+    result.decisions.float32_storage_consequential = float32_severity != "routine"
+
     # ---- compare current state to target, decide whether to do anything ----
     # Settings are resolved here (rather than just below, where they used
     # to be) because deciding whether there's anything left to gain needs
@@ -1255,7 +1817,9 @@ def convert(
     # recombined here).
     compression_at_target = target_compression.upper() in (detection.compression or "").upper()
     is_cog = detection.layout == "COG"
-    fully_optimised = already_optimised_at_target(detection, profile)
+    fully_optimised = already_optimised_at_target(
+        detection, profile, type_change_pending=store_float32_apply,
+    )
 
     if already_optimised and fully_optimised:
         if not force_reprocess:
@@ -1406,7 +1970,14 @@ def convert(
     # ("gdal_translate -of COG -co ..."). OVERVIEW_COUNT comes from
     # overview_levels' length, not from leaving COG to pick its own
     # default - see _default_overview_levels()'s docstring.
+    # -ot Float32 goes into co_args, which means it lands in full_args
+    # and therefore in GEOKLEIN_7_REPRODUCE as well as in the real
+    # Translate call. That is the point: the recorded command has to
+    # reproduce the file, and a command missing -ot would rebuild it at
+    # Float64 and silently not match.
     co_args = ["-of", "COG"]
+    if store_float32_apply:
+        co_args += ["-ot", "Float32"]
     for k, v in creation_options.items():
         co_args += ["-co", f"{k}={v}"]
     for k, v in overview_config.items():
@@ -1424,6 +1995,22 @@ def convert(
     # here.
     result.decisions.applied = _build_applied_settings(creation_options, overview_config)
     result.decisions.applied.alpha_reattached = bool(profile == "lossy" and detection.has_alpha)
+    result.decisions.applied.stored_as_float32 = store_float32_apply
+
+    # Measured here, before Translate, because the metadata that records
+    # it is passed into Translate - see _measure_float32_cast(). The
+    # verification after the write confirms these same two numbers
+    # against the file that was actually produced.
+    predicted_cast = None
+    if store_float32_apply:
+        predicted_cast = _measure_float32_cast(path)
+        applied_message = _float32_applied_message(
+            detection.float32_storage,
+            predicted_cast["max_delta"],
+            predicted_cast["valid_pixels"],
+        )
+        result.float32_storage_message = applied_message
+        result.decisions.float32_storage_message = applied_message
 
     # ---- resolve NoData handling (profile-independent - see
     # _resolve_nodata_handling and convert()'s own docstring) ----
@@ -1519,6 +2106,17 @@ def convert(
         int(creation_options["BLOCKSIZE"]), int(creation_options["BLOCKSIZE"]),
     )
     verification = _verify(output_path, creation_options["COMPRESS"], expected_block)
+    # Always run when the type changed, before anything reads
+    # verification.passed: the bound this tool promised the user is the
+    # one claim in the whole run that is about pixel VALUES rather than
+    # file structure, so it is measured rather than asserted, and a
+    # breach fails the run like any other verification failure.
+    if store_float32_apply:
+        _apply_type_change_verification(
+            verification, path, output_path,
+            detection.float32_storage.bound_native,
+            predicted_cast,
+        )
     result.verification = verification
 
     result.source_bytes = source_bytes
@@ -1561,14 +2159,43 @@ def convert(
         result.ok = True
         result.action = "converted"
         result.message = f"Converted and verified: {output_path}"
-    else:
-        result.ok = False
-        result.action = "converted_unverified"
-        result.message = (
-            "Converted, but verification found problems: "
-            f"{'; '.join(verification.issues)}. Output at {output_path} may "
-            "not be fully optimised - check manually."
+        return result
+
+    result.ok = False
+    result.action = "converted_unverified"
+
+    if verification.type_change_checked and not verification.type_change_ok:
+        # The dangerous failure, and the only one that gets the file
+        # moved - see _quarantine_failed_output() for why this one and
+        # not the others. The message says what the file is, where it
+        # went, and what to do instead; "may not be fully optimised"
+        # would be a serious understatement of a file whose heights
+        # are outside the bound it advertises.
+        failed_path = _quarantine_failed_output(output_path, result.warnings)
+        location = (
+            f"It has been renamed to {failed_path} so it cannot be "
+            "mistaken for a valid result"
+            if failed_path
+            else f"It is still at {output_path} and could not be renamed "
+                 "out of the way"
         )
+        result.output_path = failed_path or output_path
+        result.message = (
+            "Stored as Float32 at your request, and the check against the "
+            f"source FAILED: {'; '.join(verification.issues)}. "
+            f"{location}. Do not use it: the metadata inside it states a "
+            "worst-case height change which that check disproved, so the "
+            "file misreports its own accuracy. Your source file is "
+            "untouched. Re-run with 'Store Float64 elevation as Float32' "
+            "clear to get an exact Float64 copy."
+        )
+        return result
+
+    result.message = (
+        "Converted, but verification found problems: "
+        f"{'; '.join(verification.issues)}. Output at {output_path} may "
+        "not be fully optimised - check manually."
+    )
     return result
 
 
@@ -1604,6 +2231,8 @@ def _print_report(result: ConversionResult) -> None:
         print(f"  {result.size_note}")
     if result.nodata_message:
         print(f"  {result.nodata_message}")
+    if result.float32_storage_message:
+        print(f"  {result.float32_storage_message}")
     if result.verification and result.verification.ran:
         v = result.verification
         print("\nVerification:")
@@ -1613,9 +2242,36 @@ def _print_report(result: ConversionResult) -> None:
         print(f"  Compression: {v.compression} (expected to contain "
               f"'{v.expected_compression}') {'OK' if v.compression_ok else 'FAILED'}")
         print(f"  Cloud Optimized GeoTIFF: {'OK' if v.cog_valid else 'FAILED'}")
+        if v.type_change_checked:
+            print(f"  Data type change: measured max difference "
+                  f"{v.measured_max_difference!r} against bound "
+                  f"{v.declared_bound!r}, {v.mask_mismatches:,} NoData mask "
+                  f"mismatches across {v.valid_pixel_count:,} valid pixels "
+                  f"{'OK' if v.type_change_ok else 'FAILED'}")
         print(f"  Overall: {'PASSED' if v.passed else 'FAILED'}")
     for w in result.warnings:
         print(f"\nWarning: {w}")
+
+
+def _cli_log(phase: str, elapsed_seconds: Optional[float]) -> None:
+    """log_cb for the CLI. elapsed_seconds is None on the "verify" call
+    and a real duration on the "translate" one - see convert()'s log_cb
+    docstring, which documents exactly that and is the contract this
+    implements.
+
+    The None case is why this is a function and not the one-line lambda
+    it replaced. That lambda formatted elapsed_seconds unconditionally
+    with ":.1f", so every successful CLI run without --quiet ended in
+    "TypeError: unsupported format string passed to NoneType.__format__"
+    AFTER writing a correct output file - the conversion had finished and
+    verified, and the process still exited non-zero on the log line
+    reporting it. The QGIS wrapper's own log_cb never had this because it
+    returns early on "translate" and ignores the value on "verify".
+    """
+    if elapsed_seconds is None:
+        print(f"{phase} starting...")
+        return
+    print(f"{phase} finished in {elapsed_seconds:.1f}s")
 
 
 def main(argv=None) -> int:
@@ -1629,17 +2285,22 @@ def main(argv=None) -> int:
                          help="How to handle NoData=0 on RGB imagery (default: auto)")
     parser.add_argument("--force-reprocess", action="store_true",
                          help="Reprocess even if the source is already tiled with overviews")
+    parser.add_argument("--store-float32", action="store_true",
+                         help="Store single-band Float64 elevation as Float32 "
+                              "(about a third of the size; heights change by a "
+                              "fraction of a millimetre)")
     parser.add_argument("--quiet", action="store_true", help="No terminal progress bar")
     parser.add_argument("--json", action="store_true", help="Print raw JSON instead of a human report")
     args = parser.parse_args(argv)
 
     detection = detect(args.path)
     progress_cb = None if args.quiet else gdal.TermProgress_nocb
-    log_cb = None if args.quiet else (lambda phase, secs: print(f"{phase} finished in {secs:.1f}s"))
+    log_cb = None if args.quiet else _cli_log
     result = convert(
         args.path, detection=detection, chosen_profile=args.profile,
         output_path=args.output, force=args.force, nodata_mode=args.nodata_mode,
         force_reprocess=args.force_reprocess,
+        store_float32=args.store_float32,
         translate_progress_cb=progress_cb,
         log_cb=log_cb,
     )
@@ -1647,6 +2308,14 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(_to_jsonable(result), indent=2))
     else:
+        # detection.warnings, not just result.warnings: these are
+        # findings about the SOURCE (see detector.py's band-dtype
+        # mismatch loop) and live on a different object from
+        # ConversionResult.warnings, which _print_report already shows.
+        # Dropping them here was the same oversight as the QGIS
+        # wrapper's - fixed in the same round.
+        for w in detection.warnings:
+            print(f"Source warning: {w}")
         _print_report(result)
 
     return 0 if result.ok else 1

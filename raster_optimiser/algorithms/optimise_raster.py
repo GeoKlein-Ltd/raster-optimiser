@@ -79,7 +79,7 @@ from qgis.PyQt.QtCore import QCoreApplication
 
 from ..core.converter import (
     convert, output_exists_message, output_same_as_source_message,
-    _same_file, already_optimised_at_target,
+    _same_file, already_optimised_at_target, float32_storage_would_apply,
 )
 from ..core.detector import detect, detect_metadata_only, resolve_profile_reason
 from ..icon_utils import plugin_icon
@@ -133,6 +133,19 @@ NODATA_MODE_LABEL = "Hidden pixels (NoData)"
 _NODATA_MODE_STRINGS = ("auto", "reveal", "keep")  # index -> convert()'s nodata_mode
 
 FORCE_REPROCESS_LABEL = "Reprocess even if already optimised"
+
+# The whole trade-off is in the label, in that order, deliberately: what
+# it does, what it saves, what it costs. A checkbox that changes pixel
+# values cannot be labelled with only its benefit and leave the cost to
+# a tooltip nobody opens - the parenthetical is the informed half of
+# informed consent. "About a third of the size" rather than "smaller"
+# because it is measured (34.3% on a real 16000x16000 LiDAR DSM); "a
+# fraction of a millimetre" rather than a figure because the real figure
+# depends on the file and the log states it per run.
+STORE_FLOAT32_LABEL = (
+    "Store Float64 elevation as Float32 (about a third of the size; "
+    "heights change by a fraction of a millimetre)"
+)
 
 # ConversionResult.action values that mean "this run did not succeed" -
 # see core/converter.py's ConversionResult docstring for the full set.
@@ -188,6 +201,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
     INPUT = "INPUT"
     PURPOSE = "PURPOSE"
     NODATA_MODE = "NODATA_MODE"
+    STORE_FLOAT32 = "STORE_FLOAT32"
     FORCE_REPROCESS = "FORCE_REPROCESS"
     OVERWRITE = "OVERWRITE"
     OUTPUT = "OUTPUT"
@@ -321,6 +335,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "you take pixel values from: height measurements, "
             "vegetation indices, segmentation, classification, change "
             "detection, raster calculations.</p>"
+            "<p>One exception, opt-in only: <b><i>Store Float64 "
+            "elevation as Float32</i></b> under Advanced parameters "
+            "rounds heights by a stated fraction of a millimetre in "
+            "exchange for about two thirds of the file size. With that "
+            "box clear, the default, Analysis preserves every value "
+            "exactly.</p>"
             "<p><b><i>Viewing</i></b> compresses the raster and discards "
             "detail the eye will not notice, which makes the file "
             "considerably smaller. A typical drone orthomosaic comes "
@@ -374,6 +394,19 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "data. Where a raster has holes because the data is "
             "genuinely missing rather than hidden, this plugin cannot "
             "fill them.</p>"
+            "<p><b><i>Store Float64 elevation as Float32</i></b>: off "
+            "by default. Float64 elevation records heights to about "
+            "fifteen decimal places, far finer than any survey "
+            "measures, so most of that is storage spent on precision "
+            "nobody collected. Ticked, a single-band Float64 DSM, DTM "
+            "or CHM is stored as Float32: about a third of the "
+            "finished file size, for a height change the run states "
+            "exactly and then checks pixel by pixel. The file is kept "
+            "at Float64 anyway, with the reason logged, if the "
+            "rounding would exceed a millimetre or if its NoData "
+            "value would not survive the conversion. On anything that "
+            "is not single-band Float64 elevation the box is ignored "
+            "and the run says why.</p>"
             "<p><b><i>Reprocess even if already optimised</i></b>: by default "
             "a file is left alone only when it is already tiled, has "
             "pyramids, is at the target compression, and is already a "
@@ -431,6 +464,19 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "changed the compression, that space can outweigh what the "
             "new compression saves. The file is faster to pan, not "
             "smaller.</p>"
+            "<p><b><i>Why does the log mention Float32 on my Float64 "
+            "file?</i></b> Nothing is wrong, and nothing was changed. A "
+            "Float64 raster is written back out as Float64, with every "
+            "value preserved exactly. The note is there because Float64 "
+            "records heights far more finely than any survey can "
+            "measure them, so re-exporting the source as Float32 "
+            "halves the pixel data, and on the elevation rasters "
+            "measured so far brought the finished file down to about a "
+            "third of its size. The log gives the worst-case rounding "
+            "that would introduce on your file, which for a DSM is "
+            "normally a small fraction of a millimetre. Acting on it is "
+            "optional, and happens in whatever software wrote the file, "
+            "not here.</p>"
 
             "<p><b>Glossary</b></p>"
             "<ul>"
@@ -443,9 +489,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "model has one. Multispectral imagery has more, often "
             "including light the eye cannot see.</li>"
             "<li><b>Bit depth</b>: how much range each pixel value has. "
-            "8-bit holds 0 to 255, which is enough for colour. 16-bit "
-            "and Float32 hold far more, which is what rasters holding "
-            "more complex measurements need.</li>"
+            "8-bit holds 0 to 255, which is enough for colour. 16-bit, "
+            "Float32 and Float64 hold far more, which is what rasters "
+            "holding more complex measurements need. Float64 is finer "
+            "than any survey can measure, so the tool keeps it exactly "
+            "as it found it and notes in the log what Float32 would "
+            "have saved.</li>"
             "<li><b>Cloud Optimized GeoTIFF (COG)</b>: a GeoTIFF that "
             "is tiled, has pyramids, and keeps its index at the front "
             "of the file rather than after the image data. Software can "
@@ -616,8 +665,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # below. It's the only one where changing a parameter in THIS
         # dialog (Reprocess) fixes the exact problem being reported.
         force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
+        # The cheap form of the type-change test, which is all this
+        # function can afford: ticked, single-band, Float64. The precise
+        # answer also needs the 1 mm bound and the NoData round-trip,
+        # both of which need a pixel read that detect_metadata_only()
+        # deliberately does not do - see already_optimised_at_target()'s
+        # docstring for what the two call sites disagreeing on costs,
+        # and why that is the right trade here.
+        store_float32 = self.parameterAsBoolean(parameters, self.STORE_FLOAT32, context)
+        type_change_pending = bool(
+            store_float32 and detection.band_count == 1
+            and detection.dtype == "Float64"
+        )
         if not force_reprocess and already_optimised_at_target(
-            detection, _resolved_profile_for_target(detection, purpose_choice)
+            detection, _resolved_profile_for_target(detection, purpose_choice),
+            type_change_pending=type_change_pending,
         ):
             return False, self._already_optimised_message()
 
@@ -681,6 +743,12 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "it for anything you take numbers from: height "
             "measurements, vegetation indices, segmentation, "
             "classification, change detection."
+            "<br><br>"
+            "One exception, and only if you tick it yourself: 'Store "
+            "Float64 elevation as Float32' under Advanced parameters "
+            "rounds heights by a stated fraction of a millimetre to "
+            "save about two thirds of the file size. Leave it clear and "
+            "'Analysis' preserves every value exactly."
             "<br><br>"
             "'Viewing' discards detail the eye will not notice, which "
             "makes the file much smaller. A typical drone orthomosaic "
@@ -776,6 +844,59 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         ))
         self.addParameter(nodata_param)
 
+        store_float32_param = QgsProcessingParameterBoolean(
+            self.STORE_FLOAT32, self.tr(STORE_FLOAT32_LABEL),
+            defaultValue=False,
+        )
+        store_float32_param.setFlags(
+            store_float32_param.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced
+        )
+        # Off by default, and this is the one parameter in the dialog
+        # where that default is load-bearing rather than conventional:
+        # every other setting either preserves pixel values or is
+        # already asked about explicitly ('Viewing'), while this one
+        # changes heights on a file the tool otherwise guarantees
+        # exactly. An opt-in that nobody ticks costs disk space; an
+        # opt-out that somebody misses costs them their data's
+        # precision without being asked.
+        #
+        # Applies to single-band Float64 elevation only. On anything
+        # else it is ignored with one log line explaining why and the
+        # run continues - see core/converter.py's
+        # _resolve_float32_storage(), the one place that decision is
+        # made, so every entry route (GUI, batch, Model Designer,
+        # processing.run(), the CLI's --store-float32) behaves
+        # identically rather than this dialog enforcing a scope the
+        # others do not.
+        # Paragraph breaks are "<br><br>", not "\n\n" - QGIS renders
+        # this tooltip as rich text in one <p> and collapses newlines,
+        # same as every other setHelp() here.
+        store_float32_param.setHelp(self.tr(
+            "Float64 elevation records heights to about fifteen decimal "
+            "places. No survey measures anything like that finely, so "
+            "most of it is storage spent on precision that was never "
+            "collected."
+            "<br><br>"
+            "'Ticked', a single-band Float64 DSM, DTM or CHM is stored as "
+            "Float32 instead: about a third of the finished file size, for "
+            "a height change the run states exactly and which is normally "
+            "a small fraction of a millimetre. Every pixel of the output "
+            "is compared against the source afterwards, and the run fails "
+            "rather than reporting success if any height moved further "
+            "than the stated bound, or if any pixel changed between data "
+            "and NoData."
+            "<br><br>"
+            "The file is kept at Float64 anyway, with the reason logged, "
+            "if its values are large enough that the rounding would "
+            "exceed a millimetre, or if its NoData value would not "
+            "survive the conversion."
+            "<br><br>"
+            "'Unticked', every value is preserved exactly. If you take "
+            "measurements straight off this raster and have to be able to "
+            "say nothing was altered, leave it unticked."
+        ))
+        self.addParameter(store_float32_param)
+
         force_reprocess_param = QgsProcessingParameterBoolean(
             self.FORCE_REPROCESS, self.tr(FORCE_REPROCESS_LABEL),
             defaultValue=False,
@@ -854,6 +975,9 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         nodata_choice = self.parameterAsEnum(parameters, self.NODATA_MODE, context)
         nodata_mode = _NODATA_MODE_STRINGS[nodata_choice]
         force_reprocess = self.parameterAsBoolean(parameters, self.FORCE_REPROCESS, context)
+        # Read before the already-optimised fallback below, which needs
+        # it to tell a pointless reconversion from a requested one.
+        store_float32 = self.parameterAsBoolean(parameters, self.STORE_FLOAT32, context)
         overwrite = self.parameterAsBoolean(parameters, self.OVERWRITE, context)
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
@@ -912,8 +1036,41 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(self.tr("Cancelled during detection."))
             return {}
 
+        # Pushed BEFORE the refusal check below, deliberately, so a
+        # refused file's warnings are not thrown away with it: the only
+        # thing that writes here is detector.py's band-dtype mismatch
+        # loop, which runs before the dtype gate, and "detection used
+        # band 1's type" is exactly the context someone needs to
+        # understand an UNSUPPORTED_DTYPE refusal on a file whose other
+        # bands are a type this tool does accept.
+        #
+        # Nothing read detection.warnings on any QGIS route before this
+        # (only detector.py's own CLI did), so every warning this list
+        # has ever carried was silently dropped for GUI, batch, model
+        # and processing.run() users alike. pushWarning, not pushInfo:
+        # these are genuine warnings about the source, unlike the
+        # Float64 advisory below, which reports a fact with no decision
+        # attached. Not wrapped in self.tr() for the same reason as
+        # every other core-module string this wrapper pushes verbatim -
+        # core/detector.py imports no QGIS and splices per-band values
+        # in. See docs/code_review_checklist.md, Section 9.
+        for warning in detection.warnings:
+            feedback.pushWarning(warning)
+
         if detection.refused:
             raise QgsProcessingException(detection.refusal_reason)
+
+        # detection.float64_advisory is NOT pushed here any more. It is
+        # one of four possible outcomes of the same question - what is
+        # happening to this file's Float64 precision - and the other
+        # three (request ignored as out of scope, request refused by a
+        # gate, request applied) are only known inside convert(). All
+        # four now arrive as result.float32_storage_message, resolved
+        # once in core/converter.py's _resolve_float32_storage() and
+        # pushed once further down with the severity that case earned.
+        # Pushing the advisory here as well would state that nothing
+        # changed, moments before the log said the type had been
+        # changed on request.
 
         # Defensive fallback for callers that bypass checkParameterValues()
         # entirely (processing.run(), qgis_process, batch, Model Designer
@@ -927,7 +1084,21 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # choice, not worth re-flagging.
         if not force_reprocess:
             resolved_profile = _resolved_profile_for_target(detection, purpose_choice)
-            if already_optimised_at_target(detection, resolved_profile):
+            # type_change_pending here too, not just in
+            # checkParameterValues(): without it this fallback warned
+            # "already optimised, converting again won't help" on a run
+            # that was correctly reprocessing a Float64 COG into Float32
+            # at the user's request, which is the one case where
+            # converting again helps a great deal. This path has the
+            # full DetectionResult, so it can use the precise answer
+            # (every gate passed), unlike checkParameterValues().
+            type_change_pending = float32_storage_would_apply(
+                detection, store_float32,
+            )
+            if already_optimised_at_target(
+                detection, resolved_profile,
+                type_change_pending=type_change_pending,
+            ):
                 feedback.pushWarning(self._already_optimised_message())
 
         # _log_profile_decision() only pushes feedback (pushWarning on a
@@ -1012,6 +1183,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             output_path=output_path, force=overwrite,
             nodata_mode=nodata_mode,
             force_reprocess=force_reprocess,
+            store_float32=store_float32,
             translate_progress_cb=make_progress_cb(10, 80),
             log_cb=log_cb,
         )
@@ -1054,6 +1226,27 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(result.size_summary)
         if result.size_note:
             feedback.pushInfo(result.size_note)
+        if result.float32_storage_message:
+            # Same three-level dispatch as nodata_message below, and for
+            # the same reason: "routine" is the advisory or an ignored
+            # request on a file the option never covered, "warning" is a
+            # request the tool declined, and "emphasis" is a type change
+            # that actually happened - the one outcome where pixel values
+            # moved, which earns the strongest log treatment this tool
+            # has. Not wrapped in self.tr(): built in core/converter.py,
+            # which imports no QGIS, and carries per-file figures
+            # spliced in. See docs/code_review_checklist.md, Section 9.
+            if result.float32_storage_severity == "warning":
+                feedback.pushWarning(result.float32_storage_message)
+            elif result.float32_storage_severity == "emphasis":
+                html = (
+                    '<p style="font-weight:bold; margin:4px 0;">{}</p>'
+                ).format(result.float32_storage_message)
+                text = "*** {} ***".format(result.float32_storage_message)
+                feedback.pushFormattedMessage(html, text)
+            else:
+                feedback.pushInfo(result.float32_storage_message)
+
         if result.nodata_message:
             if result.nodata_message_severity == "warning":
                 # Bucket A of the purpose-question rework (Phase 2):
@@ -1108,7 +1301,7 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # _log_profile_decision(), before Translate's own progress
         # output, so real content genuinely separates it from
         # here.
-        last_pushed_message = result.nodata_message
+        last_pushed_message = result.nodata_message or result.float32_storage_message
         summary_lines = ["Summary"]
         dec = result.decisions
         if dec is not None:
@@ -1119,6 +1312,19 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
                 and dec.nodata_message != last_pushed_message
             ):
                 summary_lines.append(dec.nodata_message)
+            # A type change belongs in the summary for the same reason
+            # the NoData finding does: it is the most consequential
+            # thing a run can do to the values, and detection's own
+            # findings scroll away behind Translate's progress output.
+            # Subject to the same immediate-repeat guard - on a run
+            # where no NoData message was pushed, the storage message
+            # IS the last line before the summary.
+            if (
+                dec.float32_storage_consequential
+                and dec.float32_storage_message
+                and dec.float32_storage_message != last_pushed_message
+            ):
+                summary_lines.append(dec.float32_storage_message)
         summary_lines.append(self.tr(
             "These decisions are also recorded in the file, under "
             "Layer Properties > Information > More information."

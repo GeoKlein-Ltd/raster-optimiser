@@ -15,6 +15,22 @@ elevation and multispectral rasters into fast-panning Cloud Optimized
 GeoTIFFs (COGs) - the right tiling, pyramid and compression settings
 applied automatically, no GDAL flags to memorise.
 
+**What it processes.** 8-bit RGB imagery (3 or 4 band) gets a real choice
+between 'Analysis' and 'Viewing'. Float32, Float64 and integer data of any
+band count is written losslessly, at its own data type, once detection has
+confirmed it is not classified. Classified rasters and files with no
+coordinate reference system are refused with a clear reason rather than
+processed into something quietly wrong.
+
+Float64 elevation is kept as Float64 by default, and there is one opt-in
+exception to the otherwise-absolute promise that 'Analysis' preserves every
+value: ticking **Store Float64 elevation as Float32** under Advanced
+parameters stores a single-band Float64 DSM, DTM or CHM at Float32 instead -
+about a third of the finished file size, for a height change the run states
+exactly and verifies pixel by pixel afterwards. On a real 16000 x 16000 LiDAR
+DSM that is 1.02 GiB down to 358 MiB, with no height moving more than
+0.0038 mm. Leave the box clear and nothing is rounded.
+
 See `docs/GeoKlein_raster_optimisation_workflow.md` for the full workflow and
 design notes.
 
@@ -30,7 +46,7 @@ Plugins, then search for GeoKlein Raster Optimiser. This is the primary
 install path now that the plugin is listed on
 https://plugins.qgis.org/plugins/raster_optimiser/.
 
-Alternatively, download the release zip `raster_optimiser-1.0.1.zip` from
+Alternatively, download the release zip `raster_optimiser-1.1.0.zip` from
 https://github.com/GeoKlein-Ltd/raster-optimiser/releases, then Plugins,
 Manage and Install Plugins, Install from ZIP.
 
@@ -72,7 +88,7 @@ result is not the plugin's output and should not be judged as such.
 
 ## What to expect
 
-Six things that look like problems and aren't.
+Seven things that look like problems and aren't.
 
 **The output looks slightly different in colour.** On 16-bit and multispectral
 imagery, QGIS calculates its own contrast stretch for each layer, and two
@@ -136,6 +152,19 @@ means decoding and re-encoding the JPEG data, so the pixel values change
 slightly, the same as running the plugin twice for viewing above. For any
 other file, pan and zoom speed and file size stay about the same, and only
 the byte layout changes.
+
+**The log mentions Float32 on a Float64 file.** Nothing is wrong, and
+nothing was changed. A Float64 raster is written back out as Float64, with
+every value preserved exactly, and the band statistics match the source. The
+note appears because Float64 records heights far more finely than any survey
+can measure them, so re-exporting the source as Float32 is worth knowing
+about: it halves the pixel data outright, and on the elevation rasters
+measured so far brought the finished file down to about a third of its size.
+A real 16000 x 16000 LiDAR DSM went from 1.02 GiB to 358 MiB that way. The
+log gives the worst-case rounding that conversion would introduce on your
+file: 0.0038 mm on that DSM, 0.00095 mm on a site DSM reaching 24 m, and
+0.49 mm on one reaching 8848 m. Acting on it is optional, and it happens in
+whatever software wrote the file, not here.
 
 ## Licence
 

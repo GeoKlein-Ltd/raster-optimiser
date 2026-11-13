@@ -13,15 +13,43 @@ qgisMaximumVersion=4.99
 # already a QGIS plugin context. Keep the first sentence in sync with
 # GitHub; the trailing sentence is GitHub-only on purpose.
 description=Converts slow, unoptimised orthomosaics, elevation and multispectral rasters into fast-panning Cloud Optimized GeoTIFFs (COGs).
-version=1.0.1
-changelog=1.0.1 - Adds the plugins.qgis.org listing URL to the file
+version=1.1.0
+changelog=1.1.0 - Adds Float64 elevation support. A Float64 DSM, DTM
+    or CHM is now detected as elevation and written losslessly at
+    Float64, with no data type change - previously these were refused
+    with "Data type Float64 isn't supported in v1", which rejected the
+    default output of PDAL's writers.gdal and so most LiDAR DSMs. The
+    same lossless ZSTD settings and floating-point predictor as Float32
+    are used, confirmed on a 16000x16000 LiDAR DSM whose output band
+    statistics match the source exactly. A new log line reports, for
+    information only and with no change to the data, that the source is
+    Float64 and what storing it as Float32 would save and cost in
+    rounding for that specific file. Also fixes two reporting bugs
+    found alongside it: running core/converter.py from the command line
+    without --quiet crashed with a TypeError on the log line after a
+    successful conversion, and detection warnings about a raster whose
+    bands are not all the same data type were never shown in the
+    Processing log at all. Adds an opt-in "Store Float64 elevation as
+    Float32" checkbox under Advanced parameters, off by default: ticked,
+    a single-band Float64 DSM, DTM or CHM is stored as Float32 instead,
+    which measured about a third of the finished file size on a
+    16000x16000 LiDAR DSM, for a height change the run states exactly
+    and then verifies against every valid pixel of the output. The file
+    is kept at Float64, with the reason logged, if the rounding would
+    exceed a millimetre or if its NoData value would not survive the
+    conversion, and the box is ignored with an explanation on anything
+    that is not single-band Float64 elevation. With the box clear -
+    the default - every value is still preserved exactly, and the
+    output is byte-for-byte what it would have been with no such option
+    in the build.
+    1.0.1 - Adds the plugins.qgis.org listing URL to the file
     metadata this tool writes, alongside the existing GitHub URL. Also
     fixes two static-analysis findings: a deprecated Qt enum access and
     a missing import in a type annotation. No other behaviour change.
     1.0.0 - Initial release.
 author=GeoKlein Ltd
 email=mail@geoklein.com
-about=Large orthomosaics and elevation rasters from drone photogrammetry or LiDAR are technically correct but practically unusable: no tiling, no pyramids, often no compression, so QGIS or QField crawl trying to pan around them. GeoKlein Raster Optimiser detects what a raster actually is and applies the correct tiling, pyramid and compression settings automatically, with no GDAL flags to memorise: 8-bit RGB imagery gets a real choice between lossless and lossy, and everything else it trusts (Float32 elevation, 16-bit imagery, multispectral) is processed losslessly. It refuses cleanly, with a clear reason, on classified/categorical rasters rather than risk silently corrupting them. A file that is already a valid Cloud Optimized GeoTIFF at the target compression is left as it is; one that is only part-way there, tiled and pyramided but not a COG, is rebuilt.
+about=Large orthomosaics and elevation rasters from drone photogrammetry or LiDAR are technically correct but practically unusable: no tiling, no pyramids, often no compression, so QGIS or QField crawl trying to pan around them. GeoKlein Raster Optimiser detects what a raster actually is and applies the correct tiling, pyramid and compression settings automatically, with no GDAL flags to memorise: 8-bit RGB imagery gets a real choice between lossless and lossy, and everything else it trusts (Float32 and Float64 elevation, 16-bit imagery, multispectral) is processed losslessly. Float64 is kept at Float64, and the log notes what re-exporting as Float32 would save and what it would cost. It refuses cleanly, with a clear reason, on classified/categorical rasters rather than risk silently corrupting them. A file that is already a valid Cloud Optimized GeoTIFF at the target compression is left as it is; one that is only part-way there, tiled and pyramided but not a COG, is rebuilt.
 icon=icons/icon_64.png
 tracker=https://github.com/GeoKlein-Ltd/raster-optimiser/issues
 repository=https://github.com/GeoKlein-Ltd/raster-optimiser

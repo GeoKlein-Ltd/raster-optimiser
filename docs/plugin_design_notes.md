@@ -226,9 +226,9 @@ rule of its kind the tool has, and future rules should be checked
 against the same distinction before being written.
 
 Detection reads what a file *is*. Every rule the tool had before this
-one maps that nature to what can safely be done with it: Float32 cannot
-be lossy, because height measurements have no "close enough" shade the
-way colours do. Five bands cannot be YCbCr, because YCbCr JPEG is
+one maps that nature to what can safely be done with it: floating point
+elevation cannot be lossy, at Float32 or Float64, because height
+measurements have no "close enough" shade the way colours do. Five bands cannot be YCbCr, because YCbCr JPEG is
 defined for exactly three colour channels. Categorical pixel values
 cannot be averaged, because a code one integer off is a different
 category, not a similar one. All three are facts about the data itself,
@@ -726,6 +726,265 @@ would survive a different file, but it adds state and logic to
 `make_progress_cb` for a marginal gain over the gated log line, which
 already tells a large-Viewing user what to expect. Not worth the
 machinery.
+
+---
+
+## Float64 uses the Float32 predictor
+
+**Status:** implemented, 2026-11-13. Float64 was previously refused
+outright at the data-type gate (`UNSUPPORTED_DTYPE`, "Data type Float64
+isn't supported in v1"), which mattered because Float64 is what PDAL's
+`writers.gdal` produces by default - so a DSM straight out of a LiDAR
+pipeline was refused by a tool whose single best-fitting content type is
+elevation.
+
+Float64 is now handled identically to Float32 at every decision point:
+`FLOAT_DTYPES` in `core/detector.py` is the one set both widths belong
+to, Stage 1a detects single-band Float64 as elevation, the CONTINUOUS
+bucket and its classified-raster check take multi-band Float64 on the
+same terms, `_settings_key()` in both modules selects `lossless_float`
+by membership of that set, and the output is written at the source's own
+type with no conversion.
+
+**Predictor 3 is the right default at both widths.** Measured directly,
+ZSTD level 9, same COG settings, overviews included:
+
+| File | No predictor | Predictor 2 | Predictor 3 |
+|---|---|---|---|
+| `dsm_nick.tif` crop, Float32 | 11,631,632 | 8,546,457 (73.5%) | 7,297,708 (**62.7%**) |
+| same crop promoted to Float64 | 11,711,216 | 10,908,424 (93.1%) | 8,617,226 (**73.6%**) |
+| Hamilton Smeaton 0.025m DSM, real Float64 LiDAR, 16000x16000 | 1,449,149,703 | 1,124,976,997 (77.6%) | 1,093,744,868 (**75.5%**) |
+| `dsm_float64_pdal.tif`, synthetic Float64 | 21,922,455 | 21,592,494 (98.5%) | 34,014,012 (**155.2%**) |
+| same synthetic file demoted to Float32 | 11,547,298 | 10,623,308 (92.0%) | 11,893,330 (103.0%) |
+
+Predictor 3 is the smallest option on every **real** elevation file
+measured, at either width. The one file it loses on is the synthetic
+one, and badly - 155% of no-predictor.
+
+**Correction, recorded deliberately.** An earlier version of this
+section explained that outlier by trailing zero mantissa bits: Float64
+values that came from Float32 carry 29 of them for the byte shuffle to
+exploit, values rasterised from LAS Z at 0.001 scaling carry none. The
+Hamilton row falsifies it. That file is real client LiDAR, its values
+carry a mean of 1.0 trailing zero bits (versus 30.2 on Float32-derived
+values), and predictor 3 is still the best of the three on it. Two
+further candidates were then measured and both also predict the
+opposite of what happened:
+
+| | Hamilton (p3 wins) | synthetic (p3 loses) |
+|---|---|---|
+| pixel size | 0.025 m | 0.5 m |
+| mean trailing zero mantissa bits | 1.0 | 1.6 |
+| mean leading bytes shared with horizontal neighbour, of 8 | 2.34 | 5.84 |
+| NoData share | 40% | 32% |
+
+More shared leading bytes and less NoData would both predict predictor 3
+doing *better* on the synthetic file, not 80 percentage points worse.
+**So the cause is not established**, and nothing in this file should be
+read as explaining it.
+
+What that leaves is a default validated on real data and one synthetic
+counter-example nobody has reproduced on a real product. Predictor 3
+stays. Splitting it per dtype width would add a fourth entry to
+`RECOMMENDED_SETTINGS` keyed on something the measurements do not
+actually separate on - the two Float64 files disagree with each other,
+not with the Float32 ones - and a predictor chosen from a property the
+detector cannot observe would be a guess wearing a measurement's
+clothes. Revisit only if a real client file reproduces the synthetic
+file's result; `testdata/make_points.py` builds that file if the
+outlier is worth chasing.
+
+**The advisory addresses the size question from the other end**, and
+needs no guess about predictors at all:
+`_float64_advisory()` in `core/detector.py` tells the user that
+re-exporting the source as Float32 halves the pixel data and, measured,
+brings the finished file down to about a third of its size, and what the
+worst-case rounding of doing so would be for their specific file.
+
+That saving was measured 2026-11-13 by taking the route the advisory
+recommends, both legs through the plugin on 'Analysis': the Hamilton
+Float64 DSM produced a 1,093,746,390-byte output, and the same DSM
+translated to Float32 first produced 375,248,930 - 34.3%, a 66% saving,
+against a largest height change of 0.00381470 mm, exactly the bound the
+advisory predicted. `testdata/dsm_float64_pdal.tif` gives 34.8% by the
+same route. The string said "would halve the base image size" until
+those measurements existed, which understated the saving by nearly a
+factor of two and named a quantity (the base image) that nobody sees in
+a folder listing. It now states the halving as the arithmetic certainty
+it is and the third as the measurement it is, and says "about a third"
+rather than "34.3%" because two files cannot carry a decimal place. On `dsm_float64_pdal.tif` that advice is worth more than the predictor
+question either way: Float32 brings this tool's own output from
+34,210,554 to 11,893,330 bytes, 34.8%.
+
+The rounding figure is `2^(floor(log2(max_abs_valid)) - 24)` metres,
+reported in millimetres. That is half the spacing between representable
+Float32 values in the binade of the file's largest absolute valid value -
+Float32's significand is 24 bits, so the spacing at magnitude 2^e is
+2^(e-23) and round-to-nearest is out by at most half of it. Taking the
+exponent from the file's *largest* value makes it a worst case for the
+whole raster, since that is where Float32's spacing is coarsest.
+Confirmed as a true and tight bound on `dsm_float64_pdal.tif`: predicted
+0.00095367 mm, largest rounding actually measured across 7,841,625 valid
+pixels 0.00094604 mm.
+
+The advisory is resolved in `detect()`, never in
+`detect_metadata_only()` - it needs an exact `ComputeRasterMinMax`, and
+that function's contract is that it reads no pixels so the QGIS dialog
+can refuse out-of-scope files instantly. It is deliberately NOT folded
+into `needs_pixel_sampling`, which means "classification is not resolved
+yet": the advisory resolves nothing and gates nothing. `ComputeRasterMinMax`
+rather than `GetStatistics` because the latter persists to PAM, which
+would write a sidecar next to a source file this tool promises never to
+modify; exact rather than approximate because the figure is a power of
+two and one binade out is a factor of two wrong in a number shown to the
+user as a fact about their file.
+
+---
+
+## Storing Float64 elevation as Float32 is opt-in, and verified
+
+**Status:** implemented, 2026-11-13, in the same release that added
+Float64 support. The advisory added alongside that support told users
+what re-exporting as Float32 would save; this does it for them, on
+request only.
+
+**Why opt-in and not automatic.** Every other setting in this tool
+either preserves pixel values or asks about them explicitly
+("Viewing"). This one rounds heights on a file the tool otherwise
+guarantees exactly, so the default has to be the one where nothing is
+rounded: an opt-in nobody ticks costs disk space, an opt-out somebody
+misses costs them precision they were never asked about. The whole
+trade-off therefore sits in the checkbox label rather than in a tooltip
+- "Store Float64 elevation as Float32 (about a third of the size;
+heights change by a fraction of a millimetre)" - because the cost is
+the informed half of informed consent.
+
+**Scope is narrow on purpose.** Single-band Float64 detected as
+elevation, and nothing else. A multi-band Float64 raster could hold
+anything, and "a height's worth-keeping precision" is the only
+judgement that makes the rounding safe to offer, so the option is not
+extended to data where that judgement does not apply. Out-of-scope
+input is not refused - the box is ignored, one log line says why, and
+the run continues, so a batch mixing file types still processes.
+
+**Two refusals, both measured rather than assumed.** The bound is the
+same half-ULP arithmetic as the advisory, `2^(floor(log2(
+max_abs_valid)) - 24)`, and the type is kept at Float64 when it exceeds
+1 mm or when the NoData value would not survive the cast.
+
+**The 1 mm threshold first applies at a height of 32,768.** That is the
+number to remember, and it is not the number it looks like it should
+be. The bound steps by binade rather than smoothly, so:
+
+| Largest absolute value | Exponent | Half-ULP bound | Verdict |
+|---|---|---|---|
+| up to 8,191 | <= 12 | <= 0.24 mm | stored as Float32 |
+| 8,192 - 16,383 | 13 | 0.49 mm | stored as Float32 |
+| 16,384 - 32,767 | 14 | 0.98 mm | stored as Float32 |
+| **32,768 - 65,535** | **15** | **1.95 mm** | **kept at Float64** |
+| 65,536 and above | >= 16 | >= 3.91 mm | kept at Float64 |
+
+So every real elevation dataset on Earth passes - Everest is 8,848 m,
+bound 0.49 mm - and the gate engages only on magnitudes no elevation
+raster should hold. That is the point of it: it catches a Float64 raster
+that is not really elevation, before its values are quantised.
+
+The specification this was built from expected heights "above 16,384"
+to be kept at Float64. That corresponds to the FULL ULP, `2^(e-23)`,
+not the half-ULP `2^(e-24)` the advisory maths uses and which the same
+specification said to reuse. The half-ULP rule was kept exactly as
+implemented, per instruction, and the discrepancy is recorded here
+rather than split the difference. Confirmed by test: 16,385 is stored
+as Float32 at a 0.98 mm bound, 40,000 is kept at Float64. Moving the
+gate to the full ULP, if that is ever wanted, is a one-line change to
+`FLOAT32_MAX_BOUND_METRES` or to the shift - not a redesign.
+
+The NoData refusal exists for a real sentinel, not a hypothetical one:
+-1.7976931348623157e308, Float64's most negative finite value, is a
+defensible choice of "impossible" and casts to -inf. Every NoData pixel
+would be written as -inf while the header still declared
+-1.797...e308, and nothing in the file would read as NoData any more.
+NaN counts as round-tripping, since it casts to NaN and a NoData marker
+only has to go on marking the same pixels.
+
+**The bound is verified, not asserted.** This is the only thing the
+tool does that changes pixel values on purpose, and what it promises
+the user is a number, so `_verify_type_change()` reads every valid
+pixel of the output against the source in row blocks and fails the run
+if the measured maximum exceeds the bound or if any pixel changed
+between data and NoData in either direction. Measured at about 7s for
+256 million pixels, only on the ticked path.
+
+**A failed check renames the output rather than leaving it.** This is
+the one verification failure in the tool that leaves behind a file
+which actively misreports itself, so it is the one that gets the file
+moved: `_quarantine_failed_output()` renames it to `<output>.failed`
+and the error names the new path.
+
+The reasoning is a narrow distinction and worth keeping straight. Every
+other verification failure - wrong block size, wrong compression, not a
+valid COG - leaves a file whose pixel values are still exactly the
+source's and whose embedded metadata claims nothing that has been
+disproved. It is structurally disappointing, not misleading, and this
+module's existing stance applies: leave it, say so, let the user
+decide, because "silently losing data is worse than leaving an orphan
+they've been told about". A failed type change is different in kind.
+That file holds deliberately altered values AND states the worst-case
+height change inside itself, in `GEOKLEIN_4_DECISION`, as a measured
+fact - which is precisely the claim the check just refuted. Left at a
+`.tif` path, it reads as an authoritative record of a bound it does not
+honour, and nothing a later reader opens it with would say otherwise.
+The suffix is the only thing that travels with the file.
+
+Renamed rather than deleted for the same reason the Translate failure
+path keeps its partial output: the user may want to inspect it, and
+this module deleting a multi-gigabyte file on its own judgement is the
+more expensive mistake. An existing `.failed` from an earlier attempt
+is removed first - it was already established as invalid, and refusing
+to overwrite it would leave the newer invalid file sitting at the
+valid-looking path, which is the whole thing being prevented. If the
+rename itself fails (a lock, a permissions problem), the file stays
+where it is and both the message and a warning say so plainly and tell
+the user to delete it by hand; reporting a move that did not happen
+would be worse than either.
+
+Verified by forcing real breaches rather than stubbing the check: the
+bound on the assessment was shrunk from the test so the production
+comparison genuinely exceeded it, and the mask check was pointed at a
+different source so valid/NoData positions genuinely disagreed. In both
+cases the `.tif` was gone, the `.failed` file was a readable Float32
+raster of full size still carrying its disproved claim, and
+`result.output_path` pointed at the renamed file. With the rename
+blocked, the message switched to "could not be renamed out of the way"
+and the warning told the user to remove it. No plugin source was
+modified to run any of that.
+
+**An ordering constraint worth knowing about.** The metadata has to
+record the measured maximum, and metadata is passed as `-mo` arguments
+INTO the Translate call that creates the file - writing it afterwards
+with `SetMetadataItem()` moves the main IFD past the pixel data and
+breaks COG validity, confirmed directly and recorded under "v1 always
+writes Cloud Optimized GeoTIFFs". So the figure has to exist before
+Translate runs. It does, because `-ot Float32` is a deterministic
+round-to-nearest of each value independently: `_measure_float32_cast()`
+casts the source's values in memory and gets exactly the number the
+output will hold. The post-write verification then confirms the file
+against that prediction, and fails the run if they disagree - at which
+point the metadata would be describing a file that does not exist.
+
+**Measured, on the 16000x16000 Hamilton Smeaton LiDAR DSM:**
+
+| | Float64 | Float32 |
+|---|---|---|
+| plugin output | 1,093,746,390 | 375,248,984 |
+| share of the Float64 output | 100% | 34.3% |
+| guaranteed bound | - | 0.0038 mm |
+| largest change measured across 153,589,056 valid pixels | - | 0.0038 mm (100% of the bound) |
+| worst-case volume across the whole raster | - | 0.37 m3 |
+
+The bound being reached exactly is expected on a file this large: with
+153 million values, some of them land as far from a representable
+Float32 as it is possible to land.
 
 ---
 

@@ -119,9 +119,13 @@ Predictor 2, horizontal differencing, stores each pixel as the difference from t
 |---|---|
 | 1 | None. The default |
 | 2 | Integer data. Byte and UInt16 rasters |
-| 3 | Floating point data. Float32 rasters like DSM, DTM, CHM |
+| 3 | Floating point data. Float32 and Float64 rasters like DSM, DTM, CHM |
 
-Getting this wrong on Float32 is a common mistake. Predictor 2 on floats can make the file *bigger*. Elevation rasters take predictor 3.
+Getting this wrong on floating point data is a common mistake. Predictor 2 on floats can make the file *bigger*. Elevation rasters take predictor 3, at either width - predictor 3 is TIFF's floating point predictor, not a 32-bit one.
+
+Predictor 3 is the smallest of the three options on every real elevation file measured here, at both widths: 62.7% of no-predictor on a Float32 DSM crop, 73.6% on that crop promoted to Float64, and 75.5% on a real 16000x16000 Float64 LiDAR DSM at 0.025 m, where predictor 2 came second at 77.6%. Use it on floating point data and do not think about it further.
+
+One synthetic file is on record going the other way - a PDAL-rasterised Float64 DSM where predictor 3 came out at 155% of no-predictor. The cause was investigated and is **not** established: the real file predictor 3 wins on has fewer repeated mantissa bits, fewer bytes in common with its neighbours, and more NoData than the synthetic one, all of which would predict the opposite result. It is recorded in `plugin_design_notes.md` ("Float64 uses the Float32 predictor") as an open oddity rather than a rule, and no real client raster has reproduced it. If you are compressing Float64 and the output looks implausibly large, trying `PREDICTOR=2` and no predictor costs one command each and will tell you immediately.
 
 Predictor is irrelevant with JPEG, which does not use it.
 
@@ -134,6 +138,7 @@ How much space each pixel value gets per band.
 | Byte | 0 to 255 | 8-bit. Standard for RGB imagery |
 | UInt16 | 0 to 65,535 | 16-bit. Twice the file size |
 | Float32 | Decimals | Elevation, indices, continuous values |
+| Float64 | Decimals, finer | What PDAL writes by default. Twice the size of Float32 for precision no survey can measure |
 
 You will see this in gdalinfo as `Type=Byte` or `Type=UInt16`.
 
@@ -355,7 +360,7 @@ Lossless:
 gdal_translate -of COG -co BLOCKSIZE=512 -co COMPRESS=ZSTD -co LEVEL=9 -co PREDICTOR=2 -co BIGTIFF=YES -co NUM_THREADS=ALL_CPUS -co OVERVIEW_RESAMPLING=AVERAGE -co OVERVIEW_COMPRESS=ZSTD -co OVERVIEW_PREDICTOR=2 -co OVERVIEW_COUNT=7 input.tif output.tif
 ```
 
-(PREDICTOR 3 in place of 2 for Float32 elevation, per Background above.)
+(PREDICTOR 3 in place of 2 for Float32 or Float64 elevation, per Background above.)
 
 ---
 
@@ -393,13 +398,14 @@ All of this is written via `-of COG` now, as in Step 3 - the compression and pre
 | RGB 16-bit, display | Convert to Byte first, then JPEG | – | `-ot Byte -scale` |
 | RGB 16-bit, analysis | ZSTD level 9 | 2 | Keep 16-bit |
 | DSM, DTM, CHM (Float32) | ZSTD level 9 | **3** | Never JPEG |
+| DSM, DTM, CHM (Float64) | ZSTD level 9 | **3** | Never JPEG. Consider `-ot Float32` as well: measured at about a third of the finished file size, for rounding no survey can measure. The plugin offers this as an opt-in checkbox and verifies the result pixel by pixel |
 | DSM where size matters | LERC_ZSTD, MAX_Z_ERROR 0.01 | – | Guarantees no height error above 1 cm |
 | Classified raster, integer | ZSTD level 9 | 2 | Never JPEG, values are categories |
 | Multispectral | ZSTD level 9 | 2 | Never JPEG |
 
 Two things worth flagging.
 
-**Float32 takes predictor 3.** Using 2 on floating point data can make the file larger. This is the easiest mistake in the whole document to make.
+**Floating point data takes predictor 3.** Using 2 on Float32 or Float64 can make the file larger. This is the easiest mistake in the whole document to make. Measured on real files at both widths, predictor 3 wins; see Background for the one synthetic counter-example and why it did not change the recommendation.
 
 **LERC is worth knowing about for elevation.** It is controlled loss rather than uncontrolled: you specify the maximum error you will tolerate and it guarantees nothing exceeds it. `MAX_Z_ERROR 0.01` means no height is off by more than 1 cm. That is a number you can put in a method statement, which is a completely different proposition from JPEG's "trust me, it looks fine".
 

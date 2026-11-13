@@ -49,6 +49,8 @@ This section covers every parameter. "Your source file is never modified" sits o
 
 ***Analysis*** compresses the raster and keeps every pixel value exactly as the original. Use it for anything you take pixel values from: height measurements, vegetation indices, segmentation, classification, change detection, raster calculations.
 
+One exception, opt-in only: ***Store Float64 elevation as Float32*** under Advanced parameters rounds heights by a stated fraction of a millimetre in exchange for about two thirds of the file size. With that box clear - the default - Analysis preserves every value exactly, and the promise above holds without qualification.
+
 ***Viewing*** compresses the raster and discards detail the eye will not notice, which makes the file considerably smaller. A typical drone orthomosaic comes out 80 to 90% smaller. Use it for basemaps, client copies, QField backdrops and site context, where what matters is how the raster looks rather than what its pixels measure.
 
 Since both profiles add pyramids and tiling, there is no difference in loading, panning or zooming speed. The choice affects file size, and whether pixel values are preserved.
@@ -73,7 +75,13 @@ The three settings below are under **Advanced parameters**.
 
 **Note:** even though it may appear that way, this operation does not fill holes. It uncovers hidden pixels that were already there. It does not interpolate or create data. Where a raster has holes because the data is genuinely missing rather than hidden, this plugin cannot fill them.
 
-***Reprocess even if already optimised***: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF (COG), since converting it again would not make it faster or smaller. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file again, for instance to change how NoData is handled.
+***Store Float64 elevation as Float32***: off by default. Float64 elevation records heights to about fifteen decimal places, far finer than any survey measures, so most of that is storage spent on precision nobody collected. Ticked, a single-band Float64 DSM, DTM or CHM is stored as Float32: about a third of the finished file size, for a height change the run states exactly and then checks pixel by pixel. The file is kept at Float64 anyway, with the reason logged, if the rounding would exceed a millimetre or if its NoData value would not survive the conversion. On anything that is not single-band Float64 elevation the box is ignored and the run says why.
+
+The checkbox label carries the whole trade-off, in order - what it does, what it saves, what it costs - rather than leaving the cost to this tooltip: "Store Float64 elevation as Float32 (about a third of the size; heights change by a fraction of a millimetre)". A control that changes pixel values cannot be labelled with only its benefit. "About a third" is measured (34.3% on a real 16000x16000 LiDAR DSM, and 34.3% again on the synthetic PDAL one); "a fraction of a millimetre" is deliberately not a figure, because the real figure depends on the file and the run states it per file.
+
+Scope and the two refusals are decided in one place, `core/converter.py`'s `_resolve_float32_storage()`, so the GUI, batch, Model Designer, `processing.run()` and the CLI's `--store-float32` all behave identically rather than this dialog enforcing a scope the other routes do not.
+
+***Reprocess even if already optimised***: by default a file is left alone only when it is already tiled, has pyramids, is at the target compression, and is already a valid Cloud Optimized GeoTIFF (COG), since converting it again would not make it faster or smaller. A requested data-type change counts as work to do, so a Float64 COG with the Float32 box ticked is reprocessed rather than stopped. A file that meets only the first three, tiled and pyramided at the target compression but not yet a valid COG, is reprocessed anyway. Tick this to convert an already-valid file again, for instance to change how NoData is handled.
 
 ***Replace existing output file***:
 
@@ -97,6 +105,8 @@ This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`
 
 ***Why is the output larger than the source?*** Pyramids and the Cloud Optimized structure take up space of their own. If the source was already well compressed, or already had pyramids and this run built more levels or changed the compression, that space can outweigh what the new compression saves. The file is faster to pan, not smaller.
 
+***Why does the log mention Float32 on my Float64 file?*** Nothing is wrong, and nothing was changed. A Float64 raster is written back out as Float64, with every value preserved exactly. The note is there because Float64 records heights far more finely than any survey can measure them, so re-exporting the source as Float32 halves the pixel data, and on the elevation rasters measured so far brought the finished file down to about a third of its size. The log gives the worst-case rounding that would introduce on your file, which for a DSM is normally a small fraction of a millimetre. Acting on it is optional, and happens in whatever software wrote the file, not here.
+
 The first item's claims check out against the code. Detection reads overview presence from `band1.GetOverviewCount()` (0 = none, so QGIS shrinks the source live for the zoomed-out view, nearest-neighbour by its default layer resampling). All three profiles in `RECOMMENDED_SETTINGS` set `OVERVIEW_RESAMPLING=AVERAGE`, passed to the COG driver as a `-co`, and the count comes from `_default_overview_levels()` (successive halving until the larger side is <= 256 px). So when the source already has pyramids, what can differ is the **resampling method** (this tool always AVERAGE; a source's own pyramids may be nearest, gauss, cubic) and the **level count / stopping point** (a source built by another tool may stop sooner or later). All of this is independent of Analysis vs Viewing, since pyramid resampling is AVERAGE either way.
 
 What does *not* differ is per-level resolution: COG and non-COG overviews are both a successive power-of-two decimation chain, same maths. An earlier note that said the resolutions differed between COG and non-COG was wrong. The one concrete case behind it - a smallest level of 347x267 from this tool versus 348x268 from an older build - was that older build rounding to nearest where `_default_overview_levels()` floor-divides, a change in this tool's own loop, nothing to do with COG.
@@ -107,7 +117,7 @@ Ten entries, alphabetical. `converter.py:106`/`:636` confirm AVERAGE is the actu
 
 - **Alpha band**: an extra band recording which pixels fall inside the surveyed area. It works by position rather than by value, so it never mistakes a black pixel for an empty one.
 - **Band**: one layer of values in a raster. A colour photograph has three, red, green and blue. An elevation model has one. Multispectral imagery has more, often including light the eye cannot see.
-- **Bit depth**: how much range each pixel value has. 8-bit holds 0 to 255, which is enough for colour. 16-bit and Float32 hold far more, which is what rasters holding more complex measurements need.
+- **Bit depth**: how much range each pixel value has. 8-bit holds 0 to 255, which is enough for colour. 16-bit, Float32 and Float64 hold far more, which is what rasters holding more complex measurements need. Float64 is finer than any survey can measure, so the tool keeps it exactly as it found it and notes in the log what Float32 would have saved.
 - **Cloud Optimized GeoTIFF (COG)**: a GeoTIFF that is tiled, has pyramids, and keeps its index at the front of the file rather than after the image data. Software can then read one small part of it without reading the whole thing, including over a network, which is what the format was designed for.
 - **Collar**: the transparent border around a survey area, where the image does not completely fill the rectangular bounding box of the file when loaded. Keeping it transparent is the alpha band's job. Without one you get a black box around your raster.
 - **Lossless and lossy**: lossless compression makes a file smaller with every pixel value still recoverable exactly. Lossy compression makes it much smaller by discarding detail, and the discarded detail does not come back.
@@ -148,6 +158,8 @@ Options:
 
 Help. Deliberately short: the full explanation, including which files are forced to Analysis and why, is in `shortHelpString()` (the info panel on the right), not repeated here. Paragraph breaks are `<br><br>` in the code, not blank lines: QGIS wraps this text in a single `<p>` for the parameter tooltip and renders it as rich text, so literal newlines collapse to one unbroken block (checked on QGIS 4.2 and 3.44 LTR). The option values are single-quoted (as in NODATA_MODE) since a tooltip has no bold or italic; the info panel uses `<b><i>` instead.
 > 'Analysis' keeps every pixel value exactly as it is. Use it for anything you take numbers from: height measurements, vegetation indices, segmentation, classification, change detection.
+>
+> One exception, and only if you tick it yourself: 'Store Float64 elevation as Float32' under Advanced parameters rounds heights by a stated fraction of a millimetre to save about two thirds of the file size. Leave it clear and 'Analysis' preserves every value exactly.
 >
 > 'Viewing' discards detail the eye will not notice, which makes the file much smaller. A typical drone orthomosaic came out 80 to 90% smaller in testing. Use it for basemaps, client copies, QField backdrops and site context.
 >
@@ -308,7 +320,7 @@ Both are timeless present tense on purpose - the line is logged before Translate
 
 ### Viewing requested on elevation data
 
-`detection.forced_reason` when `content_type == "FLOAT32_CONTINUOUS"` and Viewing was requested but Analysis was used.
+`detection.forced_reason` when `content_type == "FLOAT_CONTINUOUS"` (single-band Float32 **or** Float64 - the sentinel was renamed from `FLOAT32_CONTINUOUS` when Float64 joined the path, since it no longer describes only one width) and Viewing was requested but Analysis was used. The text itself is dtype-agnostic and unchanged: it talks about height measurements, not about how many bits hold them.
 
 > The file is written for analysis instead. This is elevation data, a DSM, DTM or CHM. Compressing for viewing works by discarding detail the eye won't notice, but these pixels are height measurements rather than colours, so discarding detail would change the actual heights. The pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 
@@ -401,6 +413,149 @@ In every case where a note is shown at all, the Viewing suggestion is appended o
 With Viewing available, a second sentence is appended to whichever note above was shown, for example:
 
 > Output is larger than source. Expected when the source was already compressed, since pyramids add back roughly a third. Not a failure: the gain here is speed, not size. A file written for viewing would be smaller, if size matters more than preserving every pixel value.
+
+---
+
+## Log messages: Float64 storage
+
+One message per run about the same question - what is happening to this
+file's Float64 precision - in six shapes. Resolved in one place,
+`core/converter.py`'s `_resolve_float32_storage()`, so every entry route
+(GUI, batch, Model Designer, `processing.run()`, the CLI's
+`--store-float32`) produces the same answer; pushed once by the QGIS
+wrapper at the severity that case earned. The advisory shapes are built
+in `core/detector.py`'s `_float64_advisory()` and passed through
+unchanged.
+
+`{bound}` and `{measured}` are per-file and carry their own unit. They
+are millimetres when the file's vertical unit is metres or undeclared,
+and the file's own unit when it declares something else - see "Units"
+below.
+
+### Box clear, and the file could take it
+
+Routine, a plain `pushInfo()`. Fires on single-band Float64 elevation
+that passes both gates. It points at the checkbox rather than telling
+anyone to re-export the file in other software, which is what an earlier
+version did before the tool could do it itself.
+
+> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. For information only, and needing no action: Float64 records heights far more finely than any survey can measure them. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would store this file at about a third of the size, changing no height by more than {bound}.
+
+### Box clear, and the file could not take it
+
+Routine. Says so up front, so nobody ticks the box expecting a change
+that will not happen.
+
+> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. Storing it as Float32 is not available for this file: the largest absolute value in this file is 40,010, which puts the guaranteed worst-case rounding at 2.0 mm - over the 1 mm this tool will accept for a height. Values that large are a sign this is not elevation in metres. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would make no difference here.
+
+### Box clear, and the option does not cover this file
+
+Routine. Multi-band Float64, where the checkbox genuinely does not
+apply, so the re-export suggestion still stands.
+
+> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. For information only, and needing no action: re-exporting the source as Float32 would halve the pixel data, and on the elevation rasters measured so far brought the finished file down to about a third of its size. This file has 3 bands and is not single-band elevation. Storing as Float32 is offered for elevation only, where a height's worth-keeping precision is a known quantity; on other continuous data the values could be anything and the rounding cannot be judged safe here, so this tool's own 'Store Float64 elevation as Float32' option does not apply to it.
+
+### Box ticked, file out of scope
+
+Routine - one `pushInfo()` line and the run continues. Nothing was
+overridden and the output is exactly what it would have been with the
+box clear, so this is not a warning. Refusing the run instead would
+fail every other file in a batch that mixes types.
+
+> 'Store Float64 elevation as Float32' was ticked and has been ignored: this file has 3 bands and is not single-band elevation. Storing as Float32 is offered for elevation only, where a height's worth-keeping precision is a known quantity; on other continuous data the values could be anything and the rounding cannot be judged safe here. The file is written at Float64, unchanged, exactly as it would have been with the box clear.
+
+A Float32 or integer input gets the same shape with its own reason
+("this file is Float32, not Float64, so there is no 64-bit precision
+here to trade away").
+
+### Box ticked, and a gate refused
+
+`pushWarning()`. The user asked for a smaller file and did not get one,
+and the reason is a property of their data they may want to act on.
+Two gates, two reasons.
+
+Bound over 1 mm:
+
+> 'Store Float64 elevation as Float32' was ticked, and this file is being kept at Float64 instead: the largest absolute value in this file is 40,010, which puts the guaranteed worst-case rounding at 2.0 mm - over the 1 mm this tool will accept for a height. Values that large are a sign this is not elevation in metres. Every value is preserved exactly. Nothing else about the run changes.
+
+NoData that would not survive the conversion:
+
+> 'Store Float64 elevation as Float32' was ticked, and this file is being kept at Float64 instead: this file's NoData value (-1.7976931348623157e+308) does not survive a Float32 conversion - it falls outside the range Float32 can hold, so the NoData pixels would stop matching the value the file declares and would read as real data. Every value is preserved exactly. Nothing else about the run changes.
+
+Where the 1 mm gate bites is not where it looks. The bound steps by
+binade, so every value up to 32,767 lands on 0.98 mm and passes, and the
+first binade over 1 mm begins at 32,768 - which means every real
+elevation dataset on Earth passes (Everest is 8,848 m, bound 0.49 mm)
+and the gate engages only on magnitudes no elevation raster should hold.
+That is the intent: it catches a Float64 raster that is not really
+elevation before its values are quantised. See `plugin_design_notes.md`,
+"Storing Float64 elevation as Float32 is opt-in, and verified".
+
+### Box ticked and applied
+
+`pushFormattedMessage()` - bold, the strongest log treatment this tool
+has, and the only outcome of the six where pixel values moved. Also
+appended to `GEOKLEIN_4_DECISION` in the output file, and named in
+`GEOKLEIN_5_APPLIED` as "stored as Float32 at the user's request". The
+volume sentence appears only when the units allow it; the NoData
+sentence is unconditional, because the verification that backs it always
+runs.
+
+> Stored as Float32 at the user's request. The source is Float64 elevation; the output holds the same heights at Float32, which is about a third of the size. Guaranteed worst-case rounding for this file's value range: {bound}. Largest change actually measured, across every valid pixel: {measured} ({share}% of that bound). Across all {n} valid pixels, at {area} m2 each, that bound accounts for at most {volume} m3 of volume in total. No pixel changed between data and NoData in either direction.
+
+The bound and the measured maximum are two different numbers on
+purpose: the bound is what Float32's arithmetic promises for this file's
+value range before anything is written, the measured maximum is what
+this conversion actually did. The share-of-bound percentage is there
+because at two significant figures the two frequently render
+identically - 9.4604e-07 and 9.5367e-07 both read as "0.00095 mm" - and
+two different values printed as the same string reads as a fault rather
+than as the tight bound it is.
+
+### Box ticked, applied, and the check then failed
+
+Raised as a hard failure - `QgsProcessingException`, so the run stops
+and no layer is loaded. The output is renamed to `<output>.failed`
+first, and the message names the new path.
+
+> Stored as Float32 at your request, and the check against the source FAILED: {issues}. It has been renamed to {path}.failed so it cannot be mistaken for a valid result. Do not use it: the metadata inside it states a worst-case height change which that check disproved, so the file misreports its own accuracy. Your source file is untouched. Re-run with 'Store Float64 elevation as Float32' clear to get an exact Float64 copy.
+
+If the rename cannot be done, the second sentence becomes "It is still
+at {path} and could not be renamed out of the way", and a separate
+warning tells the user to delete it by hand.
+
+This is the only verification failure that moves the file. Every other
+one leaves a file whose values are still exactly the source's and whose
+metadata claims nothing that has been disproved, and keeps the older,
+milder wording ("Converted, but verification found problems ... may not
+be fully optimised - check manually"). See `plugin_design_notes.md`,
+"A failed check renames the output rather than leaving it".
+
+### Units
+
+Heights are quoted in millimetres when the vertical unit is metres or
+undeclared, and in the file's own unit when it declares something else.
+Measured against GDAL 3.13.2: `GetAttrValue("VERT_CS|UNIT")` returns
+"metre" for a compound CRS with ODN height, "US survey foot" for one
+with NAVD88 height (ftUS), and `None` for a CRS with no vertical
+component - which is the common case for a plain projected GeoTIFF and
+is treated as metres for display, matching what the advisory has always
+done. What changed when the storage option was added is that a file
+which does declare feet is now quoted in feet; the advisory used to say
+"mm" unconditionally, which was the right number under the wrong unit
+name on such a file.
+
+The 1 mm gate is compared in metres regardless, using the vertical
+unit's own conversion factor, so a file in feet is not gated against a
+number in the wrong unit.
+
+The volume sentence needs the horizontal units to be metres, so that the
+pixel area really is square metres, and the vertical unit to be metres
+or undeclared as well. The second condition is an addition to what was
+specified: the product of square metres and a height in feet is
+arithmetically fine and physically meaningless, and "m2.ft" in a log
+line is worse than no line. A file in feet gets its bound and measured
+maximum in feet and no volume.
 
 ---
 
@@ -497,7 +652,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 | `GEOKLEIN_6_HIDDEN_PIXELS` | The current NoData-handling message. Passed on every run now (see the note above the table), but only ever visible in the file when there's an actual message: the routine "nothing hidden" and "kept as requested" outcomes are recorded, same as before, but an empty value (nothing to report) writes no visible tag at all, so the key still reads as absent to anyone looking at the file, exactly as it did before this run always passed it. Visibly absent in the same two cases as before: the file has no NoData=0 condition at all, or NoData marks only the collar with no alpha band and nothing was asked that would surface that fact. |
 | `GEOKLEIN_7_REPRODUCE` | The single `gdal_translate` command that reproduces this file without the plugin - see `_format_reproduce_commands()`. One command now, not two: v1 always writes a Cloud Optimized GeoTIFF, and the COG driver builds pyramids inside the same Translate call rather than a separate `gdaladdo` step, so there's no second command left to reproduce. Built from `full_args` (the exact list passed to `gdal.Translate()`, including `-of COG` and an `OVERVIEW_COUNT` sized from `_default_overview_levels()`'s own length - see that function's docstring for why COG's own default overview count can't be trusted to match), never a separately hand-written copy of the settings, so it cannot state anything other than what this run actually did. Source and destination are the placeholders `input.tif`/`output.tif`, not the real paths: the real source path embeds the local folder structure and Windows username, and the real output path is frequently a temp directory gone by the time anyone reads the metadata back - neither is reproducible information, and whoever reproduces this substitutes their own paths anyway. Ends with a line pointing at the equivalent QGIS menu item (Raster > Conversion > Translate, with the output format set to COG) and this workflow doc, for anyone who'd rather not use the command line at all. |
 
-Two full worked examples, both taken from a real run against the current code (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding):
+Two full worked examples, both captured from real runs against 1.0.0 (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding). The version and date they quote are therefore 1.0.0's, not the current build's - deliberately left as captured rather than hand-edited to a version no run actually produced, since what these illustrate is the shape and wording of each field, which has not changed since. Relabelled 2026-11-13: they previously read "taken from a real run against the current code", which was already untrue at 1.0.1. A Float64 elevation run looks the same except that `GEOKLEIN_2_DETECTED` and `TIFFTAG_IMAGEDESCRIPTION` name Float64 (see `content_label()`), and the Float64 advisory above appears in the log - it is a log line only and is not among the `GEOKLEIN_*` keys:
 
 > GEOKLEIN_1_TOOL = GeoKlein Raster Optimiser 1.0.0, a QGIS plugin, 26 August 2026. Source: https://github.com/GeoKlein-Ltd/raster-optimiser. Listing: https://plugins.qgis.org/plugins/raster_optimiser/
 > GEOKLEIN_2_DETECTED = Source file was Float32 elevation (DSM, DTM or CHM), 1 band, stripped, without pyramids.
