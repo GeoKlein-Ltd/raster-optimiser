@@ -487,18 +487,65 @@ below.
 ### Box clear, and the file could take it
 
 Routine, a plain `pushInfo()`. Fires on single-band Float64 elevation
-that passes both gates. It points at the checkbox rather than telling
-anyone to re-export the file in other software, which is what an earlier
-version did before the tool could do it itself.
+that the coarse gate did not rule out. It points at the checkbox rather
+than telling anyone to re-export the file in other software, which is
+what an earlier version did before the tool could do it itself.
 
-> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. For information only, and needing no action: Float64 records heights far more finely than any survey can measure them. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would store this file at about a third of the size, changing no height by more than {bound}.
+> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. For information only: Float64 records heights far more finely than any survey can measure them. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would store this file at about a third of the size, rounding heights by a fraction of a millimetre. The exact figure is worked out and recorded in the file if you tick it.
+
+**It quotes no figure of its own, and that is the point.** An earlier
+version printed this file's exact bound here, which meant every Float64
+file paid for an exact scan of every pixel to produce a number in a log
+line nobody had asked for. Measured on a 14640x14400 DEFLATE-compressed,
+tiled, pyramided Float64 DSM - the shape that exposed this - detection
+cost 7.81s, essentially all of it that scan, with the progress bar at 0%
+throughout. The same detection now costs **0.02s**, because the advisory
+needs only approximate statistics, which read the pyramids and are
+effectively free.
+
+The exact scan still runs when the box is ticked, because the figure
+then goes into the file and has to be right. There it reports progress
+(29 callbacks on that file, bar moving 0.034 to 1.000) and announces
+itself first:
+
+> Reading every height to work out the exact Float32 rounding. On large compressed files this can take a little while.
+
+### Box clear, and the file is too big a number to judge cheaply
+
+**No message at all.** Approximate statistics read averaged pyramid
+pixels, so their maximum is systematically lower than the truth - on
+that same DSM, 115.998 approximate against 116.014 exact, and on
+Hamilton 116.39 or 115.07 against 117.46 depending on the pyramid set. A
+file whose true maximum sits just over the 32,768 where the real 1 mm
+gate bites could therefore report an approximate maximum well under it,
+and an advisory built on that would promise a sub-millimetre rounding on
+a file the gate would refuse.
+
+So the advisory is suppressed entirely once the approximate maximum
+reaches **16,384** - deliberately half of 32,768, allowing a whole
+factor of two of damping, which no averaging of real heights can
+exceed. A suppressed advisory tells the user nothing; a confident wrong
+figure tells them something false. Nothing above 16,384 is elevation in
+metres anyway.
 
 ### Box clear, and the file could not take it
 
 Routine. Says so up front, so nobody ticks the box expecting a change
 that will not happen.
 
-> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. Storing it as Float32 is not available for this file: the largest absolute value in this file is 40,010, which puts the guaranteed worst-case rounding at 2.0 mm - over the 1 mm this tool will accept for a height. Values that large are a sign this is not elevation in metres. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would make no difference here.
+Only one refusal is reachable with the box clear: the NoData one. It is
+the only gate that needs no pixel data, so it is the only one that can
+be decided without the exact scan. The 1 mm bound gate is not evaluated
+on this path at all - nothing has been measured exactly to evaluate it
+against - and a file whose values are large enough to worry about is
+handled by the coarse ceiling gate above instead, which says nothing
+rather than guessing.
+
+> Source data type is Float64, and it is written out as Float64 - every value is preserved exactly and nothing in this run changes the data. Storing it as Float32 is not available for this file: this file's NoData value (-1.7976931348623157e+308) does not survive a Float32 conversion - it falls outside the range Float32 can hold, so the NoData pixels would stop matching the value the file declares and would read as real data. Ticking 'Store Float64 elevation as Float32' under Advanced parameters would make no difference here.
+
+The bound-based refusal still exists; it is simply only reachable once
+the box has been ticked and the exact scan has run. It is documented
+under "Box ticked, and a gate refused" below.
 
 ### Box clear, and the option does not cover this file
 
@@ -744,7 +791,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 | `GEOKLEIN_3_REQUESTED` | `'{Analysis or Viewing}'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. All three value names quoted, matching `GEOKLEIN_4_DECISION` directly below it - see "Quoting selectable values" above. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
 | `GEOKLEIN_5_APPLIED` | Leads with "Cloud Optimized GeoTIFF (COG)", then the compression, predictor, tiling and overview resampling actually applied - see `_format_applied_settings()`. The COG prefix states a fact true of every run now, not a decision that varies, so a reader with only this file's metadata open (not the plugin's docs) knows it's COG-compliant without inferring it from tiling plus pyramids plus compression. Otherwise unchanged: states decisions made before Translate ran, never an outcome that might not happen - it does not say whether pyramids exist, since that's directly observable from the file itself; it names the resampling method used to build them instead, which is a real decision and isn't recoverable from the file afterwards. |
-| `GEOKLEIN_6_HIDDEN_PIXELS` | The current NoData-handling message. Passed on every run now (see the note above the table), but only ever visible in the file when there's an actual message: the routine "nothing hidden" and "kept as requested" outcomes are recorded, same as before, but an empty value (nothing to report) writes no visible tag at all, so the key still reads as absent to anyone looking at the file, exactly as it did before this run always passed it. Visibly absent in the same two cases as before: the file has no NoData=0 condition at all, or NoData marks only the collar with no alpha band and nothing was asked that would surface that fact. |
+| `GEOKLEIN_6_HIDDEN_PIXELS` | The NoData-handling record. **Always written, never absent.** Carries the run's hidden-pixels message when there is one; otherwise one short line stating what was checked and what it concluded, chosen from the DetectionResult. Until 1.1.0 it was passed as an empty value when there was no message, which GDAL treats as a removal rather than a blanking - so the key was simply missing from most outputs, every elevation file among them, and a reader could not tell a check that had passed from one that had never run. The two fallback lines are "Not applicable: this check is for 8-bit imagery whose NoData value is 0." and, for a file whose NoData=0 is its only transparency, "Not cleared: this file uses a NoData value of 0 as its only transparency, so clearing it would turn the transparent collar into a black border." The anti-staleness reason the empty value existed for is better served this way: a real line always overwrites whatever Translate inherited from the source, so there is nothing stale left to clear. Confirmed by re-running the tool on its own output - generation 2 carries one `GEOKLEIN_6_HIDDEN_PIXELS` with generation 2's own text, not two keys and not generation 1's. |
 | `GEOKLEIN_7_REPRODUCE` | The single `gdal_translate` command that reproduces this file without the plugin - see `_format_reproduce_commands()`. One command now, not two: v1 always writes a Cloud Optimized GeoTIFF, and the COG driver builds pyramids inside the same Translate call rather than a separate `gdaladdo` step, so there's no second command left to reproduce. Built from `full_args` (the exact list passed to `gdal.Translate()`, including `-of COG` and an `OVERVIEW_COUNT` sized from `_default_overview_levels()`'s own length - see that function's docstring for why COG's own default overview count can't be trusted to match), never a separately hand-written copy of the settings, so it cannot state anything other than what this run actually did. Source and destination are the placeholders `input.tif`/`output.tif`, not the real paths: the real source path embeds the local folder structure and Windows username, and the real output path is frequently a temp directory gone by the time anyone reads the metadata back - neither is reproducible information, and whoever reproduces this substitutes their own paths anyway. Ends with a line pointing at the equivalent QGIS menu item (Raster > Conversion > Translate, with the output format set to COG) and this workflow doc, for anyone who'd rather not use the command line at all. |
 
 Two full worked examples, both captured from real runs against 1.0.0 (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding). The version and date they quote are therefore 1.0.0's, not the current build's - deliberately left as captured rather than hand-edited to a version no run actually produced, since what these illustrate is the shape and wording of each field, which has not changed since. Relabelled 2026-11-13: they previously read "taken from a real run against the current code", which was already untrue at 1.0.1. A Float64 elevation run looks the same except that `GEOKLEIN_2_DETECTED` and `TIFFTAG_IMAGEDESCRIPTION` name Float64 (see `content_label()`), and the Float64 advisory above appears in the log - it is a log line only and is not among the `GEOKLEIN_*` keys:

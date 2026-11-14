@@ -1061,6 +1061,71 @@ this - so such a finding would be a documentation note, not a fix.
 
 ---
 
+## The advisory stopped paying for an exact scan nobody asked for
+
+**Status:** changed 2026-11-14, after GUI testing on QGIS 4.2.1 reported
+detection taking 10 to 20 seconds on a DEFLATE-compressed, tiled,
+pyramided Float64 DSM with the progress bar at 0% throughout.
+
+**Where the time went**, measured by timing each stage rather than
+inferring it, and with the data held constant by re-encoding one file
+into both shapes:
+
+| | uncompressed | DEFLATE + tiled + pyramids |
+|---|---|---|
+| `detect_metadata_only()` | 0.01s | 0.01s |
+| `_max_abs_valid()` exact | **1.16s** | **4.09s** |
+| `ComputeRasterMinMax(approx)` | 0.01s | 0.00s |
+| `detect()` total | 1.36s | 4.16s |
+
+All of it was the exact max-abs scan, and the multiplier is
+decompression: identical data, 3.5x the time once every tile has to be
+inflated. The bar sat at 0% because `_max_abs_valid` polled no callback,
+and detection's callback only ever reached the RGB black-pixel sampler.
+
+**What it was buying:** a per-file figure in an advisory log line, on a
+file that was going to be written at Float64 regardless. That is the
+whole of it. The scan ran on every Float64 input whether or not anyone
+had asked for the storage option.
+
+**The split.** Box unticked, the advisory now uses approximate
+statistics and quotes no figure, saying instead that the exact figure is
+worked out if you tick the box. Box ticked, the exact scan runs exactly
+as before, because its figure is written into the output file and has to
+be right - and it now reports progress and announces itself first.
+Measured on a purpose-built 14640x14400 Float64 DEFLATE/tiled/pyramided
+file, 1.82 GB, matching the reported shape:
+
+| | detection |
+|---|---|
+| box unticked | **0.02s** |
+| box ticked | 7.81s, 29 progress callbacks, bar 0.034 to 1.000 |
+
+**Why approximate statistics may gate but never quote.** They read
+averaged pyramid pixels, so the maximum they report is systematically
+low: 115.998 against 116.014 exact on that file, and 116.39 or 115.07
+against 117.46 on Hamilton depending on the pyramid set. A file whose
+true maximum sits just over 32,768 - where the real 1 mm gate bites -
+could report an approximate maximum well under it, and an advisory built
+on that would promise a sub-millimetre rounding the gate would refuse.
+So the advisory is suppressed entirely at an approximate maximum of
+16,384, half the real threshold, which allows a factor of two of damping
+that no averaging of real heights can exceed. Being wrong the other way
+costs only a missing advisory on a file holding values above 16,384,
+which is not elevation in metres.
+
+**One thing left on the table.** The ticked path now makes three full
+passes over the source: this exact scan, `_measure_float32_cast()`
+before Translate, and `_verify_type_change()` after it. The first two
+could be merged - max-abs and the cast delta are computable in one pass
+- which would cut a third off the ticked path's pixel reading. Not done
+here, because the instruction was to keep the exact scan as it is and
+only wire the callback into it, and merging it is a wider change than
+that. Recorded as the obvious next saving if the ticked path ever needs
+to be faster.
+
+---
+
 ## Dark-theme colours for the help panel: not done, and why
 
 **Status:** investigated and skipped, 2026-11-13. Asked for as

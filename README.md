@@ -75,6 +75,14 @@ end-of-run summary lines marked.*
 what was detected, what was decided, and the command that reproduces the
 file.*
 
+All seven keys are written on every run, so a file found a year later
+explains itself without the log that produced it. Where a check did not
+apply, the key says so rather than being left out: `GEOKLEIN_6` reads
+"Not applicable: this check is for 8-bit imagery whose NoData value is
+0." on an elevation raster, for instance. If you are comparing outputs
+from 1.0.x, that one key was absent rather than explicit on most
+files.
+
 The output is always a real file on disk: an ordinary Cloud Optimized GeoTIFF
 that opens in any software that can read GeoTIFFs. You can send it to a client
 or put it on a server exactly as it is, with no separate export step. By

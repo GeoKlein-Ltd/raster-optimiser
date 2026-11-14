@@ -619,6 +619,55 @@ def _float32_summary_line(
     )
 
 
+# The GEOKLEIN_6_HIDDEN_PIXELS values for the two run shapes that
+# produce no hidden-pixels log message at all. Both are statements about
+# what was checked, because that is what the key is for: a reader
+# looking at a finished file wants to know the check happened and what
+# it concluded, and an absent key cannot tell them whether it was
+# skipped, passed, or never implemented.
+_NODATA_RECORD_NOT_APPLICABLE = (
+    "Not applicable: this check is for 8-bit imagery whose NoData value "
+    "is 0."
+)
+_NODATA_RECORD_COLLAR_ONLY_MARKER = (
+    "Not cleared: this file uses a NoData value of 0 as its only "
+    "transparency, so clearing it would turn the transparent collar into "
+    "a black border."
+)
+
+
+def _nodata_metadata_line(
+    detection: "DetectionResult", nodata_message: Optional[str],
+) -> str:
+    """GEOKLEIN_6_HIDDEN_PIXELS' value, never empty.
+
+    The real message whenever there is one; otherwise a short line
+    chosen from the DetectionResult for the case that produced no
+    message. The two are different jobs: _resolve_nodata_handling()
+    returns None to mean "there is nothing worth a LOG line here", which
+    is correct for the log and wrong for the file. An absent key leaves
+    a reader unable to tell a check that passed from one that never
+    ran, and this tool's whole metadata chain exists so that a file
+    found a year later explains itself.
+
+    Previously the key was passed as an empty value in these cases,
+    which GDAL treats as a removal - deliberately, so that re-running
+    the tool on its own output could not leave a stale record from the
+    earlier run sitting beside a fresh one. That reasoning still holds
+    and is now served better: a real line always overwrites the
+    inherited one, so there is nothing stale to clear.
+    """
+    if nodata_message:
+        return nodata_message
+    risk = detection.nodata_risk
+    if risk is not None and risk.applies and not risk.clear_possible:
+        # NoData=0 is present and is the file's only transparency. The
+        # check applied and reached a conclusion; it just produced no
+        # log line because nothing was done and nothing was asked.
+        return _NODATA_RECORD_COLLAR_ONLY_MARKER
+    return _NODATA_RECORD_NOT_APPLICABLE
+
+
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
     """Replicate gdaladdo's "leave blank" default level series.
 
@@ -1141,13 +1190,17 @@ def _build_decision_metadata(
     self-description, so it doesn't re-include the metadata that
     describes it.
 
-    GEOKLEIN_6_HIDDEN_PIXELS is always present, as an empty string when
-    there's no message this run, rather than omitted - confirmed
-    directly that "-mo KEY=" (empty) actually removes an inherited
-    value with that key, not just blanks it. Translate inherits source
-    metadata, so re-running this tool on a file it already produced
-    (with a message that run, none this run) would otherwise leave a
-    stale record sitting next to the fresh one.
+    GEOKLEIN_6_HIDDEN_PIXELS always carries a real sentence now, never
+    an empty value - see _nodata_metadata_line(). It used to be passed
+    empty on a run with no hidden-pixels message, which GDAL treats as
+    a removal rather than a blanking (confirmed directly), chosen so
+    that re-running this tool on its own output could not leave a stale
+    record from the earlier run beside a fresh one. The effect was that
+    the key was simply missing from most outputs - every elevation file,
+    among others - and a reader could not tell a check that had passed
+    from one that had never run. A real line in every case keeps the
+    anti-staleness property, since it overwrites whatever was inherited,
+    and answers the question the key exists for.
 
     The same problem exists for any other GEOKLEIN_* key the source
     happens to carry that isn't one of the seven above, so this
@@ -1221,7 +1274,9 @@ def _build_decision_metadata(
             else decisions.profile_reason
         ),
         "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
-        "GEOKLEIN_6_HIDDEN_PIXELS": decisions.nodata_message or "",
+        "GEOKLEIN_6_HIDDEN_PIXELS": _nodata_metadata_line(
+            detection, decisions.nodata_message,
+        ),
         "GEOKLEIN_7_REPRODUCE": _format_reproduce_commands(full_args),
         # Deliberately NOT the full GEOKLEIN_2_DETECTED/GEOKLEIN_4_DECISION
         # text - this tag exists for software that ignores GDAL's own
@@ -1831,7 +1886,11 @@ def convert(
     result = ConversionResult(source_path=path)
 
     if detection is None:
-        detection = detect(path)
+        # store_float32 forwarded so a caller that skipped detection
+        # entirely still gets the exact scan when it matters and skips
+        # it when it does not - the CLI and direct API use both land
+        # here.
+        detection = detect(path, store_float32=store_float32)
 
     if not detection.ok or detection.refused:
         result.action = "refused_upstream"
@@ -2412,7 +2471,10 @@ def main(argv=None) -> int:
     parser.add_argument("--json", action="store_true", help="Print raw JSON instead of a human report")
     args = parser.parse_args(argv)
 
-    detection = detect(args.path)
+    detection = detect(
+        args.path, store_float32=args.store_float32,
+        log_cb=None if args.quiet else print,
+    )
     progress_cb = None if args.quiet else gdal.TermProgress_nocb
     log_cb = None if args.quiet else _cli_log
     result = convert(

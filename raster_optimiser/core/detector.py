@@ -225,6 +225,38 @@ FLOAT32_HALF_ULP_SHIFT = 24
 # wrong unit.
 FLOAT32_MAX_BOUND_METRES = 0.001
 
+# Largest absolute value, from APPROXIMATE statistics, at or above which
+# the advisory is not shown at all.
+#
+# 16,384 is deliberately half of the 32,768 where the real 1 mm gate
+# first bites, and the halving is the whole point rather than caution
+# for its own sake. Approximate statistics read the pyramids, whose
+# pixels are averages, so extremes are damped: the approximate maximum
+# is systematically LOWER than the true one (measured on the Hamilton
+# DSM: 117.46 exact against 116.39 approximate from one pyramid set and
+# 115.07 from another). A file whose true maximum sits just over 32,768
+# could therefore report an approximate maximum well under it, and the
+# advisory would promise a sub-millimetre rounding on a file the real
+# gate would refuse. Allowing a whole factor of two of damping is a
+# bound on that error, not a guess at it - no averaging of real heights
+# halves their maximum.
+#
+# The cost of being wrong in the other direction is only a missing
+# advisory on a file with values above 16,384, which is not elevation in
+# metres anyway. A suppressed advisory tells the user nothing; a
+# confident wrong figure tells them something false.
+FLOAT32_ADVISORY_APPROX_CEILING = 16384.0
+
+# Pushed to the caller's log immediately before the exact max-abs scan,
+# and only when that scan runs (box ticked, Float64 input). The scan
+# reads every pixel and reports progress, but a moving bar with no
+# explanation is still an unexplained wait on a compressed file, where
+# it measured 4.09s at 256 MP.
+FLOAT32_EXACT_SCAN_NOTICE = (
+    "Reading every height to work out the exact Float32 rounding. On "
+    "large compressed files this can take a little while."
+)
+
 # COG creation-option names, not GTiff's. v1 always writes a Cloud
 # Optimized GeoTIFF (see docs/plugin_design_notes.md) - there is no
 # classic-GTiff code path left for these to serve, so the dicts hold the
@@ -420,6 +452,21 @@ class Float32Storage:
     # is what matters - a NoData marker only has to keep marking the
     # same pixels, not keep a particular bit pattern.
     nodata_round_trips: bool = True
+
+    # True only when max_abs_valid came from the exact scan, which now
+    # runs only on the ticked path. When False, bound_native/bound_metres
+    # /bound_phrase are all None and max_abs_valid holds the approximate
+    # figure, which is good enough to gate the advisory and not good
+    # enough to put a number in front of anyone.
+    assessed_exactly: bool = False
+
+    # True when the coarse approximate gate declined to judge this file:
+    # in scope, nothing measured exactly, and the approximate maximum
+    # high enough that no honest statement can be made either way. The
+    # advisory is omitted entirely in that case - see
+    # _float64_advisory - rather than printing a refusal that an
+    # approximate figure has not earned.
+    advisory_suppressed: bool = False
 
     possible: bool = False
     blocked_reason: Optional[str] = None
@@ -829,57 +876,101 @@ def _classified_unique_count(ds: "gdal.Dataset", band: "gdal.Band") -> int:
     return int(np.unique(arr).size)
 
 
-def _max_abs_valid(ds: "gdal.Dataset") -> Optional[float]:
+# Rows per read in the exact max-abs scan. 512 matches the block
+# height used by the conversion's own pixel passes
+# (converter.py's _measure_float32_cast and _verify_type_change), so
+# all three move through a file the same way, and it is also a whole
+# number of the 256-row tiles a tiled source typically uses.
+MAX_ABS_SCAN_ROWS = 512
+
+
+def _valid_mask_for_scan(arr, nodata: Optional[float]):
+    """Boolean mask of the pixels holding real data.
+
+    A near-duplicate of converter.py's _valid_mask, and deliberately
+    not an import of it: converter.py imports FROM this module and
+    never the other way, so taking it from there would be the reverse
+    dependency the detector has avoided since it was written. The
+    alternative - moving one shared copy into detector.py and importing
+    it into converter.py - is the right eventual shape and a wider
+    change than this one, so the duplication is recorded here rather
+    than taken quietly.
+    """
+    import numpy as np
+
+    if nodata is None:
+        return np.ones(arr.shape, dtype=bool)
+    if math.isnan(nodata):
+        return ~np.isnan(arr)
+    return arr != nodata
+
+
+def _max_abs_valid(ds: "gdal.Dataset", progress_cb=None,
+                   progress_cb_data=None) -> Optional[float]:
     """The largest absolute valid pixel value across every non-alpha
     band, or None if no band has a single valid pixel to measure.
 
-    ComputeRasterMinMax, not GetStatistics: GetStatistics(force=True)
-    persists what it computes into PAM, which would write a
-    "<source>.tif.aux.xml" sidecar next to a source file this tool
-    promises never to modify. ComputeRasterMinMax writes nothing.
+    Writes nothing. GetStatistics(force=True) and ComputeStatistics()
+    would both be cheaper and both persist what they compute into PAM,
+    which means a "<source>.tif.aux.xml" sidecar appearing next to a
+    source file this tool promises never to modify. That rules both out,
+    and it is also why this is a hand-rolled block loop rather than
+    ComputeStatistics() with its callback: the callback is the only
+    thing ComputeStatistics would have been wanted for.
 
-    Exact (bApproxOK=False), not approximate. The approximate form is
-    effectively free where overviews exist, but it can land in a
-    different binade from the true maximum (measured on
-    testdata/dsm_nick.tif: exact max 24.377, approximate 22.906 - the
-    same binade there, but nothing guarantees that), and the figure this
-    feeds is a power-of-two worst case, so one binade out is a factor of
-    two wrong in a number shown to the user as a fact about their file.
-    The cost is paid once, only on Float64 input, and is small against
-    the conversion of the same file. Measured: 3.9s on a 363 MP
-    no-overview ZSTD-compressed Float32 raster (dsm_nick.tif), and
-    1.1-2.1s on a 256 MP uncompressed Float64 one (Hamilton Smeaton
-    0.025m, 1.91 GiB - the spread is file-cache warmth between runs,
-    not measurement noise). The bigger file being the faster read is
-    not a contradiction: this is bound by decompression more than by
-    bytes moved, so an uncompressed source stays cheap to scan however
-    large it is. That same Hamilton file's Translate took 9.8s.
+    Exact, not approximate. The approximate form is effectively free
+    where overviews exist, but it reads averaged pyramid pixels, so its
+    maximum is systematically low and can land in a different binade
+    from the true one - and the figure this feeds is a power-of-two
+    worst case, so one binade out is a factor of two wrong in a number
+    written into the user's file. Approximate statistics are used for
+    the advisory's coarse gate instead, where being low is harmless
+    (see FLOAT32_ADVISORY_APPROX_CEILING); this exact scan now runs only
+    when the caller has actually asked for the type change, and
+    therefore for a figure that has to be right.
 
-    NoData is excluded by GDAL itself, including NaN: confirmed on
-    testdata/dsm_nick.tif, whose declared -9999 NoData and real NaN
-    pixels both stay out of the returned min/max.
+    progress_cb, if given, is GDAL's own callback(complete, message,
+    cb_data) shape and is called once per block row, so the dialog's bar
+    moves during what is otherwise a silent multi-second read. Returning
+    a falsy value stops the scan, which returns None - a cancelled scan
+    has no answer, and must not be mistaken for a file with no valid
+    pixels. The caller checks feedback.isCanceled() itself immediately
+    afterwards.
+
+    NoData is excluded, NaN included: _valid_mask handles the NaN case,
+    which equality cannot (NaN != NaN marks every NaN pixel valid). This
+    project's own testdata has NaN-NoData elevation files.
     """
+    import numpy as np
+
     best = None
-    for i in range(1, ds.RasterCount + 1):
-        band = ds.GetRasterBand(i)
-        if _is_alpha_band(band):
-            continue
-        try:
-            minimum, maximum = band.ComputeRasterMinMax(False)
-        except Exception:  # noqa: BLE001 - a band with no valid pixels at all
-            # GDAL raises rather than returning a sentinel when every
-            # pixel in the band is NoData. That is a real file shape (an
-            # empty tile, a fully-masked crop), and it is not a reason to
-            # fail a conversion over an advisory note - the band is
-            # skipped, and the caller reports that it could not measure
-            # if no band yields anything.
-            continue
-        for value in (minimum, maximum):
-            if value is None or not math.isfinite(value):
-                continue
-            magnitude = abs(value)
-            if best is None or magnitude > best:
-                best = magnitude
+    xsize, ysize = ds.RasterXSize, ds.RasterYSize
+    bands = [i for i in range(1, ds.RasterCount + 1)
+             if not _is_alpha_band(ds.GetRasterBand(i))]
+    if not bands:
+        return None
+
+    total_rows = max(1, len(bands) * ((ysize + MAX_ABS_SCAN_ROWS - 1) // MAX_ABS_SCAN_ROWS))
+    done = 0
+    for band_index in bands:
+        band = ds.GetRasterBand(band_index)
+        nodata = band.GetNoDataValue()
+        for y0 in range(0, ysize, MAX_ABS_SCAN_ROWS):
+            rows = min(MAX_ABS_SCAN_ROWS, ysize - y0)
+            block = band.ReadAsArray(0, y0, xsize, rows)
+            if block is not None:
+                values = block[_valid_mask_for_scan(block, nodata)]
+                if values.size:
+                    finite = values[np.isfinite(values)]
+                    if finite.size:
+                        magnitude = float(np.max(np.abs(finite)))
+                        if best is None or magnitude > best:
+                            best = magnitude
+            done += 1
+            if progress_cb is not None and not progress_cb(
+                done / total_rows, "", progress_cb_data,
+            ):
+                return None
     return best
 
 
@@ -1054,15 +1145,59 @@ def _nodata_round_trips(nodata_value: Optional[float]) -> bool:
     return cast_back == nodata_value
 
 
+def _approx_max_abs_valid(ds: "gdal.Dataset") -> Optional[float]:
+    """The largest absolute valid value from APPROXIMATE statistics -
+    pyramids where they exist, a decimated sample otherwise. Effectively
+    free: measured at 0.00-0.01s on both a 256 MP uncompressed Float64
+    raster and a DEFLATE-compressed, tiled, pyramided copy of it, where
+    the exact scan cost 1.16s and 4.09s respectively.
+
+    Good enough for one job only: deciding whether to show the advisory
+    at all. Its maximum is systematically lower than the truth, because
+    pyramid pixels are averages, so it must never be turned into a
+    figure quoted to the user - see FLOAT32_ADVISORY_APPROX_CEILING for
+    the headroom that fact buys.
+
+    ComputeRasterMinMax(True) persists nothing, unlike the statistics
+    calls that would also have answered this.
+    """
+    best = None
+    for i in range(1, ds.RasterCount + 1):
+        band = ds.GetRasterBand(i)
+        if _is_alpha_band(band):
+            continue
+        try:
+            minimum, maximum = band.ComputeRasterMinMax(True)
+        except Exception:  # noqa: BLE001 - a band with no valid pixels at all
+            continue
+        for value in (minimum, maximum):
+            if value is None or not math.isfinite(value):
+                continue
+            magnitude = abs(value)
+            if best is None or magnitude > best:
+                best = magnitude
+    return best
+
+
 def _assess_float32_storage(
     ds: "gdal.Dataset", result: "DetectionResult", max_abs_valid: Optional[float],
+    assessed_exactly: bool = True,
 ) -> "Float32Storage":
     """Whether this file COULD be stored as Float32, and at what cost.
-    Reads no user preference - see Float32Storage's docstring.
 
-    Reuses max_abs_valid, already computed for the advisory, rather than
-    reading the pixels a second time: the bound and the advisory are the
-    same arithmetic on the same number.
+    Reads no user preference directly - see Float32Storage's docstring -
+    but assessed_exactly tells it which of two jobs it is doing, because
+    only one of them can honestly produce a bound:
+
+    - assessed_exactly=True: max_abs_valid came from the exact scan, so
+      the bound is computed, both gates are applied, and `possible` is a
+      real answer the conversion can act on. This is the ticked path.
+    - assessed_exactly=False: max_abs_valid is the approximate figure,
+      which is systematically low. No bound is computed and `possible`
+      stays False - nothing may be acted on from an approximate
+      measurement. Only the NoData gate, which needs no pixels at all,
+      and the coarse FLOAT32_ADVISORY_APPROX_CEILING check are decided,
+      and they decide nothing but whether the advisory is shown.
     """
     storage = Float32Storage()
 
@@ -1088,6 +1223,7 @@ def _assess_float32_storage(
 
     storage.in_scope = True
     storage.max_abs_valid = max_abs_valid
+    storage.assessed_exactly = assessed_exactly
 
     srs = ds.GetSpatialRef()
     _h_name, storage.horizontal_is_metres = _horizontal_unit(srs)
@@ -1116,6 +1252,32 @@ def _assess_float32_storage(
         )
         return storage
 
+    if not storage.nodata_round_trips:
+        # Checked first on the approximate path, and harmless to check
+        # first on the exact one: it needs no pixels at all, so it is
+        # the one gate that is equally sound either way.
+        storage.blocked_reason = (
+            f"this file's NoData value ({storage.nodata_value!r}) does not "
+            "survive a Float32 conversion - it falls outside the range "
+            "Float32 can hold, so the NoData pixels would stop matching "
+            "the value the file declares and would read as real data"
+        )
+        return storage
+
+    if not assessed_exactly:
+        # The coarse gate, and the end of what an approximate figure is
+        # allowed to decide. No bound, and possible stays False: the
+        # conversion must never act on this assessment, only the
+        # advisory may read it.
+        if max_abs_valid >= FLOAT32_ADVISORY_APPROX_CEILING:
+            storage.advisory_suppressed = True
+            storage.blocked_reason = (
+                f"the largest value this file appears to hold is around "
+                f"{max_abs_valid:,.0f}, high enough that the rounding "
+                "could exceed what this tool will accept for a height"
+            )
+        return storage
+
     exponent = math.floor(math.log2(max_abs_valid))
     storage.bound_native = 2.0 ** (exponent - FLOAT32_HALF_ULP_SHIFT)
     storage.bound_metres = storage.bound_native * vertical_scale
@@ -1134,38 +1296,40 @@ def _assess_float32_storage(
         )
         return storage
 
-    if not storage.nodata_round_trips:
-        storage.blocked_reason = (
-            f"this file's NoData value ({storage.nodata_value!r}) does not "
-            "survive a Float32 conversion - it falls outside the range "
-            "Float32 can hold, so the NoData pixels would stop matching "
-            "the value the file declares and would read as real data"
-        )
-        return storage
-
     storage.possible = True
     return storage
 
 
-def _float64_advisory(storage: "Float32Storage") -> str:
+def _float64_advisory(storage: "Float32Storage") -> Optional[str]:
     """The Float64 log line for a run that did NOT change the type - see
     DetectionResult.float64_advisory. Three shapes, because there are
     three genuinely different things to say:
 
-    - in scope and possible: point at the checkbox, with this file's own
-      bound. This replaced an earlier version that told the user to
-      re-export the source as Float32 in other software; the tool can
-      do it itself now, so sending them elsewhere would be wrong.
-    - in scope but blocked: say Float64 is being kept and why, so
+    - in scope and not ruled out: point at the checkbox, and say that
+      the exact figure is worked out only if they tick it. It quotes no
+      figure of its own, because on this path nothing exact has been
+      measured - see _approx_max_abs_valid for why the approximate one
+      must not be quoted. This replaced a version that printed a
+      per-file bound and cost a full exact scan of every Float64 file
+      to produce it, whether or not anyone had asked for the option.
+    - in scope but ruled out: say Float64 is being kept and why, so
       nobody ticks the box expecting a change that will not happen.
     - out of scope (multi-band Float64): the re-export suggestion still
       stands, because the checkbox genuinely does not cover it.
+
+    Returns None when the file is in scope but the coarse gate declined
+    to judge it: that case has nothing honest to offer - no figure was
+    measured and no refusal was established - and a sentence saying so
+    would be noise on a run where nothing was asked.
 
     Leads with the no-change statement in every shape. This fires on a
     file that converted exactly as it should have, so a reader who meets
     a size claim first reasonably wonders whether the tool has just done
     that to their heights.
     """
+    if storage.advisory_suppressed:
+        return None
+
     opening = (
         "Source data type is Float64, and it is written out as Float64 - "
         "every value is preserved exactly and nothing in this run changes "
@@ -1192,7 +1356,13 @@ def _float64_advisory(storage: "Float32Storage") -> str:
             "apply to it."
         )
 
-    if not storage.possible:
+    # blocked_reason, not `possible`: `possible` answers "may the
+    # conversion act on this", which is deliberately False on the
+    # unticked path because nothing was measured exactly there. Reading
+    # it here printed "not available for this file: None" on every
+    # unticked Float64 run - the reason is only ever set when something
+    # genuinely ruled the file out.
+    if storage.blocked_reason:
         return (
             f"{opening} Storing it as Float32 is not available for this "
             f"file: {storage.blocked_reason}. Ticking 'Store Float64 "
@@ -1201,11 +1371,12 @@ def _float64_advisory(storage: "Float32Storage") -> str:
         )
 
     return (
-        f"{opening} For information only, and needing no action: Float64 "
-        "records heights far more finely than any survey can measure them. "
-        "Ticking 'Store Float64 elevation as Float32' under Advanced "
-        "parameters would store this file at about a third of the size, "
-        f"changing no height by more than {storage.bound_phrase}."
+        f"{opening} For information only: Float64 records heights far more "
+        "finely than any survey can measure them. Ticking 'Store Float64 "
+        "elevation as Float32' under Advanced parameters would store this "
+        "file at about a third of the size, rounding heights by a fraction "
+        "of a millimetre. The exact figure is worked out and recorded in "
+        "the file if you tick it."
     )
 
 
@@ -1731,7 +1902,8 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
     return result
 
 
-def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResult:
+def detect(path: str, progress_cb=None, progress_cb_data=None,
+           store_float32: bool = False, log_cb=None) -> DetectionResult:
     """Full detection: the metadata-only pass, plus whatever pixel
     sampling it flagged as still needed (see
     detect_metadata_only.__doc__). This is the entry point for anything
@@ -1755,6 +1927,28 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
     resolved yet" - the Float64 advisory resolves nothing and gates
     nothing, so folding it into that flag would report a fully
     classified file as still unclassified.
+
+    store_float32 decides how that pixel value is obtained, and it is
+    the difference between a detection that costs milliseconds and one
+    that costs seconds:
+
+    - False (the default, and the common case): APPROXIMATE statistics,
+      effectively free. Enough to gate the advisory, never quoted. The
+      exact scan used to run here unconditionally, which made detection
+      cost 1.16s on a 256 MP uncompressed Float64 raster and 4.09s on a
+      DEFLATE-compressed, tiled, pyramided one - all of it to print a
+      figure in a log line nobody had asked for, on a file that was
+      going to be written at Float64 regardless.
+    - True: the exact scan, because the figure then goes into the output
+      file and has to be right.
+
+    log_cb, if given, is called once as log_cb(message) immediately
+    before the exact scan starts, and only when that scan will actually
+    run. It exists because the scan is otherwise a silent multi-second
+    pause with the progress bar at the bottom of its detection span, and
+    a caller with a log (the QGIS wrapper) should be able to say why.
+    progress_cb is passed into the scan as well, so the bar moves
+    through it.
     """
     result = detect_metadata_only(path)
 
@@ -1764,8 +1958,8 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
     # Float64 is the one dtype that needs this function to open the file
     # even when classification is already complete - single-band Float64
     # elevation resolves fully in Stage 1a, exactly as Float32 does.
-    needs_float64_advisory = result.dtype == "Float64"
-    if not result.needs_pixel_sampling and not needs_float64_advisory:
+    needs_float64_assessment = result.dtype == "Float64"
+    if not result.needs_pixel_sampling and not needs_float64_assessment:
         return result
 
     try:
@@ -1776,14 +1970,20 @@ def detect(path: str, progress_cb=None, progress_cb_data=None) -> DetectionResul
         return _refuse(result, "UNREADABLE", "Could not read this file.")
 
     try:
-        if needs_float64_advisory:
-            # One pixel read feeds both: the assessment's bound and the
-            # advisory's figure are the same arithmetic on the same
-            # max_abs_valid, so it is computed once here rather than
-            # inside each of them.
-            max_abs_valid = _max_abs_valid(ds)
+        if needs_float64_assessment:
+            if store_float32:
+                # The exact scan, because its figure is written into the
+                # output file. Announced first: it is the one part of
+                # detection that can take seconds on a compressed file.
+                if log_cb is not None:
+                    log_cb(FLOAT32_EXACT_SCAN_NOTICE)
+                max_abs_valid = _max_abs_valid(
+                    ds, progress_cb=progress_cb, progress_cb_data=progress_cb_data,
+                )
+            else:
+                max_abs_valid = _approx_max_abs_valid(ds)
             result.float32_storage = _assess_float32_storage(
-                ds, result, max_abs_valid,
+                ds, result, max_abs_valid, assessed_exactly=store_float32,
             )
             result.float64_advisory = _float64_advisory(result.float32_storage)
         if not result.needs_pixel_sampling:

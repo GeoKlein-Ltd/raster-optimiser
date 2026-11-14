@@ -1021,7 +1021,11 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         # core/detector.py's sampling strategy, not here.
         feedback.setProgressText(self.tr("Detecting raster type..."))
         t_detect = time.perf_counter()
-        detection = detect(source_path, progress_cb=make_progress_cb(0, 10))
+        detection = detect(
+            source_path, progress_cb=make_progress_cb(0, 10),
+            store_float32=store_float32,
+            log_cb=lambda message: feedback.pushInfo(message),
+        )
         detect_seconds = time.perf_counter() - t_detect
         feedback.pushInfo(self.tr("Detection finished in {:.1f}s").format(detect_seconds))
 
