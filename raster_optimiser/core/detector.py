@@ -621,8 +621,20 @@ PROFILE_REASON_ANALYSIS_HONOURED = (
 # further down the same record - is the one a later reader actually
 # needs, because "lossless" on its own invites the conclusion that
 # nothing changed at all.
+# Two voices for one decision, and the split is not cosmetic. The log
+# is read by the person at the dialog, so "your request" is right there.
+# The GEOKLEIN_* keys travel with the file to clients, contractors and
+# archives, where "your" has no referent at all - the reader is not the
+# person who ticked the box, and addressing them as if they were is
+# both confusing and a small claim about who did what. Every metadata
+# value is third person for that reason; second person stays in the log.
 PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32 = (
     "'Analysis', as asked, with heights stored as Float32 at your "
+    "request. Compression is lossless, so the only change to the data "
+    "is the Float32 rounding below."
+)
+PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32_THIRD_PERSON = (
+    "'Analysis', as asked, with heights stored as Float32 at the user's "
     "request. Compression is lossless, so the only change to the data "
     "is the Float32 rounding below."
 )
@@ -703,9 +715,31 @@ def is_jpeg_compression(compression: Optional[str]) -> bool:
     return compression is not None and "JPEG" in compression.upper()
 
 
+def profile_request_honoured(
+    detection: DetectionResult, requested: Optional[str],
+) -> bool:
+    """True when the profile the run used is the one that was asked for.
+
+    Split out so the end-of-run summary can tell an as-asked line from a
+    correction without parsing the sentence. resolve_profile_reason()
+    deliberately does not return this (see its docstring: every
+    unhonoured case is already consequential, so severity never needed
+    it) - but the summary does need it, because it lists corrections and
+    changes to the data, and an as-asked line is neither.
+
+    requested None means the caller expressed no preference, so nothing
+    was denied and the request counts as honoured.
+    """
+    if requested is None:
+        return True
+    if detection.profile_mode == "forced":
+        return requested == detection.forced_profile
+    return True
+
+
 def resolve_profile_reason(
     detection: DetectionResult, requested: Optional[str],
-    stored_as_float32: bool = False,
+    stored_as_float32: bool = False, third_person: bool = False,
 ) -> tuple:
     """Returns (reason: str, consequential: bool) explaining what profile
     was used and why - covering every case a run can produce: forced and
@@ -740,6 +774,13 @@ def resolve_profile_reason(
     e.g. the CLI's --profile is optional) - never a mismatch on its
     own, since nothing was denied.
 
+    third_person selects the voice for the one string that has two: the
+    honoured-Analysis-Float32 opening. Metadata asks for third person,
+    the log does not - see the comment above
+    PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32 for why the file cannot say
+    "your". Every other reason string is already third person or has no
+    personal pronoun at all, so the flag changes nothing elsewhere.
+
     stored_as_float32 says whether this run also changed the data type
     on request. It only ever removes a preservation claim; it never
     changes which profile was used or why. Two shapes are affected:
@@ -768,7 +809,11 @@ def resolve_profile_reason(
                 # but ordering it this way means no reachable path can
                 # produce a preservation claim on a run that rounded,
                 # rather than relying on that unreachability.
-                return PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32, True
+                return (
+                    PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32_THIRD_PERSON
+                    if third_person
+                    else PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32
+                ), True
             if requested == "lossless" and is_jpeg_compression(detection.compression):
                 return PROFILE_REASON_JPEG_SOURCE_ANALYSIS, True
             return PROFILE_REASON_ANALYSIS_HONOURED, False
@@ -1886,8 +1931,8 @@ def _detect_metadata_only_body(result: DetectionResult, ds: "gdal.Dataset") -> D
         "made it smaller, not faster.\n"
         "\n"
         "If a small visual copy is genuinely wanted, export an 8-bit "
-        "RGB composite of the bands you want to see, then run this "
-        "tool on that file with 'Viewing'."
+        "RGB composite of the bands to be shown, then run this tool on "
+        "that file with 'Viewing'."
     )
     settings_key = "lossless_float" if dtype in FLOAT_DTYPES else "lossless_integer"
     result.profile_options = [

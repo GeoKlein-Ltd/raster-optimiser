@@ -1061,6 +1061,39 @@ this - so such a finding would be a documentation note, not a fix.
 
 ---
 
+## The file speaks in the third person
+
+**Status:** implemented 2026-11-15, after a client-facing output was
+read and found to be addressing its reader as "you".
+
+The log and the embedded metadata have different readers, and until now
+they shared their strings. The log is read by the person who pressed
+Run, where "at your request" is exactly right. A `GEOKLEIN_*` value is
+read by whoever opens the file - a client, a contractor, an auditor, or
+the same person two years later - where "your" has no referent and
+quietly asserts that the reader is the one who chose. Every metadata
+value is third person now; the log keeps second person.
+
+Only one string needed two forms, the honoured-Analysis-Float32
+opening. Both come from `resolve_profile_reason()` under a
+`third_person` flag rather than one being a later rewording of the
+other, so they cannot drift - the same discipline the rest of this
+codebase's message handling follows.
+
+**Saying it once was the harder half.** `GEOKLEIN_4_DECISION` is the
+profile reason followed by the storage paragraph, and both attributed
+the change, so the file said "with heights stored as Float32 at the
+user's request" and then "Stored as Float32 at the user's request"
+immediately after. The paragraph can drop its lead - but only when the
+opening carries the attribution, which is true of exactly one opening.
+A first attempt dropped it unconditionally and left the coerced run's
+metadata with no attribution at all: its opening is the Viewing
+refusal, which mentions no data type. Caught by a test that counted the
+attribution phrase per key and expected exactly one. The condition is
+`lead=not profile_request_honoured`.
+
+---
+
 ## The advisory stopped paying for an exact scan nobody asked for
 
 **Status:** changed 2026-11-14, after GUI testing on QGIS 4.2.1 reported

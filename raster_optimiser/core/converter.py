@@ -61,12 +61,14 @@ try:
         detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
         describe_detection, content_label, is_jpeg_compression, FLOAT_DTYPES,
         Float32Storage, _is_metre_unit, _format_quantity_phrase,
+        profile_request_honoured,
     )
 except ImportError:  # running as a plain script, not as part of the core package
     from detector import (
         detect, DetectionResult, NoDataRisk, RECOMMENDED_SETTINGS, resolve_profile_reason,
         describe_detection, content_label, is_jpeg_compression, FLOAT_DTYPES,
         Float32Storage, _is_metre_unit, _format_quantity_phrase,
+        profile_request_honoured,
     )
 
 gdal.UseExceptions()
@@ -148,6 +150,14 @@ class DecisionSummary:
     """
     profile_reason: str
     profile_consequential: bool = False  # a genuine match can still be worth flagging - see resolve_profile_reason()'s docstring (e.g. Analysis requested on a JPEG source)
+    # The same decision in third person, for the metadata. Identical to
+    # profile_reason for every case but one - see
+    # PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32's comment in detector.py.
+    profile_reason_metadata: Optional[str] = None
+    # True when the profile used is the one asked for. The end-of-run
+    # summary needs it to leave as-asked lines out while keeping
+    # corrections - see profile_request_honoured().
+    profile_request_honoured: bool = True
     nodata_message: Optional[str] = None  # same object as ConversionResult.nodata_message, not duplicated text
     nodata_consequential: bool = False  # derived from nodata_message_severity != "routine"
     applied: Optional[AppliedSettings] = None  # None until creation_options are resolved; stays None for already_optimised (nothing written)
@@ -540,7 +550,7 @@ def _resolve_float32_storage(detection: "DetectionResult", requested: bool):
 
 def _float32_applied_message(
     storage: "Float32Storage", measured_max: Optional[float],
-    valid_pixels: int,
+    valid_pixels: int, lead: bool = True,
 ) -> str:
     """The sentence recorded in the log and in GEOKLEIN_4_DECISION once
     a type change has actually been made and checked.
@@ -574,10 +584,21 @@ def _float32_applied_message(
             share = measured_max / storage.bound_native * 100.0
             measured_phrase += f" ({share:.0f}% of that bound)"
 
-    parts = [
-        "Stored as Float32 at the user's request. The source is Float64 "
-        "elevation; the output holds the same heights at Float32, which is "
-        "about a third of the size.",
+    # lead=False drops the attribution sentence, for the one consumer
+    # that has already said it: GEOKLEIN_4_DECISION, whose opening is
+    # "'Analysis', as asked, with heights stored as Float32 at the
+    # user's request". Repeating it immediately afterwards read as a
+    # stutter in the file's own record. The log still wants it, because
+    # there the paragraph is pushed on its own and needs a subject.
+    opening = (
+        ["Stored as Float32 at the user's request. The source is Float64 "
+         "elevation; the output holds the same heights at Float32, which "
+         "is about a third of the size."]
+        if lead else
+        ["The source is Float64 elevation; the output holds the same "
+         "heights at Float32, which is about a third of the size."]
+    )
+    parts = opening + [
         f"Guaranteed worst-case rounding for this file's value range: "
         f"{storage.bound_phrase}.",
         f"Largest change actually measured, across every valid pixel: "
@@ -619,15 +640,28 @@ def _float32_summary_line(
     )
 
 
-# The GEOKLEIN_6_HIDDEN_PIXELS values for the two run shapes that
-# produce no hidden-pixels log message at all. Both are statements about
-# what was checked, because that is what the key is for: a reader
+# The GEOKLEIN_6_HIDDEN_PIXELS values for the run shapes that produce
+# no hidden-pixels log message of their own. All of them are statements
+# about what was checked, because that is what the key is for: a reader
 # looking at a finished file wants to know the check happened and what
 # it concluded, and an absent key cannot tell them whether it was
 # skipped, passed, or never implemented.
-_NODATA_RECORD_NOT_APPLICABLE = (
-    "Not applicable: this check is for 8-bit imagery whose NoData value "
-    "is 0."
+#
+# Why "not applicable" needs two forms. A single line reading "this
+# check is for 8-bit imagery whose NoData value is 0" was going onto
+# 8-bit files too, where it reads as a statement that the file is not
+# 8-bit - exactly wrong on an 8-bit RGB ortho, and the case that found
+# this was one: 8-bit, alpha band, no NoData value at all. The reason
+# the check did not apply has to be the reason that actually held.
+_NODATA_RECORD_NOT_8_BIT = (
+    "Not applicable: this check is only for 8-bit imagery."
+)
+_NODATA_RECORD_NO_NODATA_ZERO = (
+    "Not applicable: this file has no NoData value of 0, so no real "
+    "pixels can be hidden behind one."
+)
+_NODATA_RECORD_CHECKED_NOTHING_HIDDEN = (
+    "Checked: the NoData value of 0 was not hiding any real pixels."
 )
 _NODATA_RECORD_COLLAR_ONLY_MARKER = (
     "Not cleared: this file uses a NoData value of 0 as its only "
@@ -641,9 +675,13 @@ def _nodata_metadata_line(
 ) -> str:
     """GEOKLEIN_6_HIDDEN_PIXELS' value, never empty.
 
-    The real message whenever there is one; otherwise a short line
-    chosen from the DetectionResult for the case that produced no
-    message. The two are different jobs: _resolve_nodata_handling()
+    The real message whenever the run reported a finding; otherwise a
+    short line chosen from the DetectionResult for the case that held.
+    Four such lines, because "the check did not apply" has more than one
+    reason and naming the wrong one is worse than naming none: a file
+    that is not 8-bit at all, an 8-bit file with no NoData value of 0, an
+    8-bit file whose NoData=0 was checked and found to be hiding
+    nothing, and an 8-bit file whose NoData=0 is its only transparency. The two are different jobs: _resolve_nodata_handling()
     returns None to mean "there is nothing worth a LOG line here", which
     is correct for the log and wrong for the file. An absent key leaves
     a reader unable to tell a check that passed from one that never
@@ -657,15 +695,46 @@ def _nodata_metadata_line(
     and is now served better: a real line always overwrites the
     inherited one, so there is nothing stale to clear.
     """
+    risk = detection.nodata_risk
+    eight_bit = detection.dtype == "Byte"
+    applies = risk is not None and risk.applies
+
+    # The did-apply-and-found-nothing case, stated as what it is rather
+    # than as the longer advisory the log carries. The log's version
+    # ("No interior black content detected - NoData=0 appears to only be
+    # catching the collar. Clearing it is likely unnecessary.") is advice
+    # to someone deciding what to tick; the file wants the finding.
+    #
+    # Conditioned on that exact message, not on the assessment alone.
+    # The assessment-only form fired ahead of the keep-verbatim branch
+    # below, so any other message arriving with a collar_only assessment
+    # would have been discarded and replaced by this line. Nothing
+    # produces that combination today - but a key whose job is to record
+    # what happened should not be one refactor away from overwriting a
+    # real finding, and the narrower test costs nothing.
+    if (
+        eight_bit and applies and risk.clear_possible
+        and risk.assessment == "collar_only"
+        and nodata_message in (None, _AUTO_KEPT_COLLAR_ONLY_MESSAGE)
+    ):
+        return _NODATA_RECORD_CHECKED_NOTHING_HIDDEN
+
+    # Anything the run actually reported - pixels recovered, pixels
+    # deliberately kept hidden, a sample too small to judge - is kept
+    # verbatim. Those are findings, and the file should carry the same
+    # words the log did.
     if nodata_message:
         return nodata_message
-    risk = detection.nodata_risk
-    if risk is not None and risk.applies and not risk.clear_possible:
+
+    if applies and not risk.clear_possible:
         # NoData=0 is present and is the file's only transparency. The
         # check applied and reached a conclusion; it just produced no
         # log line because nothing was done and nothing was asked.
         return _NODATA_RECORD_COLLAR_ONLY_MARKER
-    return _NODATA_RECORD_NOT_APPLICABLE
+
+    if not eight_bit:
+        return _NODATA_RECORD_NOT_8_BIT
+    return _NODATA_RECORD_NO_NODATA_ZERO
 
 
 def _default_overview_levels(xsize: int, ysize: int, min_dim: int = 256) -> list:
@@ -1228,6 +1297,11 @@ def _build_decision_metadata(
     )
     storage = detection.float32_storage
     bound_phrase = storage.bound_phrase if storage is not None else "an unknown amount"
+    # Third person for anything embedded in the file - see
+    # PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32's comment in detector.py.
+    # Falls back to profile_reason for any caller that did not set the
+    # metadata form, which is every one of them that predates it.
+    profile_reason_md = decisions.profile_reason_metadata or decisions.profile_reason
 
     requested_name = "Viewing" if (requested_profile or profile_used) == "lossy" else "Analysis"
     # Names both options and what each does, chosen one first, so a
@@ -1269,9 +1343,9 @@ def _build_decision_metadata(
         # file would read as a claim about the file rather than a note
         # to whoever is at the dialog.
         "GEOKLEIN_4_DECISION": (
-            f"{decisions.profile_reason} {decisions.float32_storage_message}"
+            f"{profile_reason_md} {decisions.float32_storage_message}"
             if (store_float32_requested and decisions.float32_storage_message)
-            else decisions.profile_reason
+            else profile_reason_md
         ),
         "GEOKLEIN_5_APPLIED": _format_applied_settings(decisions.applied),
         "GEOKLEIN_6_HIDDEN_PIXELS": _nodata_metadata_line(
@@ -1949,8 +2023,20 @@ def convert(
     profile_reason, profile_consequential = resolve_profile_reason(
         detection, chosen_profile, stored_as_float32=store_float32_apply,
     )
+    # The metadata form, third person - see
+    # PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32's comment. Resolved here
+    # rather than reworded later: the same function produces both, so
+    # they cannot drift into saying different things.
+    profile_reason_metadata, _ = resolve_profile_reason(
+        detection, chosen_profile, stored_as_float32=store_float32_apply,
+        third_person=True,
+    )
     result.decisions = DecisionSummary(
         profile_reason=profile_reason, profile_consequential=profile_consequential,
+    )
+    result.decisions.profile_reason_metadata = profile_reason_metadata
+    result.decisions.profile_request_honoured = profile_request_honoured(
+        detection, chosen_profile,
     )
     result.decisions.float32_storage_message = float32_message
     result.decisions.float32_storage_consequential = float32_severity != "routine"
@@ -2184,7 +2270,19 @@ def convert(
             predicted_cast["valid_pixels"],
         )
         result.float32_storage_message = applied_message
-        result.decisions.float32_storage_message = applied_message
+        # lead=False only when GEOKLEIN_4_DECISION's own opening already
+        # attributes the type change, which is true of exactly one
+        # opening: the honoured-Analysis variant. On a coerced run the
+        # opening is the Viewing refusal and mentions no data type at
+        # all, so the lead sentence is the only place the file would say
+        # the rounding was asked for - dropping it there said it zero
+        # times rather than once.
+        result.decisions.float32_storage_message = _float32_applied_message(
+            detection.float32_storage,
+            predicted_cast["max_delta"],
+            predicted_cast["valid_pixels"],
+            lead=not result.decisions.profile_request_honoured,
+        )
         result.decisions.float32_summary_line = _float32_summary_line(
             detection.float32_storage, predicted_cast["max_delta"],
         )

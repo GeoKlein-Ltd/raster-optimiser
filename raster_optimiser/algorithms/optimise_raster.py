@@ -458,6 +458,27 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
             "look different even when their pixels are identical. Copy "
             "the symbology from one to the other and the difference "
             "disappears.</p>"
+            "<p><b>How to confirm the data is unchanged.</b> Use the "
+            "Processing tool <b><i>Raster layer statistics</i></b> "
+            "(Processing Toolbox, under QGIS > Raster analysis, or type "
+            "its name in the Toolbox search box) and run it on the "
+            "source and on the output, then compare. Count, Minimum and "
+            "Maximum will match exactly. Mean and Standard deviation "
+            "will agree to about twelve digits but not every digit: the "
+            "two files store their pixels in differently shaped blocks, "
+            "so the totals get added up in a different order, and that "
+            "last-digit difference is arithmetic rather than a change "
+            "to your data.</p>"
+            "<p>Do not use the statistics in Layer Properties > "
+            "Information for this. Those can be approximate, computed "
+            "from a shrunk copy of the image rather than every pixel, "
+            "and they can also be read from a .aux.xml file saved next "
+            "to the raster by an earlier session. Either way they can "
+            "differ between two files whose pixels are identical.</p>"
+            "<p>If you ticked <b><i>Store Float64 elevation as "
+            "Float32</i></b>, Minimum and Maximum will not match "
+            "either, by up to the rounding the run reported. That is "
+            "the option working as described, not a fault.</p>"
             "<p><b><i>Why is the output larger than the source?</i></b> "
             "Pyramids and the Cloud Optimized structure take up space "
             "of their own. If the source was already well compressed, "
@@ -1325,7 +1346,18 @@ class OptimiseRasterAlgorithm(QgsProcessingAlgorithm):
         summary_lines = ["Summary"]
         dec = result.decisions
         if dec is not None:
-            if dec.profile_consequential:
+            # The as-asked line is left out when the only thing that
+            # made it consequential was the type change, which has its
+            # own summary line below. The Summary lists corrections and
+            # changes to the data; "'Analysis', as asked, with heights
+            # stored as Float32 at your request" is an as-asked line
+            # whose one piece of news is restated more precisely two
+            # lines down, with the figures. A coerced run keeps its
+            # reason here, because that IS a correction.
+            as_asked_only = (
+                dec.profile_request_honoured and bool(dec.float32_summary_line)
+            )
+            if dec.profile_consequential and not as_asked_only:
                 summary_lines.append(dec.profile_reason)
             if (
                 dec.nodata_consequential and dec.nodata_message

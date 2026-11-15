@@ -103,6 +103,14 @@ This list is still not a complete list of `detector.py`'s refusals (`UNREADABLE`
 
 ***Why do the colours look slightly different?*** On 16-bit and multispectral imagery, QGIS works out its own contrast stretch for each layer, so two layers can look different even when their pixels are identical. Copy the symbology from one to the other and the difference disappears.
 
+**How to confirm the data is unchanged.** Use the Processing tool **Raster layer statistics** (Processing Toolbox, under QGIS > Raster analysis, or type its name in the Toolbox search box) and run it on the source and on the output, then compare. Count, Minimum and Maximum will match exactly. Mean and Standard deviation will agree to about twelve digits but not every digit: the two files store their pixels in differently shaped blocks, so the totals get added up in a different order, and that last-digit difference is arithmetic rather than a change to your data.
+
+Do not use the statistics in Layer Properties > Information for this. Those can be approximate, computed from a shrunk copy of the image rather than every pixel, and they can also be read from a `.aux.xml` file saved next to the raster by an earlier session. Either way they can differ between two files whose pixels are identical. On one real 24000 x 24000 DSM the approximate minimum and maximum differed from the true ones in the second decimal place, and the reported share of valid pixels differed by more than a percentage point.
+
+If you ticked **Store Float64 elevation as Float32**, Minimum and Maximum will not match either, by up to the rounding the run reported. That is the option working as described, not a fault.
+
+The tool's name and place in the Toolbox were confirmed on both shipped QGIS versions before this was written: `native:rasterlayerstatistics`, displayed as "Raster layer statistics", in the "Raster analysis" group under the "QGIS" provider - identical on 3.44.13 and 4.2.1. The figures above come from running it on `dsm_float64_pdal.tif` and its own unticked output: count 7,841,625, minimum 12.599 and maximum 24.367 identical; mean 15.76424195622316 against 15.764241956226371, and standard deviation 2.8566780160170144 against 2.856678016017183. Approximate statistics on the same pair gave 12.631/23.992 and 12.609537/24.074503 - nowhere near each other, which is the trap.
+
 ***Why is the output larger than the source?*** Pyramids and the Cloud Optimized structure take up space of their own. If the source was already well compressed, or already had pyramids and this run built more levels or changed the compression, that space can outweigh what the new compression saves. The file is faster to pan, not smaller.
 
 ***Why does the log mention Float32 on my Float64 file?*** Nothing is wrong, and nothing was changed. A Float64 raster is written back out as Float64, with every value preserved exactly. The note is there because Float64 records heights far more finely than any survey can measure them, so re-exporting the source as Float32 halves the pixel data, and on the elevation rasters measured so far brought the finished file down to about a third of its size. The log gives the worst-case rounding that would introduce on your file, which for a DSM is normally a small fraction of a millimetre. Acting on it is optional, and happens in whatever software wrote the file, not here.
@@ -315,6 +323,34 @@ declined. What happened to the request is `GEOKLEIN_4_DECISION`'s job:
 
 Never a block. Each is produced once, in `core/detector.py`'s `forced_reason` (set at detection time) or `resolve_profile_reason()` (the honoured-but-worth-flagging case below), or in `core/converter.py` (the compression-not-yet-at-target case, resolved once conversion settings are known), and reused verbatim wherever it's shown: the log during the run (`feedback.pushWarning()`), the end-of-run summary, and the file's own embedded metadata (`GEOKLEIN_4_DECISION`) all read the identical text - none of them reword it.
 
+### Voice: second person in the log, third person in the file
+
+The log is read by the person at the dialog, so "your request" is right
+there and stays. Every `GEOKLEIN_*` value and `TIFFTAG_IMAGEDESCRIPTION`
+is third person, "at the user's request", because those travel with the
+file to clients, contractors and archives where "your" has no referent:
+the reader is not the person who ticked the box, and addressing them as
+if they were is both confusing and a small claim about who did what.
+
+One string has two forms for this reason -
+`PROFILE_REASON_ANALYSIS_HONOURED_FLOAT32` and its
+`_THIRD_PERSON` twin. `resolve_profile_reason()` takes a
+`third_person` flag and produces both from the same function, so they
+cannot drift into saying different things; the wrapper asks for the
+log's voice, `_build_decision_metadata()` for the file's. Every other
+reason string is already third person or has no personal pronoun at all.
+
+**The attribution is made once per metadata value.** On a run where the
+type was changed and Analysis was honoured, `GEOKLEIN_4_DECISION` opens
+"'Analysis', as asked, with heights stored as Float32 at the user's
+request", so the Float32 paragraph that follows drops its own leading
+"Stored as Float32 at the user's request." - repeated immediately, it
+read as a stutter in the file's own record. On a **coerced** run the
+opening is the Viewing refusal and mentions no data type at all, so the
+paragraph keeps its lead: without it the file would not say the
+rounding was asked for anywhere. The log keeps the lead in both cases,
+because there the paragraph is pushed on its own and needs a subject.
+
 ### Quoting selectable values
 
 The parameter tooltips already quote every value the user picks from a control - `'Analysis'`, `'Viewing'`, `'Automatic'`, `'Reveal hidden pixels'`, `'Keep as-is'`, `'Ticked'`, `'Unticked'` - because a tooltip is plain text with no bold or italic available, and a quote is the only mark that says "this is the thing in the dropdown" rather than a common noun. The log messages and the file metadata are the same plain text, so the same rule applies there.
@@ -384,7 +420,7 @@ The Float32 paragraph then follows it. The substitution is done once, in
 
 > The file is written for analysis instead. Compressing for viewing works on colour photographs, so it needs exactly three 8-bit colour bands. This file has {n} bands at {dtype}, so the pixel values are preserved instead. The file still loads and pans at full speed - 'Viewing' would only have made it smaller, not faster.
 >
-> If a small visual copy is genuinely wanted, export an 8-bit RGB composite of the bands you want to see, then run this tool on that file with 'Viewing'.
+> If a small visual copy is genuinely wanted, export an 8-bit RGB composite of the bands to be shown, then run this tool on that file with 'Viewing'.
 
 ---
 
@@ -621,6 +657,16 @@ that was ignored or refused changed no values, so it has nothing to
 re-surface; its own log line already explained itself, and
 `GEOKLEIN_4_DECISION` records it in the file.
 
+**And when it appears, the as-asked profile line does not.** The
+Summary lists corrections and changes to the data. On a run where
+Analysis was honoured and the type was changed, the profile line
+("'Analysis', as asked, with heights stored as Float32 at your
+request") is an as-asked line whose one piece of news is restated two
+lines down with the figures, so it is left out. A **coerced** run keeps
+its profile line, because a coercion is a correction and belongs there.
+`profile_request_honoured()` is what tells the two apart, rather than
+parsing the sentence.
+
 The bound and the measured maximum are two different numbers on
 purpose: the bound is what Float32's arithmetic promises for this file's
 value range before anything is written, the measured maximum is what
@@ -791,7 +837,7 @@ Seven items in the output file's own metadata, plus the standard TIFF descriptio
 | `GEOKLEIN_3_REQUESTED` | `'{Analysis or Viewing}'. The options were 'Analysis' (every pixel value preserved) and 'Viewing' (smallest possible file).` - names both options and what each does, chosen one first, so a later reader isn't left guessing what the alternative would have done. Two sentences rather than one "X, chosen from ... or X" clause, so the chosen name never has to appear twice in the same breath. All three value names quoted, matching `GEOKLEIN_4_DECISION` directly below it - see "Quoting selectable values" above. |
 | `GEOKLEIN_4_DECISION` | The identical text from "Log messages: what was used and why" above, whether or not the request was honoured. |
 | `GEOKLEIN_5_APPLIED` | Leads with "Cloud Optimized GeoTIFF (COG)", then the compression, predictor, tiling and overview resampling actually applied - see `_format_applied_settings()`. The COG prefix states a fact true of every run now, not a decision that varies, so a reader with only this file's metadata open (not the plugin's docs) knows it's COG-compliant without inferring it from tiling plus pyramids plus compression. Otherwise unchanged: states decisions made before Translate ran, never an outcome that might not happen - it does not say whether pyramids exist, since that's directly observable from the file itself; it names the resampling method used to build them instead, which is a real decision and isn't recoverable from the file afterwards. |
-| `GEOKLEIN_6_HIDDEN_PIXELS` | The NoData-handling record. **Always written, never absent.** Carries the run's hidden-pixels message when there is one; otherwise one short line stating what was checked and what it concluded, chosen from the DetectionResult. Until 1.1.0 it was passed as an empty value when there was no message, which GDAL treats as a removal rather than a blanking - so the key was simply missing from most outputs, every elevation file among them, and a reader could not tell a check that had passed from one that had never run. The two fallback lines are "Not applicable: this check is for 8-bit imagery whose NoData value is 0." and, for a file whose NoData=0 is its only transparency, "Not cleared: this file uses a NoData value of 0 as its only transparency, so clearing it would turn the transparent collar into a black border." The anti-staleness reason the empty value existed for is better served this way: a real line always overwrites whatever Translate inherited from the source, so there is nothing stale left to clear. Confirmed by re-running the tool on its own output - generation 2 carries one `GEOKLEIN_6_HIDDEN_PIXELS` with generation 2's own text, not two keys and not generation 1's. |
+| `GEOKLEIN_6_HIDDEN_PIXELS` | The NoData-handling record. **Always written, never absent.** Carries the run's hidden-pixels message when there is one; otherwise one short line stating what was checked and what it concluded, chosen from the DetectionResult. Until 1.1.0 it was passed as an empty value when there was no message, which GDAL treats as a removal rather than a blanking - so the key was simply missing from most outputs, every elevation file among them, and a reader could not tell a check that had passed from one that had never run. The fallback line names the reason that actually held, which needs four of them, because a single "this check is for 8-bit imagery whose NoData value is 0" was going onto 8-bit files too - where it reads as a statement that the file is not 8-bit. The case that found it was an 8-bit RGB ortho with an alpha band and no NoData value at all. The four: "Not applicable: this check is only for 8-bit imagery." for anything not 8-bit; "Not applicable: this file has no NoData value of 0, so no real pixels can be hidden behind one." for an 8-bit file without one; "Checked: the NoData value of 0 was not hiding any real pixels." where the check ran and found nothing, stated as the finding rather than as the longer advice the log gives someone still deciding what to tick; and "Not cleared: this file uses a NoData value of 0 as its only transparency, so clearing it would turn the transparent collar into a black border." where NoData=0 is the file's only transparency. Anything the run actually reported - pixels recovered, pixels deliberately kept hidden, a sample too small to judge - is kept verbatim, because those are findings and the file should carry the words the log did. The anti-staleness reason the empty value existed for is better served this way: a real line always overwrites whatever Translate inherited from the source, so there is nothing stale left to clear. Confirmed by re-running the tool on its own output - generation 2 carries one `GEOKLEIN_6_HIDDEN_PIXELS` with generation 2's own text, not two keys and not generation 1's. |
 | `GEOKLEIN_7_REPRODUCE` | The single `gdal_translate` command that reproduces this file without the plugin - see `_format_reproduce_commands()`. One command now, not two: v1 always writes a Cloud Optimized GeoTIFF, and the COG driver builds pyramids inside the same Translate call rather than a separate `gdaladdo` step, so there's no second command left to reproduce. Built from `full_args` (the exact list passed to `gdal.Translate()`, including `-of COG` and an `OVERVIEW_COUNT` sized from `_default_overview_levels()`'s own length - see that function's docstring for why COG's own default overview count can't be trusted to match), never a separately hand-written copy of the settings, so it cannot state anything other than what this run actually did. Source and destination are the placeholders `input.tif`/`output.tif`, not the real paths: the real source path embeds the local folder structure and Windows username, and the real output path is frequently a temp directory gone by the time anyone reads the metadata back - neither is reproducible information, and whoever reproduces this substitutes their own paths anyway. Ends with a line pointing at the equivalent QGIS menu item (Raster > Conversion > Translate, with the output format set to COG) and this workflow doc, for anyone who'd rather not use the command line at all. |
 
 Two full worked examples, both captured from real runs against 1.0.0 (elevation with Viewing requested; 8-bit RGB with Viewing requested and a real NoData finding). The version and date they quote are therefore 1.0.0's, not the current build's - deliberately left as captured rather than hand-edited to a version no run actually produced, since what these illustrate is the shape and wording of each field, which has not changed since. Relabelled 2026-11-13: they previously read "taken from a real run against the current code", which was already untrue at 1.0.1. A Float64 elevation run looks the same except that `GEOKLEIN_2_DETECTED` and `TIFFTAG_IMAGEDESCRIPTION` name Float64 (see `content_label()`), and the Float64 advisory above appears in the log - it is a log line only and is not among the `GEOKLEIN_*` keys:

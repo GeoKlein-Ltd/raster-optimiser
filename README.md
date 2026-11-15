@@ -102,8 +102,13 @@ Seven things that look like problems and aren't.
 imagery, QGIS calculates its own contrast stretch for each layer, and two
 layers can end up with slightly different minimum and maximum values even when
 their pixels are identical. Copy the symbology from one layer to the other and
-the difference should disappear. To confirm the data is unchanged, compare the
-band statistics in Layer Properties: they will match exactly.
+the difference should disappear.
+
+**How to confirm the data is unchanged.** Use the Processing tool **Raster layer statistics** (Processing Toolbox, under QGIS > Raster analysis, or type its name in the Toolbox search box) and run it on the source and on the output, then compare. Count, Minimum and Maximum will match exactly. Mean and Standard deviation will agree to about twelve digits but not every digit: the two files store their pixels in differently shaped blocks, so the totals get added up in a different order, and that last-digit difference is arithmetic rather than a change to your data.
+
+Do not use the statistics in Layer Properties > Information for this. Those can be approximate, computed from a shrunk copy of the image rather than every pixel, and they can also be read from a `.aux.xml` file saved next to the raster by an earlier session. Either way they can differ between two files whose pixels are identical. On one real 24000 x 24000 DSM the approximate minimum and maximum differed from the true ones in the second decimal place, and the reported share of valid pixels differed by more than a percentage point.
+
+If you ticked **Store Float64 elevation as Float32**, Minimum and Maximum will not match either, by up to the rounding the run reported. That is the option working as described, not a fault.
 
 **The output is larger than the source.** This happens when the source file
 was already compressed and you chose 'Analysis', or when you chose 'Viewing'
@@ -163,7 +168,8 @@ the byte layout changes.
 
 **The log mentions Float32 on a Float64 file.** Nothing is wrong, and
 nothing was changed. A Float64 raster is written back out as Float64, with
-every value preserved exactly, and the band statistics match the source. The
+every value preserved exactly; Raster layer statistics on the two files gives
+the same count, minimum and maximum, as described above. The
 note appears because Float64 records heights far more finely than any survey
 can measure them, so re-exporting the source as Float32 is worth knowing
 about: it halves the pixel data outright, and on the elevation rasters
