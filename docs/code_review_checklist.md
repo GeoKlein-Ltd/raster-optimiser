@@ -328,6 +328,39 @@ placeholder URLs are filled in.)
   `raster_optimiser/` folder and that the `metadata.txt` inside it reads
   `version=1.1.0`. The superseded `raster_optimiser-1.0.1.zip` is still in
   the repo root; both are gitignored, so neither is tracked.
+- [ ] **Bandit scans clean.** `plugins.qgis.org` runs Bandit on every
+  upload and **blocks on any finding, at any severity** - a Low is enough
+  to reject the package. Run it before building the zip:
+
+  ```
+  pip install bandit
+  bandit -r raster_optimiser
+  ```
+
+  Every severity must read 0. This is not advisory: 1.1.0 was rejected on
+  a single Low/High-confidence **B112 (try, except, continue)** in
+  `core/detector.py`, which had been sitting there behind a `# noqa:
+  BLE001` comment that satisfied the linter and meant nothing to Bandit.
+
+  Two things learned from that rejection, worth not rediscovering:
+
+  - **Do not reach for `# nosec`.** The site may ignore it, and a
+    suppression comment is not a fix. Restructure instead.
+  - **A typed exception is not reliably enough.** Measured against
+    Bandit 1.9.4: B112 and B110 flag `except Exception:` with a bare
+    `continue`/`pass` body under default settings, and flag a TYPED
+    `except RuntimeError: continue` as well once `check_typed_exception`
+    is enabled in the Bandit config. The repository's own configuration
+    is not visible from here, so the shape to write is one that neither
+    setting flags: put the `except` in a small helper whose body is a
+    `return None`, and have the loop test `if ... is None: continue`.
+    That is what `_band_min_max_or_none()` in `core/detector.py` is, and
+    its docstring records the measurement.
+
+  Scan the package, not just the files just edited - and note that
+  `tools/` is not in the zip, so a finding there does not block an
+  upload, though it is still worth fixing.
+
 - [x] `README.md`'s install section names the zip by filename, so it has to
   follow every version bump. Updated to `raster_optimiser-1.1.0.zip` in the
   same round. Checked 2026-11-13 by grepping every version string in the
