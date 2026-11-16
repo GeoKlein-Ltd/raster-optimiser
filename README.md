@@ -17,8 +17,8 @@ applied automatically, no GDAL flags to memorise.
 
 **What it processes.** 8-bit RGB imagery (3 or 4 band) gets a real choice
 between 'Analysis' and 'Viewing'. Float32, Float64 and integer data of any
-band count is written losslessly, at its own data type, once detection has
-confirmed it is not classified. Classified rasters and files with no
+band count is written losslessly, at its own data type by default, once
+detection has confirmed it is not classified. Classified rasters and files with no
 coordinate reference system are refused with a clear reason rather than
 processed into something quietly wrong.
 
@@ -166,10 +166,11 @@ slightly, the same as running the plugin twice for viewing above. For any
 other file, pan and zoom speed and file size stay about the same, and only
 the byte layout changes.
 
-**The log mentions Float32 on a Float64 file.** Nothing is wrong, and
-nothing was changed. A Float64 raster is written back out as Float64, with
-every value preserved exactly; Raster layer statistics on the two files gives
-the same count, minimum and maximum, as described above. The note appears
+**The log mentions Float32 on a Float64 file.** If you left **Store Float64
+elevation as Float32** clear, nothing is wrong and nothing was changed: a
+Float64 raster is written back out as Float64, with every value preserved
+exactly, and Raster layer statistics on the two files gives the same count,
+minimum and maximum, as described above. The note appears
 because Float64 records heights far more finely than any survey can measure
 them, so the smaller option is worth knowing about. Acting on it means
 ticking **Store Float64 elevation as Float32** under Advanced parameters, on

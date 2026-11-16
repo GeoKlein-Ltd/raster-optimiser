@@ -146,6 +146,17 @@ RETIRED = [
     # describing a version that no longer exists.
     ("pre-1.1.1 claim that the log quotes a per-file bound",
      "The log gives the worst-case rounding"),
+    # Float64 has about fifteen significant figures, not fifteen decimal
+    # places: a height of 117.0 m carries nowhere near fifteen digits
+    # after the point. Both the help panel and ui_text.md said decimal
+    # places until 1.1.2.
+    ("'decimal places' where significant figures is meant",
+     "fifteen decimal places"),
+    # The glossary used to say the tool keeps Float64 "exactly as it
+    # found it" full stop, and that the log says what Float32 would have
+    # saved. True only with the box clear, and silent about the box.
+    ("pre-1.1.2 glossary claim that Float64 is always kept as found",
+     "keeps it exactly as it found it and notes in the log"),
 ]
 
 # ---- C. passages that exist twice, and must stay identical -----------
@@ -164,13 +175,20 @@ MIRRORED = [
      "because Float64 records heights far more finely than any survey can "
      "measure them, so there is a smaller way to store the same survey: "
      "the 'Store Float64 elevation as Float32' box under Advanced "
-     "parameters, described above. The note points at that box and quotes "
-     "no figure for your file, because working an exact one out means "
-     "reading every pixel, and that is not worth doing on a run where "
-     "nobody asked for it. Tick the box and the run works the figure out "
-     "exactly, checks it pixel by pixel, keeps Float64 anyway if the "
-     "rounding would exceed a millimetre, and records what it did in the "
+     "parameters, described above. The note points at that box rather than "
+     "quoting a figure for your file. Tick the box and the run works the "
+     "figure out exactly, checks it pixel by pixel, keeps Float64 anyway if "
+     "the rounding would exceed a millimetre, and records what it did in the "
      "file's own metadata. Leave the box clear and nothing is rounded."),
+    ("Store Float32 parameter entry",
+     "Float64 elevation records heights to about fifteen significant "
+     "figures, far finer than any survey measures, so most of that is "
+     "storage spent on precision nobody collected."),
+    ("Bit depth glossary",
+     "Float64 is finer than any survey can measure. By default the tool "
+     "keeps it exactly as it found it; the Store Float64 elevation as "
+     "Float32 option under Advanced parameters stores it at Float32 "
+     "instead."),
 ]
 
 HISTORY_MARKERS = (
@@ -221,7 +239,7 @@ for label, phrase in RETIRED:
     if hits:
         failures.append("retired wording still live - %s: %s"
                         % (label, ", ".join(hits)))
-    print("  %-54s%s" % (label,
+    print("  %-62s%s" % (label,
                          "LIVE: " + ", ".join(hits) if hits else "gone"))
 
 if allowed:
@@ -250,7 +268,7 @@ for label, passage in MIRRORED:
             where.append("ui_text.md")
         failures.append("mirrored passage out of step - %s: missing from %s"
                         % (label, ", ".join(where)))
-    print("  %-54s%s" % (label,
+    print("  %-62s%s" % (label,
                          "in step" if in_help and in_doc else "OUT OF STEP"))
 
 print()
