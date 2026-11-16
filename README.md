@@ -78,8 +78,8 @@ file.*
 All seven keys are written on every run, so a file found a year later
 explains itself without the log that produced it. Where a check did not
 apply, the key says so rather than being left out: `GEOKLEIN_6` reads
-"Not applicable: this check is for 8-bit imagery whose NoData value is
-0." on an elevation raster, for instance. If you are comparing outputs
+"Not applicable: this check is only for 8-bit imagery." on an elevation
+raster, for instance. If you are comparing outputs
 from 1.0.x, that one key was absent rather than explicit on most
 files.
 
@@ -169,16 +169,24 @@ the byte layout changes.
 **The log mentions Float32 on a Float64 file.** Nothing is wrong, and
 nothing was changed. A Float64 raster is written back out as Float64, with
 every value preserved exactly; Raster layer statistics on the two files gives
-the same count, minimum and maximum, as described above. The
-note appears because Float64 records heights far more finely than any survey
-can measure them, so re-exporting the source as Float32 is worth knowing
-about: it halves the pixel data outright, and on the elevation rasters
-measured so far brought the finished file down to about a third of its size.
-A real 16000 x 16000 LiDAR DSM went from 1.02 GiB to 358 MiB that way. The
-log gives the worst-case rounding that conversion would introduce on your
-file: 0.0038 mm on that DSM, 0.00095 mm on a site DSM reaching 24 m, and
-0.49 mm on one reaching 8848 m. Acting on it is optional, and it happens in
-whatever software wrote the file, not here.
+the same count, minimum and maximum, as described above. The note appears
+because Float64 records heights far more finely than any survey can measure
+them, so the smaller option is worth knowing about. Acting on it means
+ticking **Store Float64 elevation as Float32** under Advanced parameters, on
+the run itself - it is this plugin's own option, and there is nothing to do
+in other software.
+
+That note deliberately quotes no figure for your file. Working out the exact
+worst-case rounding means reading every pixel, which is not worth doing on a
+run where nobody asked for the option. Tick the box and the tool measures it
+properly, keeps Float64 anyway if the rounding would exceed a millimetre, and
+records both the guaranteed bound and the largest change it actually made in
+the file's own metadata. The bound doubles each time the heights double, so
+it stays slight across any real survey: about 0.00095 mm on a site DSM
+reaching 24 m, and still only about 0.49 mm at Everest's 8848 m. Where the
+option cannot apply to a file - a multi-band Float64 raster, which is not
+elevation - the log says so instead, so you are never left ticking a box
+that would do nothing.
 
 ## Licence
 

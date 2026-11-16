@@ -1,0 +1,218 @@
+# -*- coding: utf-8 -*-
+"""Do the docs quote the strings the code actually writes?
+
+Run with the QGIS interpreter, from the repository root:
+
+    C:\\OSGeo4W\\bin\\python-qgis.bat tools/check_doc_strings.py
+
+WHY THIS EXISTS, AND WHAT THE OLDER CHECK MISSED
+
+The earlier sync check compared two surfaces: the rendered help panel
+(shortHelpString()) against docs/raster_optimiser_ui_text.md. It was
+built to stop those two drifting apart, and it did that. But it had two
+gaps, and one of them let a wrong quotation sit in a shipped README
+through four releases:
+
+  1. README.md was never an input. The check only ever opened the help
+     panel and ui_text.md, so a runtime string quoted in the README was
+     outside everything it looked at. That is exactly what happened: the
+     README quoted "Not applicable: this check is for 8-bit imagery
+     whose NoData value is 0." as the GEOKLEIN_6 example for an
+     elevation raster. That sentence was replaced in 1.1.0 by four
+     case-specific ones, and the elevation case now reads "Not
+     applicable: this check is only for 8-bit imagery." Nothing compared
+     the README to the code, so nothing noticed.
+
+  2. It checked presence, not provenance. Its passage list asked "does
+     this text appear in both surfaces", never "does this text match the
+     constant in the package it claims to be quoting". Two surfaces can
+     agree with each other and both be out of date - which is the state
+     the help panel and ui_text.md's mirror of it were found in during
+     the same sweep.
+
+So this script works the other way round: it starts from the runtime
+constants, imported from the package rather than retyped, and checks the
+documents against them. Every surface that quotes a string is named
+explicitly, so adding a quotation somewhere new means adding it here too.
+
+TWO CHECKS
+
+  A. Quoted runtime strings must match the code verbatim. For each
+     constant, every surface listed must contain it exactly.
+
+  B. Retired strings must not reappear. Text that was runtime wording in
+     an earlier version must not be presented as current. A Markdown
+     line may still carry one if it also carries a history marker -
+     ui_text.md's design notes deliberately record superseded wording,
+     and should keep being able to. The help panel gets no such
+     allowance: it has no lines, and every word in it is current
+     user-facing text.
+
+Exit status is 1 if anything fails, so this can gate a release.
+"""
+import os
+import re
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+
+from raster_optimiser.algorithms import optimise_raster as oa  # noqa: E402
+from raster_optimiser.core import converter  # noqa: E402
+
+
+def collapse(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_html(text):
+    text = re.sub(r"<[^>]+>", " ", text)
+    return text.replace("&quot;", '"').replace("&amp;", "&")
+
+
+def strip_md(text):
+    return text.replace("***", "").replace("**", "").replace("`", "")
+
+
+# ---- the surfaces ----------------------------------------------------
+def read(*parts):
+    with open(os.path.join(REPO, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+README = read("README.md")
+UI_TEXT = read("docs", "raster_optimiser_ui_text.md")
+
+try:
+    from qgis.core import QgsApplication
+    QgsApplication.setPrefixPath(r"C:\OSGeo4W\apps\qgis", True)
+    _app = QgsApplication([], False)
+    _app.initQgis()
+    _alg = oa.OptimiseRasterAlgorithm()
+    _alg.initAlgorithm({})
+    HELP = strip_html(_alg.shortHelpString())
+    HELP_AVAILABLE = True
+except ImportError:
+    HELP = ""
+    HELP_AVAILABLE = False
+
+SURFACES = {
+    "README.md": strip_md(README),
+    "ui_text.md": strip_md(UI_TEXT),
+    "help panel": HELP,
+}
+
+# ---- A. runtime strings the docs quote, and where --------------------
+# Each entry: the live constant, and every surface that must quote it
+# verbatim. A surface not listed is free not to mention it; a surface
+# listed here must match the code exactly.
+QUOTED = [
+    ("GEOKLEIN_6, not 8-bit",
+     converter._NODATA_RECORD_NOT_8_BIT,
+     ["README.md", "ui_text.md"]),
+    ("GEOKLEIN_6, no NoData 0",
+     converter._NODATA_RECORD_NO_NODATA_ZERO,
+     ["ui_text.md"]),
+    ("GEOKLEIN_6, checked, nothing hidden",
+     converter._NODATA_RECORD_CHECKED_NOTHING_HIDDEN,
+     ["ui_text.md"]),
+    ("GEOKLEIN_6, collar-only marker",
+     converter._NODATA_RECORD_COLLAR_ONLY_MARKER,
+     ["ui_text.md"]),
+    ("Store Float32 checkbox label",
+     oa.STORE_FLOAT32_LABEL,
+     ["ui_text.md"]),
+    # The README names the option without its parenthetical, so the name
+    # alone is what it has to get right.
+    ("Store Float32 option name",
+     "Store Float64 elevation as Float32",
+     ["README.md", "ui_text.md", "help panel"]),
+]
+
+# ---- B. wording that is no longer what the tool says -----------------
+RETIRED = [
+    ("pre-1.1.0 single GEOKLEIN_6 message",
+     "this check is for 8-bit imagery whose NoData value is 0"),
+    ("pre-1.1 act-on-it-in-other-software framing",
+     "happens in whatever software wrote the file"),
+    # Not the same as the live multi-band string, which says "would
+    # halve the pixel data" - that one is still correct, because the
+    # checkbox genuinely does not cover multi-band Float64.
+    ("pre-1.1 help-panel re-export framing",
+     "re-exporting the source as Float32 halves the pixel data"),
+    # The box-clear advisory stopped quoting a per-file figure when the
+    # exact scan was made opt-in: it now says the figure is worked out
+    # only if the box is ticked. Any surface still promising one is
+    # describing a version that no longer exists.
+    ("pre-1.1.1 claim that the log quotes a per-file bound",
+     "The log gives the worst-case rounding"),
+]
+
+HISTORY_MARKERS = (
+    "until 1.1", "an earlier version", "earlier version",
+    "was going onto", "before the tool could",
+    "rather than telling anyone", "if you are comparing outputs",
+)
+
+# ---- run -------------------------------------------------------------
+failures = []
+
+print("=" * 74)
+print("A. DOES EACH SURFACE QUOTE THE RUNTIME STRING VERBATIM?")
+print("=" * 74)
+if not HELP_AVAILABLE:
+    print("  NOTE: QGIS not importable, so the help panel was not checked.")
+print("  %-40s%-13s%s" % ("string", "surface", "verdict"))
+print("  " + "-" * 66)
+for label, value, surfaces in QUOTED:
+    for surface in surfaces:
+        if surface == "help panel" and not HELP_AVAILABLE:
+            continue
+        ok = collapse(value) in collapse(SURFACES[surface])
+        if not ok:
+            failures.append("%s does not quote %s verbatim"
+                            % (surface, label))
+        print("  %-40s%-13s%s"
+              % (label, surface, "ok" if ok else "MISMATCH"))
+
+print()
+print("=" * 74)
+print("B. HAS ANY RETIRED WORDING SURVIVED?")
+print("=" * 74)
+allowed = []
+for label, phrase in RETIRED:
+    hits = []
+    for text, name in ((README, "README.md"), (UI_TEXT, "ui_text.md")):
+        for number, line in enumerate(text.splitlines(), 1):
+            if phrase.lower() in strip_md(line).lower():
+                low = line.lower()
+                if any(m in low for m in HISTORY_MARKERS):
+                    allowed.append("%s:%d (%s) - recorded as history"
+                                   % (name, number, label))
+                else:
+                    hits.append("%s:%d" % (name, number))
+    if HELP_AVAILABLE and phrase.lower() in collapse(HELP).lower():
+        hits.append("help panel")
+    if hits:
+        failures.append("retired wording still live - %s: %s"
+                        % (label, ", ".join(hits)))
+    print("  %-54s%s" % (label,
+                         "LIVE: " + ", ".join(hits) if hits else "gone"))
+
+if allowed:
+    print()
+    print("  deliberately kept as history, not counted:")
+    for line in allowed:
+        print("    %s" % line)
+
+print()
+print("=" * 74)
+if failures:
+    print("FAILED, %d problem(s):" % len(failures))
+    for problem in failures:
+        print("  - %s" % problem)
+else:
+    print("PASSED: every quoted runtime string matches the code, and no "
+          "retired wording is presented as current.")
+print("=" * 74)
+sys.exit(1 if failures else 0)
