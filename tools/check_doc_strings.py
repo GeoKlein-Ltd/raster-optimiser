@@ -157,6 +157,13 @@ RETIRED = [
     # saved. True only with the box clear, and silent about the box.
     ("pre-1.1.2 glossary claim that Float64 is always kept as found",
      "keeps it exactly as it found it and notes in the log"),
+    # The Float32 FAQ used to open with this flat, which answers the
+    # reader who left the box clear and misleads the one who ticked it
+    # and is seeing Float32 in the log for a different reason. The
+    # scoped form has no comma after "wrong", so it does not match this
+    # and is not caught by it.
+    ("pre-1.1.2 unconditional 'nothing was changed' opening",
+     "Nothing is wrong, and nothing was changed"),
 ]
 
 # ---- C. passages that exist twice, and must stay identical -----------
@@ -169,8 +176,9 @@ RETIRED = [
 # controlled.
 MIRRORED = [
     ("Float32-on-Float64 FAQ",
-     "Why does the log mention Float32 on my Float64 file? Nothing is "
-     "wrong, and nothing was changed. A Float64 raster is written back out "
+     "Why does the log mention Float32 on my Float64 file? If you left "
+     "Store Float64 elevation as Float32 clear, nothing is wrong and "
+     "nothing was changed. A Float64 raster is written back out "
      "as Float64, with every value preserved exactly. The note is there "
      "because Float64 records heights far more finely than any survey can "
      "measure them, so there is a smaller way to store the same survey: "
