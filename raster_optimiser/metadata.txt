@@ -13,8 +13,10 @@ qgisMaximumVersion=4.99
 # already a QGIS plugin context. Keep the first sentence in sync with
 # GitHub; the trailing sentence is GitHub-only on purpose.
 description=Converts slow, unoptimised orthomosaics, elevation and multispectral rasters into fast-panning Cloud Optimized GeoTIFFs (COGs).
-version=1.1.1
-changelog=1.1.1 - Changed one error-handling pattern flagged by the
+version=1.1.2
+changelog=1.1.2 - Corrected the help panel's description of the
+    Float32 option to match how 1.1 works. No change to processing.
+    1.1.1 - Changed one error-handling pattern flagged by the
     QGIS plugin repository's security scan. No change in behaviour.
     1.1.0 - Adds Float64 elevation support. A Float64 DSM, DTM
     or CHM is now detected as elevation and written losslessly at

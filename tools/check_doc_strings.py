@@ -148,6 +148,31 @@ RETIRED = [
      "The log gives the worst-case rounding"),
 ]
 
+# ---- C. passages that exist twice, and must stay identical -----------
+# The help panel is the text users actually read; ui_text.md holds the
+# reviewable copy of it. They are maintained as one passage in two
+# places, so a change to either without the other is a defect. Add an
+# entry here whenever a passage starts being mirrored - the release-time
+# sync run covers a longer list, but anything recorded here is checked
+# on every run of this script, which is the one that is version
+# controlled.
+MIRRORED = [
+    ("Float32-on-Float64 FAQ",
+     "Why does the log mention Float32 on my Float64 file? Nothing is "
+     "wrong, and nothing was changed. A Float64 raster is written back out "
+     "as Float64, with every value preserved exactly. The note is there "
+     "because Float64 records heights far more finely than any survey can "
+     "measure them, so there is a smaller way to store the same survey: "
+     "the 'Store Float64 elevation as Float32' box under Advanced "
+     "parameters, described above. The note points at that box and quotes "
+     "no figure for your file, because working an exact one out means "
+     "reading every pixel, and that is not worth doing on a run where "
+     "nobody asked for it. Tick the box and the run works the figure out "
+     "exactly, checks it pixel by pixel, keeps Float64 anyway if the "
+     "rounding would exceed a millimetre, and records what it did in the "
+     "file's own metadata. Leave the box clear and nothing is rounded."),
+]
+
 HISTORY_MARKERS = (
     "until 1.1", "an earlier version", "earlier version",
     "was going onto", "before the tool could",
@@ -204,6 +229,29 @@ if allowed:
     print("  deliberately kept as history, not counted:")
     for line in allowed:
         print("    %s" % line)
+
+print()
+print("=" * 74)
+print("C. IS MIRRORED TEXT STILL WORD FOR WORD IN BOTH PLACES?")
+print("=" * 74)
+if not HELP_AVAILABLE:
+    print("  NOTE: QGIS not importable, so this check was skipped.")
+for label, passage in MIRRORED:
+    if not HELP_AVAILABLE:
+        break
+    wanted = collapse(passage)
+    in_help = wanted in collapse(SURFACES["help panel"])
+    in_doc = wanted in collapse(SURFACES["ui_text.md"])
+    if not (in_help and in_doc):
+        where = []
+        if not in_help:
+            where.append("help panel")
+        if not in_doc:
+            where.append("ui_text.md")
+        failures.append("mirrored passage out of step - %s: missing from %s"
+                        % (label, ", ".join(where)))
+    print("  %-54s%s" % (label,
+                         "in step" if in_help and in_doc else "OUT OF STEP"))
 
 print()
 print("=" * 74)

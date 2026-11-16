@@ -46,7 +46,7 @@ Plugins, then search for GeoKlein Raster Optimiser. This is the primary
 install path now that the plugin is listed on
 https://plugins.qgis.org/plugins/raster_optimiser/.
 
-Alternatively, download the release zip `raster_optimiser-1.1.1.zip` from
+Alternatively, download the release zip `raster_optimiser-1.1.2.zip` from
 https://github.com/GeoKlein-Ltd/raster-optimiser/releases, then Plugins,
 Manage and Install Plugins, Install from ZIP.
 

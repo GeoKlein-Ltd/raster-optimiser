@@ -319,16 +319,23 @@ placeholder URLs are filled in.)
   the GitHub URL in their embedded metadata - fixable only going forward, not
   in files already handed to a client.
 - [x] A changelog entry has been added to `metadata.txt` for this release:
-  1.1.0, added 2026-11-13 (Float64 elevation support, the Float64 advisory,
-  the CLI log-callback crash and the dropped detection warnings). 1.0.1 was
-  added 2026-09-16.
+  1.1.2, added 2026-11-16 (the help panel's description of the Float32 option
+  corrected to match how 1.1 works; no change to processing). 1.1.1 was added
+  2026-11-16 (the Bandit B112 that blocked the 1.1.0 upload), 1.1.0 on
+  2026-11-13 (Float64 elevation support, the Float64 advisory, the CLI
+  log-callback crash and the dropped detection warnings), 1.0.1 on
+  2026-09-16.
 - [x] The zip has been rebuilt (`python tools/build_zip.py`) after either of
-  the above: `raster_optimiser-1.1.0.zip`, 15 files, 109.3 KB, built
-  2026-11-13. Verified its internal layout is a single top-level
-  `raster_optimiser/` folder and that the `metadata.txt` inside it reads
-  `version=1.1.0`. The superseded `raster_optimiser-1.0.1.zip` is still in
-  the repo root; both are gitignored, so neither is tracked.
-- [ ] **Bandit scans clean.** `plugins.qgis.org` runs Bandit on every
+  the above: `raster_optimiser-1.1.2.zip`, 15 files, 135.8 KB, built
+  2026-11-16 from a clean tree at the tagged commit. Verified its internal
+  layout is a single top-level `raster_optimiser/` folder and that the
+  `metadata.txt` inside it reads `version=1.1.2`. Also verified entry by
+  entry against `git show v1.1.2:<path>`: all 15 identical once line endings
+  are normalised, which is the comparison that matters, because git stores
+  text as LF while the build copies working-tree CRLF. The superseded 1.0.1,
+  1.1.0 and 1.1.1 zips are still in the repo root; all are gitignored, so
+  none is tracked.
+- [x] **Bandit scans clean.** `plugins.qgis.org` runs Bandit on every
   upload and **blocks on any finding, at any severity** - a Low is enough
   to reject the package. Run it before building the zip:
 
@@ -361,8 +368,15 @@ placeholder URLs are filled in.)
   `tools/` is not in the zip, so a finding there does not block an
   upload, though it is still worth fixing.
 
+  Last run 2026-11-16 for 1.1.2: zero findings at every severity, with no
+  `#nosec` markers anywhere, on all three of the package (4,087 lines), the
+  extracted zip - which is what the site actually scans - and the whole
+  repository including `tools/`. Re-run with `check_typed_exception: true`,
+  stricter than the default, and clean there too.
+
 - [x] `README.md`'s install section names the zip by filename, so it has to
-  follow every version bump. Updated to `raster_optimiser-1.1.0.zip` in the
+  follow every version bump. Reads `raster_optimiser-1.1.2.zip` as of
+  2026-11-16. Updated to `raster_optimiser-1.1.0.zip` in the
   same round. Checked 2026-11-13 by grepping every version string in the
   repo: `README.md` is the only one that has to FOLLOW a bump. No code
   hardcodes a version - `GEOKLEIN_1_TOOL` reads it from `metadata.txt` at

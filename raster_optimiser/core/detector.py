@@ -547,9 +547,14 @@ class DetectionResult:
     # Float64 only, and only on a result from detect() (not
     # detect_metadata_only, which reads no pixels and so has no
     # max_abs_valid to work from): the plain-English note that the
-    # source is Float64, what re-exporting it as Float32 would save,
-    # and what the worst-case rounding of that conversion would be for
-    # THIS file. Advisory in the strict sense - nothing in the run
+    # source is Float64 and that storing it as Float32 is on offer. It
+    # points at the 'Store Float64 elevation as Float32' box rather
+    # than quoting a bound for THIS file: an exact one costs a full
+    # scan of every pixel, and the box-clear path deliberately stopped
+    # paying for that - see _float64_advisory. The one shape that still
+    # suggests re-exporting the source elsewhere is multi-band Float64,
+    # where the box genuinely does not apply. Advisory in the strict
+    # sense - nothing in the run
     # reads it or acts on it, no setting changes because of it, and the
     # output is written as Float64 either way. Built once here (see
     # _float64_advisory) and shown verbatim by the QGIS wrapper's
